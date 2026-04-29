@@ -24,7 +24,7 @@ use crate::{
     providers::build_llm,
     reasoning::runtime::PromptMemoryContext,
     runtime_context::build_preturn_context_text,
-    sleep_status::load_sleep_status_snapshot,
+    sleep_status::{SleepStatusSnapshot, load_sleep_status_snapshot},
     telegram_acl::TelegramAclHandle,
     telegram_transport::TelegramTransport,
     telegram_transport::state::TelegramTransportState,
@@ -42,6 +42,7 @@ use crate::runtime::bootstrap::{
 };
 use crate::runtime::runtime_loop::{
     SleepTaskResult, daat_locus_loop, handle_dashboard_control_command, handle_sleep_task_result,
+    reset_cancelled_runtime_turn,
 };
 
 pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()> {
@@ -285,6 +286,28 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     let mut ctrl_c_disabled = false;
     let mut restart_requested = false;
     loop {
+        // Sleep results and dashboard commands are boundary work: applying them
+        // must not drop an in-flight foreground turn.
+        if (BoundaryRuntimeControlDrain {
+            context: &mut context,
+            tx: &tx,
+            sleep_result_tx: &sleep_result_tx,
+            sleep_running: &mut sleep_running,
+            sleep_status: &mut sleep_status,
+            dashboard_control_rx: &mut dashboard_control_rx,
+            sleep_result_rx: &mut sleep_result_rx,
+            daemon_control_rx: &mut daemon_control_rx,
+            shutdown_completion_tx: &mut shutdown_completion_tx,
+            restart_requested: &mut restart_requested,
+        })
+        .drain()
+        .await
+        {
+            break;
+        }
+
+        // Only daemon control and OS shutdown signals may interrupt a cycle, and
+        // those paths explicitly reset active turn state before stopping.
         tokio::select! {
             _ = daat_locus_loop(
                 &mut context,
@@ -294,39 +317,25 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
                 &mut sleep_status,
                 &mut workspace_app_invalidation_rx,
             ) => {}
-            Some(command) = dashboard_control_rx.recv() => {
-                handle_dashboard_control_command(
-                    &mut context,
-                    &tx,
-                    &sleep_result_tx,
-                    &mut sleep_running,
-                    &mut sleep_status,
-                    command,
-                ).await;
-            }
-            Some(result) = sleep_result_rx.recv() => {
-                sleep_running = false;
-                handle_sleep_task_result(&mut context, &tx, &mut sleep_status, result).await;
-            }
             Some(command) = daemon_control_rx.recv() => {
-                match command {
-                    RuntimeDaemonControlCommand::ShutdownRequested { completion_tx } => {
-                        shutdown_completion_tx = Some(completion_tx);
-                    }
-                    RuntimeDaemonControlCommand::RestartRequested => {
-                        restart_requested = true;
-                    }
-                }
+                reset_runtime_turn_if_active(&mut context, "daemon control interrupt");
+                apply_daemon_control_command(
+                    command,
+                    &mut shutdown_completion_tx,
+                    &mut restart_requested,
+                );
                 break;
             }
             signal = tokio::signal::ctrl_c(), if !ctrl_c_disabled => {
                 match signal {
                     Ok(()) => {
                         tracing::info!("daemon received SIGINT, shutting down");
+                        reset_runtime_turn_if_active(&mut context, "SIGINT interrupt");
                         break;
                     }
                     Err(err) => {
                         tracing::warn!("ctrl_c listener failed: {err}");
+                        reset_runtime_turn_if_active(&mut context, "ctrl_c listener failure");
                         ctrl_c_disabled = true;
                     }
                 }
@@ -336,6 +345,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
                 #[cfg(not(unix))] { std::future::pending::<Option<()>>() }
             } => {
                 tracing::info!("daemon received SIGTERM, shutting down");
+                reset_runtime_turn_if_active(&mut context, "SIGTERM interrupt");
                 break;
             }
         }
@@ -368,6 +378,98 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         spawn_detached_daemon_process().await?;
     }
     Ok(())
+}
+
+struct BoundaryRuntimeControlDrain<'a> {
+    context: &'a mut Context,
+    tx: &'a tokio::sync::watch::Sender<DashboardState>,
+    sleep_result_tx: &'a tokio::sync::mpsc::UnboundedSender<SleepTaskResult>,
+    sleep_running: &'a mut bool,
+    sleep_status: &'a mut SleepStatusSnapshot,
+    dashboard_control_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<DashboardControlCommand>,
+    sleep_result_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<SleepTaskResult>,
+    daemon_control_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<RuntimeDaemonControlCommand>,
+    shutdown_completion_tx: &'a mut Option<tokio::sync::oneshot::Sender<()>>,
+    restart_requested: &'a mut bool,
+}
+
+impl BoundaryRuntimeControlDrain<'_> {
+    async fn drain(&mut self) -> bool {
+        loop {
+            if drain_daemon_control_commands(
+                self.daemon_control_rx,
+                self.shutdown_completion_tx,
+                self.restart_requested,
+            ) {
+                return true;
+            }
+
+            let mut drained = false;
+            while let Ok(result) = self.sleep_result_rx.try_recv() {
+                *self.sleep_running = false;
+                handle_sleep_task_result(self.context, self.tx, self.sleep_status, result).await;
+                drained = true;
+            }
+
+            while let Ok(command) = self.dashboard_control_rx.try_recv() {
+                handle_dashboard_control_command(
+                    self.context,
+                    self.tx,
+                    self.sleep_result_tx,
+                    self.sleep_running,
+                    self.sleep_status,
+                    command,
+                )
+                .await;
+                drained = true;
+                if drain_daemon_control_commands(
+                    self.daemon_control_rx,
+                    self.shutdown_completion_tx,
+                    self.restart_requested,
+                ) {
+                    return true;
+                }
+            }
+
+            if !drained {
+                return false;
+            }
+        }
+    }
+}
+
+fn drain_daemon_control_commands(
+    daemon_control_rx: &mut tokio::sync::mpsc::UnboundedReceiver<RuntimeDaemonControlCommand>,
+    shutdown_completion_tx: &mut Option<tokio::sync::oneshot::Sender<()>>,
+    restart_requested: &mut bool,
+) -> bool {
+    let mut should_stop = false;
+    while let Ok(command) = daemon_control_rx.try_recv() {
+        apply_daemon_control_command(command, shutdown_completion_tx, restart_requested);
+        should_stop = true;
+    }
+    should_stop
+}
+
+fn apply_daemon_control_command(
+    command: RuntimeDaemonControlCommand,
+    shutdown_completion_tx: &mut Option<tokio::sync::oneshot::Sender<()>>,
+    restart_requested: &mut bool,
+) {
+    match command {
+        RuntimeDaemonControlCommand::ShutdownRequested { completion_tx } => {
+            *shutdown_completion_tx = Some(completion_tx);
+        }
+        RuntimeDaemonControlCommand::RestartRequested => {
+            *restart_requested = true;
+        }
+    }
+}
+
+fn reset_runtime_turn_if_active(context: &mut Context, reason: &str) {
+    if context.active_runtime_turn {
+        reset_cancelled_runtime_turn(context, reason);
+    }
 }
 
 struct DaemonStartupFailureGuard {

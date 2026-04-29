@@ -40,7 +40,6 @@ pub(crate) async fn daat_locus_loop(
             .map(|started| started.elapsed() > stale_threshold)
             .unwrap_or(false);
         if is_stale {
-            recover_stale_runtime_turn_claims(context);
             tracing::warn!(
                 elapsed_secs = context
                     .runtime_turn_started_at
@@ -49,9 +48,7 @@ pub(crate) async fn daat_locus_loop(
                 threshold_secs = stale_threshold.as_secs(),
                 "stale active_runtime_turn detected (likely cancelled by tokio::select!); resetting"
             );
-            context.active_runtime_turn = false;
-            context.set_runtime_phase(None);
-            context.runtime_turn_started_at = None;
+            reset_cancelled_runtime_turn(context, "stale active_runtime_turn");
             // fall through to normal processing
         } else {
             let phase = context
@@ -256,6 +253,14 @@ fn recover_stale_runtime_turn_claims(context: &mut Context) {
     context.install_live_progress(None);
     context.current_work_origin = None;
     context.workflow_step_started_bound_id = None;
+}
+
+pub(crate) fn reset_cancelled_runtime_turn(context: &mut Context, reason: &str) {
+    recover_stale_runtime_turn_claims(context);
+    tracing::warn!(reason, "reset cancelled active runtime turn");
+    context.active_runtime_turn = false;
+    context.set_runtime_phase(None);
+    context.runtime_turn_started_at = None;
 }
 
 fn enqueue_app_notice_work(context: &mut Context) {

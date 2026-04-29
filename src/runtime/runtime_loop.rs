@@ -81,7 +81,7 @@ mod workflow_evidence;
 mod workspace_apps;
 
 pub(crate) use dashboard_control::handle_dashboard_control_command;
-pub(crate) use scheduler::daat_locus_loop;
+pub(crate) use scheduler::{daat_locus_loop, reset_cancelled_runtime_turn};
 pub(crate) use sleep_driver::{SleepTaskResult, handle_sleep_task_result};
 pub(crate) use turn::execute_agent_loop_step;
 pub(crate) use workflow_evidence::{AgentLoopStepExecution, AgentLoopStepOutput};
