@@ -266,46 +266,51 @@ impl RuntimeTool for ApplyPatchRuntimeTool {
     }
 
     fn description(&self) -> &str {
-        r#"Use `apply_patch` to edit files with unified diff format.
+        r#"Use `apply_patch` to edit files with apply_patch envelope format.
 
 Patch requirements:
-- Use standard unified diff file headers: `--- <old_path>` / `+++ <new_path>`
-- Every change block must include an `@@ ... @@` hunk header
-- Every hunk line must start with a space, `+`, or `-`
-- New files use `--- /dev/null` and `+++ <path>`
-- Deleted files use `--- <path>` and `+++ /dev/null`
+- The patch must start with `*** Begin Patch` and end with `*** End Patch`
+- Each file operation starts with `*** Add File: <path>`, `*** Delete File: <path>`, or `*** Update File: <path>`
+- New file content lines must start with `+`
+- Update hunks must start with `@@`; hunk lines must start with a space, `+`, or `-`
+- Paths may be workspace-relative or absolute paths allowed by the sandbox
+- Rename patches are not currently supported; express them as delete plus add
 
 Example:
---- a/src/app.py
-+++ b/src/app.py
-@@ -1,1 +1,1 @@
+*** Begin Patch
+*** Update File: src/app.py
+@@
 -print("Hi")
 +print("Hello, world!")
 
---- /dev/null
-+++ b/hello.txt
-@@ -0,0 +1 @@
+*** Add File: hello.txt
 +Hello world
+*** End Patch
 
 Notes:
-- Patches must use paths relative to the workspace
-- Rename patches are not currently supported; express them as delete plus add
-- Do not output explanation text; output only the complete unified diff"#
+- Unified diff input is still accepted for compatibility, but apply_patch envelope format is preferred
+- Do not output explanation text; output only the complete patch"#
     }
 
     fn input_spec(&self) -> AgentToolInputSpec {
         AgentToolInputSpec::FreeformGrammar {
-            syntax: "unified_diff".to_string(),
-            definition: r#"file_patch := file_header hunk+
-file_header := "--- " old_path LF "+++ " new_path LF
-hunk := "@@ " hunk_range " @@" [header] LF hunk_line+
-hunk_line := (" " | "+" | "-") text LF
-new_file := old_path == "/dev/null"
-deleted_file := new_path == "/dev/null""#
+            syntax: "lark".to_string(),
+            definition: r#"start: begin_patch file_op+ end_patch
+begin_patch: "*** Begin Patch" LF
+end_patch: "*** End Patch" LF?
+file_op: add_file | delete_file | update_file
+add_file: "*** Add File: " filename LF add_line+
+delete_file: "*** Delete File: " filename LF
+update_file: "*** Update File: " filename LF change
+filename: /(.+)/
+add_line: "+" /(.*)/ LF
+change: (change_context | change_line)+ eof_line?
+change_context: ("@@" | "@@ " /(.*)/) LF
+change_line: ("+" | "-" | " ") /(.*)/ LF
+eof_line: "*** End of File" LF
+LF: /\n/"#
                 .to_string(),
-            fallback_schema: freeform_string_fallback_schema(
-                "The entire contents of the unified diff",
-            ),
+            fallback_schema: freeform_string_fallback_schema("The entire contents of the patch"),
         }
     }
 
@@ -734,6 +739,23 @@ pub async fn execute_agent_tool_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_patch_tool_uses_lark_envelope_grammar() {
+        let spec = ApplyPatchRuntimeTool.spec();
+
+        match spec.input_spec {
+            AgentToolInputSpec::FreeformGrammar {
+                syntax, definition, ..
+            } => {
+                assert_eq!(syntax, "lark");
+                assert!(definition.contains("start: begin_patch file_op+ end_patch"));
+                assert!(definition.contains("*** Begin Patch"));
+                assert!(definition.contains("*** Update File: "));
+            }
+            AgentToolInputSpec::JsonSchema { .. } => panic!("expected freeform grammar"),
+        }
+    }
 
     #[test]
     fn workflow_selection_phase_exposes_only_binding_tools() {

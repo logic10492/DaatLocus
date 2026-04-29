@@ -113,6 +113,11 @@ pub(crate) struct PatchPreviewFile {
 }
 
 pub(crate) fn parse_apply_patch(patch_text: &str) -> Result<Vec<PatchOp>> {
+    let trimmed = trim_surrounding_empty_lines(patch_text);
+    if trimmed.starts_with("*** Begin Patch") {
+        return parse_envelope_apply_patch(trimmed);
+    }
+
     let file_blocks = collect_unified_diff_file_blocks(patch_text)?;
     let mut ops = Vec::new();
     for file_block in file_blocks {
@@ -157,9 +162,31 @@ pub(crate) fn parse_apply_patch(patch_text: &str) -> Result<Vec<PatchOp>> {
     Ok(ops)
 }
 
+fn trim_surrounding_empty_lines(text: &str) -> &str {
+    text.trim_matches(|ch| matches!(ch, '\n' | '\r'))
+}
+
 pub(crate) fn summarize_apply_patch_error(message: &str) -> String {
+    if message.contains("apply_patch envelope input must start") {
+        return "patch must start with `*** Begin Patch` and end with `*** End Patch`".to_string();
+    }
+    if message.contains("apply_patch envelope line after") {
+        return "each patch operation must start with `*** Add File:`, `*** Delete File:`, or `*** Update File:`".to_string();
+    }
+    if message.contains("envelope add file patch") {
+        return "new file lines in apply_patch envelope format must start with `+`".to_string();
+    }
+    if message.contains("envelope update patch") {
+        return "update hunks in apply_patch envelope format must start with `@@`, followed by lines beginning with space, `+`, or `-`".to_string();
+    }
+    if message.contains("Move to") {
+        return "rename patches are not supported; use a separate delete and add".to_string();
+    }
+    if message.contains("Hunk header does not match hunk") {
+        return "unified diff hunk line counts do not match; use `*** Begin Patch` format or correct the `@@ -old,+new @@` counts".to_string();
+    }
     if message.contains("expects unified diff input") {
-        return "patch must use unified diff format and include `---`, `+++`, and `@@`".to_string();
+        return "patch must use `*** Begin Patch` format, or unified diff format with `---`, `+++`, and `@@`".to_string();
     }
     if message.contains("must contain `--- <path>`") {
         return "each file patch must start with `--- <path>`".to_string();
@@ -193,6 +220,181 @@ pub(crate) fn summarize_apply_patch_error(message: &str) -> String {
         return "patch context is too small; old text matched multiple locations. Provide more context".to_string();
     }
     message.to_string()
+}
+
+fn parse_envelope_apply_patch(patch_text: &str) -> Result<Vec<PatchOp>> {
+    let lines = patch_text.lines().collect::<Vec<_>>();
+    if lines.first().copied() != Some("*** Begin Patch")
+        || lines.last().copied() != Some("*** End Patch")
+    {
+        return Err(miette!(
+            "apply_patch envelope input must start with `*** Begin Patch` and end with `*** End Patch`"
+        ));
+    }
+
+    let mut ops = Vec::new();
+    let mut index = 1usize;
+    let end_index = lines.len() - 1;
+    while index < end_index {
+        let line = lines[index];
+        if line.trim().is_empty() {
+            index += 1;
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            let path = normalize_envelope_patch_path(path, "add file")?;
+            index += 1;
+            let mut added_lines = Vec::new();
+            while index < end_index && !is_envelope_operation_header(lines[index]) {
+                let add_line = lines[index];
+                let Some(text) = add_line.strip_prefix('+') else {
+                    return Err(miette!(
+                        "envelope add file patch for `{path}` has a line that does not start with `+`"
+                    ));
+                };
+                added_lines.push(text.to_string());
+                index += 1;
+            }
+            if added_lines.is_empty() {
+                return Err(miette!(
+                    "envelope add file patch for `{path}` must contain at least one `+` line"
+                ));
+            }
+            ops.push(PatchOp::Add {
+                path,
+                lines: added_lines,
+            });
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            let path = normalize_envelope_patch_path(path, "delete file")?;
+            index += 1;
+            if index < end_index
+                && !lines[index].trim().is_empty()
+                && !is_envelope_operation_header(lines[index])
+            {
+                return Err(miette!(
+                    "envelope delete file patch for `{path}` must not contain hunk lines"
+                ));
+            }
+            ops.push(PatchOp::Delete { path });
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            let path = normalize_envelope_patch_path(path, "update file")?;
+            index += 1;
+            if index < end_index && lines[index].starts_with("*** Move to: ") {
+                return Err(miette!(
+                    "`*** Move to:` rename patches are not currently supported"
+                ));
+            }
+            let (hunks, next_index) = parse_envelope_update_hunks(&lines, index, end_index, &path)?;
+            if hunks.is_empty() {
+                return Err(miette!(
+                    "envelope update patch for `{path}` must contain at least one `@@` hunk"
+                ));
+            }
+            ops.push(PatchOp::Update { path, hunks });
+            index = next_index;
+            continue;
+        }
+        return Err(miette!(
+            "apply_patch envelope line after `*** Begin Patch` is not an operation header: {line}"
+        ));
+    }
+
+    if ops.is_empty() {
+        return Err(miette!(
+            "apply_patch envelope input contains no file operations"
+        ));
+    }
+    Ok(ops)
+}
+
+fn normalize_envelope_patch_path(raw_path: &str, operation: &str) -> Result<String> {
+    let path = raw_path.trim();
+    if path.is_empty() {
+        return Err(miette!("envelope {operation} patch is missing a path"));
+    }
+    Ok(path
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(path)
+        .to_string())
+}
+
+fn is_envelope_operation_header(line: &str) -> bool {
+    line.starts_with("*** Add File: ")
+        || line.starts_with("*** Delete File: ")
+        || line.starts_with("*** Update File: ")
+}
+
+fn parse_envelope_update_hunks(
+    lines: &[&str],
+    mut index: usize,
+    end_index: usize,
+    path: &str,
+) -> Result<(Vec<PatchHunk>, usize)> {
+    let mut hunks = Vec::new();
+    let mut current_hunk: Option<PatchHunk> = None;
+
+    while index < end_index {
+        let line = lines[index];
+        if is_envelope_operation_header(line) {
+            break;
+        }
+        if line.starts_with("@@") {
+            if let Some(hunk) = current_hunk.take() {
+                if hunk.lines.is_empty() {
+                    return Err(miette!(
+                        "envelope update patch for `{path}` contains an empty hunk"
+                    ));
+                }
+                hunks.push(hunk);
+            }
+            current_hunk = Some(PatchHunk::default());
+            index += 1;
+            continue;
+        }
+        if line == "*** End of File" {
+            index += 1;
+            continue;
+        }
+
+        let Some(hunk) = current_hunk.as_mut() else {
+            return Err(miette!(
+                "envelope update patch for `{path}` has change lines before an `@@` hunk header"
+            ));
+        };
+        let Some(prefix) = line.chars().next() else {
+            return Err(miette!(
+                "envelope update patch for `{path}` contains an empty change line"
+            ));
+        };
+        let text = line[prefix.len_utf8()..].to_string();
+        let kind = match prefix {
+            ' ' => PatchHunkLineKind::Context,
+            '-' => PatchHunkLineKind::Delete,
+            '+' => PatchHunkLineKind::Add,
+            _ => {
+                return Err(miette!(
+                    "envelope update patch for `{path}` has a hunk line that does not start with space, `+`, or `-`"
+                ));
+            }
+        };
+        hunk.lines.push(PatchHunkLine { kind, text });
+        index += 1;
+    }
+
+    if let Some(hunk) = current_hunk {
+        if hunk.lines.is_empty() {
+            return Err(miette!(
+                "envelope update patch for `{path}` contains an empty hunk"
+            ));
+        }
+        hunks.push(hunk);
+    }
+    Ok((hunks, index))
 }
 
 enum UnifiedFilePatchKind {
@@ -390,17 +592,10 @@ pub(crate) fn summarize_patch_ops(ops: &[PatchOp]) -> ApplyPatchSummary {
     summary
 }
 
-fn resolve_relative_path_within_root(
-    root: &Path,
-    relative_path: &str,
-    caller: &str,
-) -> Result<PathBuf> {
-    let candidate = Path::new(relative_path);
+fn resolve_patch_path(root: &Path, patch_path: &str, caller: &str) -> Result<PathBuf> {
+    let candidate = Path::new(patch_path);
     if candidate.is_absolute() {
-        return Err(miette!(
-            "{caller} requires a workspace-relative path, got absolute path: {}",
-            candidate.display(),
-        ));
+        return Ok(crate::sandbox::normalize_path(candidate));
     }
     if candidate
         .components()
@@ -448,7 +643,7 @@ fn find_unique_hunk_start(haystack: &[String], needle: &[String], offset: usize)
 }
 
 async fn read_lines_for_preview(root: &Path, path: &str, caller: &str) -> Result<Vec<String>> {
-    let file_path = resolve_relative_path_within_root(root, path, caller)?;
+    let file_path = resolve_patch_path(root, path, caller)?;
     let content = tokio::fs::read_to_string(&file_path)
         .await
         .map_err(|err| miette!("failed to read {}: {err}", file_path.display()))?;
@@ -595,7 +790,7 @@ pub(crate) async fn apply_patch_in_root(
     for op in ops {
         match op {
             PatchOp::Add { path, lines } => {
-                let file_path = resolve_relative_path_within_root(root, &path, "apply_patch add")?;
+                let file_path = resolve_patch_path(root, &path, "apply_patch add")?;
                 sandbox_policy.ensure_path_writable(&file_path, "apply_patch add target")?;
                 if tokio::fs::try_exists(&file_path)
                     .await
@@ -618,8 +813,7 @@ pub(crate) async fn apply_patch_in_root(
                 applied_files.push(path);
             }
             PatchOp::Delete { path } => {
-                let file_path =
-                    resolve_relative_path_within_root(root, &path, "apply_patch delete")?;
+                let file_path = resolve_patch_path(root, &path, "apply_patch delete")?;
                 sandbox_policy.ensure_path_readable(&file_path, "apply_patch delete target")?;
                 sandbox_policy.ensure_path_writable(&file_path, "apply_patch delete target")?;
                 let removed_lines = tokio::fs::read_to_string(&file_path)
@@ -640,8 +834,7 @@ pub(crate) async fn apply_patch_in_root(
                 applied_files.push(path);
             }
             PatchOp::Update { path, hunks } => {
-                let file_path =
-                    resolve_relative_path_within_root(root, &path, "apply_patch update")?;
+                let file_path = resolve_patch_path(root, &path, "apply_patch update")?;
                 sandbox_policy.ensure_path_readable(&file_path, "apply_patch update target")?;
                 sandbox_policy.ensure_path_writable(&file_path, "apply_patch update target")?;
                 let original = tokio::fs::read_to_string(&file_path)
@@ -704,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_apply_patch_rejects_legacy_patch_grammar() {
+    fn parse_apply_patch_accepts_envelope_update_without_hunk_counts() {
         let patch = "\
 *** Begin Patch
 *** Update File: src.txt
@@ -712,16 +905,41 @@ mod tests {
 -old
 +new
 *** End Patch";
-        let error = match parse_apply_patch(patch) {
-            Ok(_) => panic!("legacy grammar should fail"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("unified diff must contain `--- <path>`"),
-            "unexpected error: {error}"
-        );
+        let ops = parse_apply_patch(patch).expect("parse envelope patch");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            PatchOp::Update { path, hunks } => {
+                assert_eq!(path, "src.txt");
+                assert_eq!(hunks.len(), 1);
+                assert_eq!(hunks[0].removed_lines(), 1);
+                assert_eq!(hunks[0].added_lines(), 1);
+            }
+            _ => panic!("expected update op"),
+        }
+    }
+
+    #[test]
+    fn parse_apply_patch_accepts_envelope_add_and_delete() {
+        let patch = "\
+*** Begin Patch
+*** Add File: new.txt
++hello
++world
+*** Delete File: old.txt
+*** End Patch";
+        let ops = parse_apply_patch(patch).expect("parse envelope patch");
+        assert_eq!(ops.len(), 2);
+        match &ops[0] {
+            PatchOp::Add { path, lines } => {
+                assert_eq!(path, "new.txt");
+                assert_eq!(lines, &["hello".to_string(), "world".to_string()]);
+            }
+            _ => panic!("expected add op"),
+        }
+        match &ops[1] {
+            PatchOp::Delete { path } => assert_eq!(path, "old.txt"),
+            _ => panic!("expected delete op"),
+        }
     }
 
     #[tokio::test]
@@ -783,6 +1001,38 @@ mod tests {
                     "gamma".to_string(),
                 ),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_in_root_accepts_absolute_envelope_path() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let file_path = tempdir.path().join("src.txt");
+        tokio::fs::write(&file_path, "old\n")
+            .await
+            .expect("write fixture");
+
+        let patch = format!(
+            "\
+*** Begin Patch
+*** Update File: {}
+@@
+-old
++new
+*** End Patch",
+            file_path.display()
+        );
+
+        let summary =
+            apply_patch_in_root(tempdir.path(), &RuntimeSandboxPolicy::disabled(), &patch)
+                .await
+                .expect("apply patch");
+        assert_eq!(summary.changed_files, 1);
+        assert_eq!(
+            tokio::fs::read_to_string(&file_path)
+                .await
+                .expect("read file"),
+            "new\n"
         );
     }
 
