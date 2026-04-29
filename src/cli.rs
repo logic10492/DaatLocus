@@ -357,10 +357,11 @@ async fn run_daemon_restart_command() -> Result<()> {
     let locale = configured_locale().await;
     if let Ok(client) = connect_existing_daemon().await {
         let port = client.port();
-        client.shutdown().await?;
+        client.restart().await?;
         wait_for_daemon_shutdown(port).await?;
+    } else {
+        spawn_detached_daemon_process().await?;
     }
-    spawn_detached_daemon_process().await?;
     let status = wait_for_daemon_ready().await?;
     println!(
         "{}",

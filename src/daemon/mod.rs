@@ -173,6 +173,7 @@ pub struct CommandResponse {
 #[derive(Debug)]
 pub enum DaemonControlCommand {
     ShutdownRequested { completion_tx: oneshot::Sender<()> },
+    RestartRequested,
 }
 
 #[derive(Clone)]
@@ -340,6 +341,7 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
         .route("/dashboard/stream", get(stream_handler))
         .route("/commands/run", post(command_handler))
         .route("/daemon/shutdown", post(shutdown_handler))
+        .route("/daemon/restart", post(restart_handler))
         .with_state(app_state.clone());
 
     let join = tokio::spawn(async move {
@@ -439,6 +441,24 @@ async fn shutdown_handler(
         Ok(()) => StatusCode::OK.into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
+}
+
+async fn restart_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    state.lifecycle.mark_stopping();
+    if state
+        .daemon_control_tx
+        .send(DaemonControlCommand::RestartRequested)
+        .is_err()
+    {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    (StatusCode::ACCEPTED, "daemon restart scheduled").into_response()
 }
 
 fn runtime_not_ready_response(state: DaemonLifecycleState) -> axum::response::Response {
@@ -590,6 +610,19 @@ impl DaemonClient {
         .map_err(|err| miette!("daemon shutdown request failed: {err}"))?
         .error_for_status()
         .map_err(|err| miette!("daemon shutdown returned error: {err}"))?;
+        Ok(())
+    }
+
+    pub async fn restart(&self) -> Result<()> {
+        self.with_auth(
+            self.http
+                .post(format!("{}/daemon/restart", self.base_url())),
+        )?
+        .send()
+        .await
+        .map_err(|err| miette!("daemon restart request failed: {err}"))?
+        .error_for_status()
+        .map_err(|err| miette!("daemon restart returned error: {err}"))?;
         Ok(())
     }
 

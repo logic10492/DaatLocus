@@ -5,7 +5,8 @@ use crate::{
     context::Context,
     daemon::{
         DaemonControlCommand as RuntimeDaemonControlCommand, DaemonLifecycleHandle,
-        DaemonLifecycleState, DaemonLock, DaemonServerStartParams, start_server,
+        DaemonLifecycleState, DaemonLock, DaemonServerStartParams, spawn_detached_daemon_process,
+        start_server,
     },
     dashboard::render::{
         render_activity_for_dashboard, render_app_status_outputs_for_dashboard,
@@ -281,6 +282,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     let mut sleep_running = sleep_status.running;
     let mut shutdown_completion_tx = None;
     let mut ctrl_c_disabled = false;
+    let mut restart_requested = false;
     loop {
         tokio::select! {
             _ = daat_locus_loop(
@@ -305,8 +307,15 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
                 sleep_running = false;
                 handle_sleep_task_result(&mut context, &tx, &mut sleep_status, result).await;
             }
-            Some(RuntimeDaemonControlCommand::ShutdownRequested { completion_tx }) = daemon_control_rx.recv() => {
-                shutdown_completion_tx = Some(completion_tx);
+            Some(command) = daemon_control_rx.recv() => {
+                match command {
+                    RuntimeDaemonControlCommand::ShutdownRequested { completion_tx } => {
+                        shutdown_completion_tx = Some(completion_tx);
+                    }
+                    RuntimeDaemonControlCommand::RestartRequested => {
+                        restart_requested = true;
+                    }
+                }
                 break;
             }
             signal = tokio::signal::ctrl_c(), if !ctrl_c_disabled => {
@@ -354,6 +363,9 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     }
     let _ = server_shutdown_tx.send(());
     daemon_server.shutdown().await;
+    if restart_requested {
+        spawn_detached_daemon_process().await?;
+    }
     Ok(())
 }
 
