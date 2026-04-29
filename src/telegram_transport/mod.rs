@@ -46,6 +46,7 @@ impl TelegramTransport {
         command_state_rx: watch::Receiver<DashboardState>,
         command_control_tx: mpsc::UnboundedSender<DashboardControlCommand>,
     ) -> Self {
+        let offset = handle.next_update_offset();
         Self {
             client: Client::new(),
             config,
@@ -55,7 +56,7 @@ impl TelegramTransport {
             pending_work,
             command_state_rx,
             command_control_tx,
-            offset: None,
+            offset,
             bot_username: None,
             commands_registered: false,
         }
@@ -80,8 +81,21 @@ impl TelegramTransport {
             updates = self.get_updates() => {
                 let updates = updates?;
                 for update in updates {
-                    self.offset = Some(update.update_id + 1);
+                    let next_offset = update.update_id + 1;
+                    self.offset = Some(next_offset);
+                    let persist_before_handling = should_persist_update_offset_before_handling(
+                        &update,
+                        self.bot_username.as_deref(),
+                    );
+                    if persist_before_handling {
+                        // Bot commands such as /restart can stop the daemon before
+                        // the next poll confirms the update with Telegram.
+                        self.store_next_update_offset(next_offset);
+                    }
                     self.handle_update(update).await;
+                    if !persist_before_handling {
+                        self.store_next_update_offset(next_offset);
+                    }
                 }
                 self.flush_outbox().await?;
             }
@@ -90,6 +104,12 @@ impl TelegramTransport {
             }
         }
         Ok(())
+    }
+
+    fn store_next_update_offset(&self, offset: i64) {
+        if let Err(err) = self.handle.store_next_update_offset(offset) {
+            tracing::error!("persist telegram update offset failed: {err:?}");
+        }
     }
 
     async fn sync_bot_commands(&mut self) -> Result<()> {
@@ -829,63 +849,61 @@ fn push_telegram_pre(rendered: &mut String, language: Option<&str>, code: &str) 
 fn render_inline_markdown_as_telegram_html(text: &str, rendered: &mut String) {
     let mut rest = text;
     while !rest.is_empty() {
-        if let Some(code) = rest.strip_prefix('`') {
-            if let Some(end) = code.find('`') {
-                rendered.push_str("<code>");
-                escape_telegram_html_into(&code[..end], rendered);
-                rendered.push_str("</code>");
-                rest = &code[end + 1..];
-                continue;
-            }
+        if let Some(code) = rest.strip_prefix('`')
+            && let Some(end) = code.find('`')
+        {
+            rendered.push_str("<code>");
+            escape_telegram_html_into(&code[..end], rendered);
+            rendered.push_str("</code>");
+            rest = &code[end + 1..];
+            continue;
         }
-        if let Some(bold) = rest.strip_prefix("**") {
-            if let Some(end) = bold.find("**") {
-                rendered.push_str("<b>");
-                render_inline_markdown_as_telegram_html(&bold[..end], rendered);
-                rendered.push_str("</b>");
-                rest = &bold[end + 2..];
-                continue;
-            }
+        if let Some(bold) = rest.strip_prefix("**")
+            && let Some(end) = bold.find("**")
+        {
+            rendered.push_str("<b>");
+            render_inline_markdown_as_telegram_html(&bold[..end], rendered);
+            rendered.push_str("</b>");
+            rest = &bold[end + 2..];
+            continue;
         }
-        if let Some(strong) = rest.strip_prefix("__") {
-            if let Some(end) = strong.find("__") {
-                rendered.push_str("<b>");
-                render_inline_markdown_as_telegram_html(&strong[..end], rendered);
-                rendered.push_str("</b>");
-                rest = &strong[end + 2..];
-                continue;
-            }
+        if let Some(strong) = rest.strip_prefix("__")
+            && let Some(end) = strong.find("__")
+        {
+            rendered.push_str("<b>");
+            render_inline_markdown_as_telegram_html(&strong[..end], rendered);
+            rendered.push_str("</b>");
+            rest = &strong[end + 2..];
+            continue;
         }
-        if let Some(strike) = rest.strip_prefix("~~") {
-            if let Some(end) = strike.find("~~") {
-                rendered.push_str("<s>");
-                render_inline_markdown_as_telegram_html(&strike[..end], rendered);
-                rendered.push_str("</s>");
-                rest = &strike[end + 2..];
-                continue;
-            }
+        if let Some(strike) = rest.strip_prefix("~~")
+            && let Some(end) = strike.find("~~")
+        {
+            rendered.push_str("<s>");
+            render_inline_markdown_as_telegram_html(&strike[..end], rendered);
+            rendered.push_str("</s>");
+            rest = &strike[end + 2..];
+            continue;
         }
-        if let Some(italic) = rest.strip_prefix('*') {
-            if !italic.starts_with('*')
-                && let Some(end) = italic.find('*')
-            {
-                rendered.push_str("<i>");
-                render_inline_markdown_as_telegram_html(&italic[..end], rendered);
-                rendered.push_str("</i>");
-                rest = &italic[end + 1..];
-                continue;
-            }
+        if let Some(italic) = rest.strip_prefix('*')
+            && !italic.starts_with('*')
+            && let Some(end) = italic.find('*')
+        {
+            rendered.push_str("<i>");
+            render_inline_markdown_as_telegram_html(&italic[..end], rendered);
+            rendered.push_str("</i>");
+            rest = &italic[end + 1..];
+            continue;
         }
-        if let Some(italic) = rest.strip_prefix('_') {
-            if !italic.starts_with('_')
-                && let Some(end) = italic.find('_')
-            {
-                rendered.push_str("<i>");
-                render_inline_markdown_as_telegram_html(&italic[..end], rendered);
-                rendered.push_str("</i>");
-                rest = &italic[end + 1..];
-                continue;
-            }
+        if let Some(italic) = rest.strip_prefix('_')
+            && !italic.starts_with('_')
+            && let Some(end) = italic.find('_')
+        {
+            rendered.push_str("<i>");
+            render_inline_markdown_as_telegram_html(&italic[..end], rendered);
+            rendered.push_str("</i>");
+            rest = &italic[end + 1..];
+            continue;
         }
 
         let ch = rest.chars().next().expect("non-empty rest has char");
@@ -958,6 +976,17 @@ fn normalize_telegram_command(
     })
 }
 
+fn should_persist_update_offset_before_handling(
+    update: &TelegramUpdate,
+    bot_username: Option<&str>,
+) -> bool {
+    update
+        .message
+        .as_ref()
+        .and_then(|message| extract_telegram_command(message, bot_username))
+        .is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -970,6 +999,23 @@ mod tests {
             first_name: Some("Ada".to_string()),
             last_name: None,
             username: None,
+        }
+    }
+
+    fn text_message(
+        text: &str,
+        entities: Option<Vec<TelegramMessageEntity>>,
+    ) -> TelegramIncomingMessage {
+        TelegramIncomingMessage {
+            message_id: Some(7),
+            date: Some(123),
+            chat: private_chat(),
+            from: None,
+            text: Some(text.to_string()),
+            entities,
+            caption: None,
+            caption_entities: None,
+            photo: None,
         }
     }
 
@@ -1000,6 +1046,33 @@ mod tests {
                 },
             ]),
         }
+    }
+
+    #[test]
+    fn command_updates_persist_offset_before_handling() {
+        let update = TelegramUpdate {
+            update_id: 99,
+            message: Some(text_message(
+                "/restart",
+                Some(vec![TelegramMessageEntity {
+                    kind: "bot_command".to_string(),
+                    offset: 0,
+                    length: "/restart".len(),
+                }]),
+            )),
+        };
+
+        assert!(should_persist_update_offset_before_handling(&update, None));
+    }
+
+    #[test]
+    fn normal_messages_persist_offset_after_handling() {
+        let update = TelegramUpdate {
+            update_id: 99,
+            message: Some(text_message("restart", None)),
+        };
+
+        assert!(!should_persist_update_offset_before_handling(&update, None));
     }
 
     #[test]

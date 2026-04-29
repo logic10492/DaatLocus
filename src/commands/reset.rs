@@ -106,7 +106,12 @@ pub async fn run_state_reset() -> Result<()> {
 
 async fn clear_state_files(home: &Path) -> Result<Vec<String>> {
     let paths = DaatLocusPaths::from_root(home.to_path_buf());
-    let files = ["events", "pending_work_queue", "telegram_transport_state"];
+    let files = [
+        "events",
+        "pending_work_queue",
+        "telegram_transport_state",
+        "telegram_update_offset",
+    ];
     clear_named_files(paths.state_dir(), &files).await
 }
 

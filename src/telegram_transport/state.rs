@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::{events::EventStatus, persistence::PersistenceStore};
 
 const TELEGRAM_TRANSPORT_STATE_FILE_NAME: &str = "telegram_transport_state";
+const TELEGRAM_UPDATE_OFFSET_STATE_FILE_NAME: &str = "telegram_update_offset";
 const TELEGRAM_MESSAGE_CHAR_LIMIT: usize = 4096;
 const TELEGRAM_CHUNK_BODY_CHAR_LIMIT: usize = 3900;
 
@@ -22,8 +23,10 @@ pub struct TelegramTransportState {
 
 struct TelegramInner {
     state: Mutex<TelegramState>,
+    update_offset: Mutex<Option<i64>>,
     outbound_notify: Notify,
     persistence_path: PathBuf,
+    update_offset_path: PathBuf,
 }
 
 #[derive(Default)]
@@ -38,6 +41,11 @@ struct PersistedTelegramState {
     order: Vec<String>,
     chats: HashMap<String, PersistedTelegramChat>,
     outbox: VecDeque<PendingOutboundMessage>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct PersistedTelegramUpdateOffset {
+    next_update_offset: Option<i64>,
 }
 
 struct TelegramChat {
@@ -83,8 +91,10 @@ impl TelegramTransportState {
         Self {
             inner: Arc::new(TelegramInner {
                 state: Mutex::new(state),
+                update_offset: Mutex::new(load_telegram_update_offset()),
                 outbound_notify: Notify::new(),
                 persistence_path: telegram_transport_state_path(),
+                update_offset_path: telegram_update_offset_state_path(),
             }),
         }
     }
@@ -97,6 +107,19 @@ impl TelegramTransportState {
 }
 
 impl TelegramTransportStateHandle {
+    pub fn next_update_offset(&self) -> Option<i64> {
+        *self.inner.update_offset.lock()
+    }
+
+    pub fn store_next_update_offset(&self, offset: i64) -> Result<()> {
+        let mut next_update_offset = self.inner.update_offset.lock();
+        if next_update_offset.is_none_or(|current| offset > current) {
+            *next_update_offset = Some(offset);
+            persist_telegram_update_offset_result(&self.inner, *next_update_offset)?;
+        }
+        Ok(())
+    }
+
     pub fn register_known_chat(&self, chat_id: impl Into<String>, chat_title: impl Into<String>) {
         let chat_id = chat_id.into();
         let mut state = self.inner.state.lock();
@@ -370,6 +393,10 @@ fn telegram_transport_state_path() -> PathBuf {
     PersistenceStore::runtime_sync().state_file(TELEGRAM_TRANSPORT_STATE_FILE_NAME)
 }
 
+fn telegram_update_offset_state_path() -> PathBuf {
+    PersistenceStore::runtime_sync().state_file(TELEGRAM_UPDATE_OFFSET_STATE_FILE_NAME)
+}
+
 fn load_telegram_state() -> TelegramState {
     let persisted: PersistedTelegramState = PersistenceStore::runtime_sync()
         .read_postcard_state_or_default_sync(
@@ -377,6 +404,15 @@ fn load_telegram_state() -> TelegramState {
             "telegram transport state",
         );
     persisted.into()
+}
+
+fn load_telegram_update_offset() -> Option<i64> {
+    let persisted: PersistedTelegramUpdateOffset = PersistenceStore::runtime_sync()
+        .read_postcard_state_or_default_sync(
+            TELEGRAM_UPDATE_OFFSET_STATE_FILE_NAME,
+            "telegram update offset",
+        );
+    persisted.next_update_offset
 }
 
 fn persist_telegram_state(inner: &TelegramInner, state: &TelegramState) {
@@ -389,6 +425,13 @@ fn persist_telegram_state_result(inner: &TelegramInner, state: &TelegramState) -
     persist_telegram_state_bytes(&inner.persistence_path, state)
 }
 
+fn persist_telegram_update_offset_result(
+    inner: &TelegramInner,
+    next_update_offset: Option<i64>,
+) -> Result<()> {
+    persist_telegram_update_offset_bytes(&inner.update_offset_path, next_update_offset)
+}
+
 fn persist_telegram_state_bytes(path: &Path, state: &TelegramState) -> Result<()> {
     crate::persistence::write_postcard_atomic_sync(
         path,
@@ -396,6 +439,18 @@ fn persist_telegram_state_bytes(path: &Path, state: &TelegramState) -> Result<()
         crate::persistence::PersistenceFileMode::Default,
     )
     .map_err(|err| miette!("write telegram transport state failed: {err}"))
+}
+
+fn persist_telegram_update_offset_bytes(
+    path: &Path,
+    next_update_offset: Option<i64>,
+) -> Result<()> {
+    crate::persistence::write_postcard_atomic_sync(
+        path,
+        &PersistedTelegramUpdateOffset { next_update_offset },
+        crate::persistence::PersistenceFileMode::Default,
+    )
+    .map_err(|err| miette!("write telegram update offset failed: {err}"))
 }
 
 #[cfg(test)]
@@ -463,6 +518,32 @@ mod tests {
     }
 
     #[test]
+    fn telegram_update_offset_persists_monotonically() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let transport = TelegramTransportState {
+            inner: Arc::new(TelegramInner {
+                state: Mutex::new(TelegramState::default()),
+                update_offset: Mutex::new(None),
+                outbound_notify: Notify::new(),
+                persistence_path: dir.path().join("telegram_state"),
+                update_offset_path: dir.path().join("telegram_update_offset"),
+            }),
+        };
+        let handle = transport.handle();
+
+        handle.store_next_update_offset(42).expect("store offset");
+        handle
+            .store_next_update_offset(40)
+            .expect("ignore older offset");
+
+        assert_eq!(handle.next_update_offset(), Some(42));
+        let bytes = std::fs::read(dir.path().join("telegram_update_offset")).expect("read offset");
+        let persisted: PersistedTelegramUpdateOffset =
+            postcard::from_bytes(&bytes).expect("decode offset");
+        assert_eq!(persisted.next_update_offset, Some(42));
+    }
+
+    #[test]
     fn short_telegram_message_is_not_chunked() {
         let chunks = split_telegram_message_text("hello");
         assert_eq!(chunks, vec!["hello".to_string()]);
@@ -501,8 +582,10 @@ mod tests {
         let transport = TelegramTransportState {
             inner: Arc::new(TelegramInner {
                 state: Mutex::new(TelegramState::default()),
+                update_offset: Mutex::new(None),
                 outbound_notify: Notify::new(),
                 persistence_path: dir.path().join("telegram_state"),
+                update_offset_path: dir.path().join("telegram_update_offset"),
             }),
         };
         let handle = transport.handle();
@@ -543,8 +626,10 @@ mod tests {
         let transport = TelegramTransportState {
             inner: Arc::new(TelegramInner {
                 state: Mutex::new(TelegramState::default()),
+                update_offset: Mutex::new(None),
                 outbound_notify: Notify::new(),
                 persistence_path: dir.path().join("telegram_state"),
+                update_offset_path: dir.path().join("telegram_update_offset"),
             }),
         };
         let handle = transport.handle();
