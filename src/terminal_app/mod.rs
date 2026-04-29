@@ -570,6 +570,9 @@ fn spawn_terminal_process(
 }
 
 fn command_mentions_protected_paths(context: &AppToolExecutionContext, text: &str) -> bool {
+    if context.sandbox_policy.is_disabled() {
+        return false;
+    }
     let lowered = text.to_ascii_lowercase();
     if lowered.contains(".daat-locus") {
         return true;
