@@ -817,7 +817,7 @@ fn base_responses_payload(
         "store": false,
         "stream": true,
         "include": [],
-        "prompt_cache_key": Uuid::new_v4().to_string(),
+        "prompt_cache_key": prompt_cache_key(client),
         "client_metadata": {
             "x-codex-installation-id": client.installation_id,
         },
@@ -826,6 +826,10 @@ fn base_responses_payload(
         payload["reasoning"] = json!({ "effort": effort });
     }
     payload
+}
+
+fn prompt_cache_key(client: &CodexResponsesClient) -> String {
+    format!("daat-locus-{}", client.installation_id)
 }
 
 fn build_compatible_chat_responses_payload(
@@ -1811,6 +1815,91 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("syntax=unified_diff")
+        );
+    }
+
+    #[test]
+    fn agent_payload_prompt_cache_key_is_stable_for_client() {
+        let client = test_client();
+        let request = AgentTurnRequest {
+            messages: vec![AgentMessage::system("base"), AgentMessage::user("work")],
+            tools: Vec::new(),
+        };
+
+        let first = build_agent_responses_payload(&client, request.clone());
+        let second = build_agent_responses_payload(&client, request);
+
+        assert_eq!(first["prompt_cache_key"], second["prompt_cache_key"]);
+        assert_eq!(
+            first["prompt_cache_key"],
+            format!("daat-locus-{}", client.installation_id)
+        );
+    }
+
+    #[test]
+    fn agent_payload_keeps_previous_turn_input_as_next_prefix() {
+        let client = test_client();
+        let tools = vec![crate::reasoning::runtime::AgentToolSpec {
+            name: "terminal_exec".to_string(),
+            description: "Run a command".to_string(),
+            input_spec: AgentToolInputSpec::JsonSchema {
+                schema: json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                    "additionalProperties": false
+                }),
+            },
+        }];
+        let first_messages = vec![
+            AgentMessage::system("stable runtime instructions"),
+            AgentMessage::user("<afterclaim_context>claimed input</afterclaim_context>"),
+            AgentMessage::user("<preturn_context>state one</preturn_context>"),
+        ];
+        let mut second_messages = first_messages.clone();
+        second_messages.push(AgentMessage::assistant_tool_call_protocol_with_reasoning(
+            None,
+            None,
+            vec![AgentToolCall {
+                id: "call-1".to_string(),
+                name: "terminal_exec".to_string(),
+                arguments: json!({"command": "pwd"}),
+            }],
+        ));
+        second_messages.push(AgentMessage::tool(
+            "call-1",
+            "terminal_exec",
+            "summary=ran pwd",
+        ));
+        second_messages.push(AgentMessage::user(
+            "<preturn_context>state two</preturn_context>",
+        ));
+
+        let first = build_agent_responses_payload(
+            &client,
+            AgentTurnRequest {
+                messages: first_messages,
+                tools: tools.clone(),
+            },
+        );
+        let second = build_agent_responses_payload(
+            &client,
+            AgentTurnRequest {
+                messages: second_messages,
+                tools,
+            },
+        );
+
+        let first_input = first["input"].as_array().expect("first input");
+        let second_input = second["input"].as_array().expect("second input");
+        assert_eq!(first["instructions"], second["instructions"]);
+        assert_eq!(first["tools"], second["tools"]);
+        assert!(second_input.starts_with(first_input));
+        assert_eq!(
+            second_input
+                .last()
+                .and_then(|value| value.pointer("/content/0/text")),
+            Some(&json!("<preturn_context>state two</preturn_context>"))
         );
     }
 
