@@ -8,4 +8,4 @@
 /assets/hindsight-sidecars/*.zip
 /assets/hindsight-sidecars/manifest.toml
 # Yarn local install state
-/.yarn/install-state.gz
+/webui/.yarn/install-state.gz
