@@ -1,5 +1,6 @@
 use super::sleep_driver::{SleepTrigger, start_background_sleep};
 use super::*;
+use crate::daemon::DaemonControlCommand;
 
 pub(crate) async fn handle_dashboard_control_command(
     context: &mut Context,
@@ -30,6 +31,29 @@ pub(crate) async fn handle_dashboard_control_command(
                 "running sleep in the background",
             )
             .await;
+        }
+        DashboardControlCommand::RestartDaemon => {
+            set_runtime_status(
+                Some(tx),
+                RuntimeStatusLevel::Info,
+                "daemon restart requested from command system",
+            );
+            sync_dashboard_state(context, tx, sleep_status, None);
+            match context
+                .daemon_control_tx
+                .send(DaemonControlCommand::RestartRequested)
+            {
+                Ok(()) => {}
+                Err(err) => {
+                    tracing::error!("failed to queue daemon restart from dashboard command: {err}");
+                    set_runtime_status(
+                        Some(tx),
+                        RuntimeStatusLevel::Error,
+                        format!("failed to queue daemon restart: {err}"),
+                    );
+                    sync_dashboard_state(context, tx, sleep_status, None);
+                }
+            }
         }
         DashboardControlCommand::ClearConversation => {
             let cleared_events = match context.events.clear_all() {

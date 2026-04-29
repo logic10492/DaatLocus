@@ -195,6 +195,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         execution_cwd,
         sandbox_policy,
         dashboard_tx: Some(tx.clone()),
+        daemon_control_tx: daemon_control_tx.clone(),
         active_runtime_turn: false,
         active_runtime_phase: None,
         runtime_turn_started_at: None,

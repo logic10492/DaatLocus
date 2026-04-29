@@ -56,6 +56,7 @@ pub struct DashboardState {
 pub enum DashboardControlCommand {
     RunSleep,
     ClearConversation,
+    RestartDaemon,
 }
 
 #[async_trait]
@@ -208,6 +209,7 @@ struct DebugContextSubcommand;
 struct AppStatusCommand;
 struct StatusCommand;
 struct SleepCommand;
+struct RestartCommand;
 struct SleepRunSubcommand;
 struct SleepStatusSubcommand;
 struct TelegramCommand;
@@ -224,6 +226,7 @@ static DEBUG_CONTEXT_SUBCOMMAND: DebugContextSubcommand = DebugContextSubcommand
 static APP_STATUS_COMMAND: AppStatusCommand = AppStatusCommand;
 static STATUS_COMMAND: StatusCommand = StatusCommand;
 static SLEEP_COMMAND: SleepCommand = SleepCommand;
+static RESTART_COMMAND: RestartCommand = RestartCommand;
 static SLEEP_RUN_SUBCOMMAND: SleepRunSubcommand = SleepRunSubcommand;
 static SLEEP_STATUS_SUBCOMMAND: SleepStatusSubcommand = SleepStatusSubcommand;
 static TELEGRAM_COMMAND: TelegramCommand = TelegramCommand;
@@ -243,12 +246,13 @@ static DEBUG_SUBCOMMANDS: [&dyn DashboardSubcommand; 3] = [
     &DEBUG_CONTEXT_SUBCOMMAND,
 ];
 
-static DASHBOARD_COMMANDS: [&dyn DashboardCommand; 7] = [
+static DASHBOARD_COMMANDS: [&dyn DashboardCommand; 8] = [
     &QUIT_COMMAND,
     &CLEAR_COMMAND,
     &DEBUG_COMMAND,
     &APP_STATUS_COMMAND,
     &STATUS_COMMAND,
+    &RESTART_COMMAND,
     &SLEEP_COMMAND,
     &TELEGRAM_COMMAND,
 ];
@@ -546,6 +550,43 @@ impl DashboardCommand for AppStatusCommand {
                     format!("unknown app: {target}\navailable apps: {}", apps.join(", "))
                 }
             }),
+        }
+    }
+}
+
+impl DashboardCommand for RestartCommand {
+    fn usage(&self) -> &'static str {
+        "restart"
+    }
+
+    fn description(&self) -> &'static str {
+        "restart the daemon"
+    }
+
+    fn execute(
+        &self,
+        _: &[&str],
+        raw: &str,
+        context: &DashboardCommandContext<'_>,
+    ) -> DashboardCommandResult {
+        let Some(executor) = context.executor else {
+            return DashboardCommandResult::ShowOverlay {
+                title: self.overlay_title(raw),
+                text: "restart is unavailable in completion-only mode".to_string(),
+            };
+        };
+        match executor
+            .control_tx
+            .send(DashboardControlCommand::RestartDaemon)
+        {
+            Ok(()) => DashboardCommandResult::ShowOverlay {
+                title: self.overlay_title(raw),
+                text: "queued daemon restart".to_string(),
+            },
+            Err(err) => DashboardCommandResult::ShowOverlay {
+                title: self.overlay_title(raw),
+                text: format!("failed to queue daemon restart: {err}"),
+            },
         }
     }
 }
@@ -1932,6 +1973,7 @@ mod tests {
 
         assert!(commands.contains(&"debug"));
         assert!(commands.contains(&"app_status"));
+        assert!(commands.contains(&"restart"));
         assert!(!commands.contains(&"snapshot"));
         assert!(!commands.contains(&"system_prompt"));
         assert!(!commands.contains(&"quit"));

@@ -230,6 +230,7 @@ pub(crate) async fn build_eval_context_with_compiled(
         .await
         .unwrap_or_else(|err| panic!("failed to construct hindsight client: {err:?}"));
     let hindsight_retain = hindsight.spawn_retain_worker();
+    let (daemon_control_tx, _daemon_control_rx) = tokio::sync::mpsc::unbounded_channel();
 
     Context {
         llm: client,
@@ -256,6 +257,7 @@ pub(crate) async fn build_eval_context_with_compiled(
         execution_cwd,
         sandbox_policy,
         dashboard_tx: None,
+        daemon_control_tx,
         active_runtime_turn: false,
         active_runtime_phase: None,
         runtime_turn_started_at: None,
