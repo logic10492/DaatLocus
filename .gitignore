@@ -7,3 +7,5 @@
 /assets/hindsight-sidecars/*.tgz
 /assets/hindsight-sidecars/*.zip
 /assets/hindsight-sidecars/manifest.toml
+# Yarn local install state
+/.yarn/install-state.gz
