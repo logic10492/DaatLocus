@@ -661,24 +661,6 @@ impl RuntimeConversation {
         messages
     }
 
-    fn plan_compaction(
-        &self,
-        max_tokens: usize,
-        _min_messages: usize,
-        summary_max_tokens: usize,
-    ) -> Option<RuntimeConversationCompactionPlan> {
-        if max_tokens == 0 {
-            return None;
-        }
-        let all_messages = self.messages();
-        if history_messages_total_token_cost(&all_messages) <= max_tokens {
-            return None;
-        }
-
-        let summary_max_tokens = summary_max_tokens.min(max_tokens);
-        Self::compaction_plan_from_messages(all_messages, summary_max_tokens)
-    }
-
     fn plan_compaction_for_request(
         &self,
         envelope: &RuntimeRequestEnvelope,
@@ -1544,11 +1526,9 @@ mod tests {
             reserved_output_tokens: 100,
         };
 
-        assert!(
-            conversation
-                .plan_compaction(envelope.conversation_budget_tokens(&tools, limits), 0, 80,)
-                .is_none()
-        );
+        let history_only_messages = conversation.messages();
+        let history_only_budget = envelope.conversation_budget_tokens(&tools, limits);
+        assert!(history_messages_total_token_cost(&history_only_messages) <= history_only_budget);
         assert!(
             conversation
                 .plan_compaction_for_request(&envelope, &injected_messages, &tools, limits, 0, 80,)
@@ -1587,10 +1567,9 @@ mod tests {
             compaction_records: VecDeque::new(),
         };
 
-        let plan = conversation
-            .plan_compaction(
-                /*max_tokens*/ 20, /*min_messages*/ 0, /*summary_max_tokens*/ 8,
-            )
+        let all_messages = conversation.messages();
+        assert!(history_messages_total_token_cost(&all_messages) > 20);
+        let plan = RuntimeConversation::compaction_plan_from_messages(all_messages, 8)
             .expect("expected compaction plan");
 
         let applied = conversation.apply_compaction(
