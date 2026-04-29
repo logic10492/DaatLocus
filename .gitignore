@@ -11,3 +11,4 @@
 # WebUI local Yarn state and build output
 /webui/.yarn/
 /webui/dist/
+/webui/node_modules/
