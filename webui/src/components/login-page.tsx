@@ -1,9 +1,21 @@
 import { type FormEvent, useState } from "react";
-import { KeyRound, LockKeyhole, ShieldCheck, Terminal, TriangleAlert } from "lucide-react";
+import { CheckCircle2, KeyRound, Loader2, LockKeyhole, TriangleAlert } from "lucide-react";
 
 import { type AuthStatus } from "@/components/app-navigation";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 import {
   clearStoredDaemonToken,
   getStoredDaemonToken,
@@ -14,11 +26,31 @@ import { cn } from "@/lib/utils";
 
 type LoginState = "idle" | "checking" | "authenticated" | "error";
 
-const loginNotes = [
-  "使用 daemon token 作为唯一登录凭据",
-  "登录请求会携带 Authorization: Bearer <token>",
-  "Vite dev server 已代理 daemon API，内置运行时使用同源路径",
-];
+function statusTitle(loginState: LoginState) {
+  switch (loginState) {
+    case "checking":
+      return "正在验证";
+    case "authenticated":
+      return "Token 已验证";
+    case "error":
+      return "验证失败";
+    case "idle":
+      return "等待 token";
+  }
+}
+
+function StatusIcon({ loginState }: { loginState: LoginState }) {
+  switch (loginState) {
+    case "checking":
+      return <Loader2 className="size-4 animate-spin" />;
+    case "authenticated":
+      return <CheckCircle2 className="size-4" />;
+    case "error":
+      return <TriangleAlert className="size-4" />;
+    case "idle":
+      return <KeyRound className="size-4" />;
+  }
+}
 
 export function LoginPage({
   onAuthStatusChange,
@@ -52,7 +84,7 @@ export function LoginPage({
       storeDaemonToken(trimmedToken);
       setToken(trimmedToken);
       setLoginState("authenticated");
-      setMessage("Token 已验证。后续状态、任务和日志页面会复用这个 token 调用 daemon API。");
+      setMessage("Token 已验证。后续页面会复用这个 token。");
       onAuthStatusChange("authenticated");
       return;
     }
@@ -75,92 +107,78 @@ export function LoginPage({
   const isError = loginState === "error";
 
   return (
-    <section id="login" className="mx-auto grid min-h-[calc(100vh-4rem)] w-full max-w-6xl items-center gap-10 px-6 py-10 lg:grid-cols-[0.9fr_1.1fr]">
-      <div className="space-y-7">
-        <div className="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-1 text-sm text-muted-foreground shadow-sm">
-          <LockKeyhole className="size-4" />
-          Login first
-        </div>
-
-        <div className="space-y-5">
-          <h1 className="max-w-2xl text-4xl font-semibold tracking-tight sm:text-6xl">
-            使用 daemon token 登录 WebUI。
-          </h1>
-          <p className="max-w-xl text-lg leading-8 text-muted-foreground">
-            先从登录页开始，后续导航里的状态、任务、日志等页面都基于同一套 daemon token 认证。
-          </p>
-        </div>
-
-        <div className="space-y-3">
-          {loginNotes.map((item) => (
-            <div key={item} className="flex items-start gap-3 rounded-xl border bg-card p-3 text-card-foreground shadow-sm">
-              <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" />
-              <span className="text-sm leading-6">{item}</span>
+    <section id="login" className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-xl items-center px-6 py-10">
+      <Card className="w-full">
+        <form onSubmit={handleSubmit}>
+          <CardHeader className="space-y-5">
+            <div className="flex items-center justify-between gap-3">
+              <Badge variant="secondary" className="gap-1.5">
+                <LockKeyhole className="size-3.5" />
+                需要登录
+              </Badge>
+              <Badge variant={isAuthenticated ? "default" : "outline"} className="gap-1.5">
+                <StatusIcon loginState={loginState} />
+                {statusTitle(loginState)}
+              </Badge>
             </div>
-          ))}
-        </div>
-      </div>
 
-      <div className="rounded-2xl border bg-card p-6 text-card-foreground shadow-sm sm:p-8">
-        <div className="mb-8 flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm text-muted-foreground">Daat Locus WebUI</p>
-            <h2 className="mt-1 text-2xl font-semibold tracking-tight">Token 登录</h2>
-          </div>
-          <div className="rounded-full bg-primary/10 p-3 text-primary">
-            <KeyRound className="size-5" />
-          </div>
-        </div>
+            <div className="space-y-2">
+              <CardTitle className="text-2xl">Token 登录</CardTitle>
+              <CardDescription>
+                使用 daemon token 进入 Daat Locus。不会要求用户名或密码。
+              </CardDescription>
+            </div>
+          </CardHeader>
 
-        <form className="space-y-5" onSubmit={handleSubmit}>
-          <div className="space-y-2">
-            <label htmlFor="daemon-token" className="text-sm font-medium leading-none">
-              Daemon token
-            </label>
-            <Input
-              id="daemon-token"
-              value={token}
-              onChange={(event) => {
-                setToken(event.target.value);
-                if (loginState !== "checking") {
-                  setLoginState("idle");
-                  onAuthStatusChange(event.target.value.trim() ? "saved" : "anonymous");
-                }
-              }}
-              placeholder="粘贴 daemon token"
-              type="password"
-              autoComplete="current-password"
-              spellCheck={false}
-              disabled={isChecking}
-            />
-            <p className="text-xs leading-5 text-muted-foreground">
-              这里使用现有 daemon token，不引入用户名/密码。验证成功后 token 会保存在当前浏览器本地，供后续 API 请求复用。
-            </p>
-          </div>
+          <CardContent className="space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="daemon-token">Daemon token</Label>
+              <Input
+                id="daemon-token"
+                value={token}
+                onChange={(event) => {
+                  setToken(event.target.value);
+                  if (loginState !== "checking") {
+                    setLoginState("idle");
+                    onAuthStatusChange(event.target.value.trim() ? "saved" : "anonymous");
+                  }
+                }}
+                placeholder="粘贴 daemon token"
+                type="password"
+                autoComplete="current-password"
+                spellCheck={false}
+                disabled={isChecking}
+              />
+            </div>
 
-          <div
-            className={cn(
-              "flex items-start gap-3 rounded-xl border p-3 text-sm leading-6",
-              isAuthenticated && "border-primary/30 bg-primary/5 text-primary",
-              isError && "border-destructive/30 bg-destructive/5 text-destructive",
-              !isAuthenticated && !isError && "bg-muted/40 text-muted-foreground",
-            )}
-            aria-live="polite"
-          >
-            {isError ? <TriangleAlert className="mt-0.5 size-4 shrink-0" /> : <Terminal className="mt-0.5 size-4 shrink-0" />}
-            <span>{message}</span>
-          </div>
+            <Alert
+              variant={isError ? "destructive" : "default"}
+              className={cn(isAuthenticated && "border-primary/30 text-primary")}
+            >
+              <StatusIcon loginState={loginState} />
+              <AlertTitle>{statusTitle(loginState)}</AlertTitle>
+              <AlertDescription>{message}</AlertDescription>
+            </Alert>
 
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <Button className="sm:flex-1" size="lg" type="submit" disabled={isChecking}>
+            <Separator />
+          </CardContent>
+
+          <CardFooter className="flex flex-col gap-3 sm:flex-row">
+            <Button className="w-full" type="submit" disabled={isChecking}>
               {isChecking ? "验证中…" : "验证并登录"}
             </Button>
-            <Button size="lg" type="button" variant="outline" onClick={handleClearToken} disabled={isChecking || !token.trim()}>
+            <Button
+              className="w-full"
+              type="button"
+              variant="outline"
+              onClick={handleClearToken}
+              disabled={isChecking || !token.trim()}
+            >
               清除 token
             </Button>
-          </div>
+          </CardFooter>
         </form>
-      </div>
+      </Card>
     </section>
   );
 }
