@@ -15,48 +15,6 @@ type AgentStatusAnimationProps = {
   className?: string;
 };
 
-const idleExpression = [
-  "......................",
-  "......................",
-  "......................",
-  ".....####....####.....",
-  "....######..######....",
-  "....######..######....",
-  "....######..######....",
-  "....######..######....",
-  ".....####....####.....",
-  "......................",
-  "......................",
-  "......................",
-  "......................",
-  "......................",
-  "......................",
-  "..###............###..",
-  "...###..........###...",
-  "....###........###....",
-  ".....###......###.....",
-  "......###....###......",
-  ".......###..###.......",
-  "........######........",
-  ".........####.........",
-  "......................",
-  "......................",
-  "......................",
-  "......................",
-  "......................",
-  "......................",
-  "......................",
-] as const;
-
-const expressionByStatus: Record<AgentAnimationStatus, readonly string[]> = {
-  idle: idleExpression,
-  thinking: idleExpression,
-  running: idleExpression,
-  tooling: idleExpression,
-  waiting: idleExpression,
-  error: idleExpression,
-};
-
 const expressionToneByStatus: Record<AgentAnimationStatus, string> = {
   idle: "text-foreground",
   thinking: "text-primary",
@@ -76,17 +34,24 @@ const expressionLabelByStatus: Record<AgentAnimationStatus, string> = {
 };
 
 const matrixCellSize = 6;
-const activeDotRadius = 2.1;
 const inactiveDotRadius = 1.1;
-const matrixColumnCount = idleExpression[0].length;
-const matrixRowCount = idleExpression.length;
+const matrixColumnCount = 22;
+const matrixRowCount = 30;
+const faceViewBoxWidth = matrixColumnCount * matrixCellSize;
+const faceViewBoxHeight = matrixRowCount * matrixCellSize;
+const inactiveDots = Array.from(
+  { length: matrixColumnCount * matrixRowCount },
+  (_, index) => ({
+    columnIndex: index % matrixColumnCount,
+    rowIndex: Math.floor(index / matrixColumnCount),
+  }),
+);
 
 export function AgentStatusAnimation({
   status,
   className,
 }: AgentStatusAnimationProps) {
   const prefersReducedMotion = usePrefersReducedMotion();
-  const expression = expressionByStatus[status];
   const shouldBreathe = status === "idle" && !prefersReducedMotion;
 
   return (
@@ -106,26 +71,30 @@ export function AgentStatusAnimation({
         aria-label={expressionLabelByStatus[status]}
         className="relative z-10 h-full w-full"
         role="img"
-        viewBox={`0 0 ${matrixColumnCount * matrixCellSize} ${
-          matrixRowCount * matrixCellSize
-        }`}
+        viewBox={`0 0 ${faceViewBoxWidth} ${faceViewBoxHeight}`}
       >
-        {expression.map((row, rowIndex) =>
-          Array.from(row).map((cell, columnIndex) => {
-            const isActive = cell === "#";
-
-            return (
-              <circle
-                key={`${rowIndex}-${columnIndex}`}
-                cx={columnIndex * matrixCellSize + matrixCellSize / 2}
-                cy={rowIndex * matrixCellSize + matrixCellSize / 2}
-                fill="currentColor"
-                opacity={isActive ? 1 : 0.1}
-                r={isActive ? activeDotRadius : inactiveDotRadius}
-              />
-            );
-          }),
-        )}
+        {inactiveDots.map(({ columnIndex, rowIndex }) => (
+          <circle
+            key={`${rowIndex}-${columnIndex}`}
+            cx={columnIndex * matrixCellSize + matrixCellSize / 2}
+            cy={rowIndex * matrixCellSize + matrixCellSize / 2}
+            fill="currentColor"
+            opacity={0.1}
+            r={inactiveDotRadius}
+          />
+        ))}
+        <g fill="currentColor">
+          <rect height={54} rx={5} width={18} x={34} y={24} />
+          <rect height={54} rx={5} width={18} x={80} y={24} />
+        </g>
+        <path
+          d="M 28 108 C 39 140 93 140 104 108"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={10}
+        />
       </svg>
     </div>
   );
