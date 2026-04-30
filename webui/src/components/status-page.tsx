@@ -185,7 +185,7 @@ export function StatusPage() {
       <div
         className="min-h-full w-full snap-start px-6 py-10 md:py-12"
       >
-        <div className="grid w-full grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="flex w-full flex-wrap items-start gap-4">
           <DailyTokenUsageCard snapshot={snapshot} />
           <WorkflowOptimizationCard snapshot={snapshot} />
         </div>
@@ -203,7 +203,7 @@ function DailyTokenUsageCard({
   const hasUsage = chartData.some((day) => day.total > 0);
 
   return (
-    <Card className="overflow-visible">
+    <Card className="w-full overflow-visible sm:w-[28rem]">
       <CardHeader>
         <CardTitle>Token Usage</CardTitle>
       </CardHeader>
@@ -281,12 +281,12 @@ function WorkflowOptimizationCard({
   const total = progressData.reduce((sum, item) => sum + item.value, 0);
 
   return (
-    <Card className="overflow-visible">
+    <Card className="w-full overflow-visible sm:w-72">
       <CardHeader>
         <CardTitle>Workflow Optimization</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="relative mx-auto h-64 w-full max-w-64">
+        <div className="relative mx-auto h-48 w-full max-w-48">
           <ChartContainer
             config={WORKFLOW_OPTIMIZATION_CHART_CONFIG}
             className="h-full w-full overflow-visible [&_.recharts-wrapper]:overflow-visible"
@@ -301,8 +301,8 @@ function WorkflowOptimizationCard({
                 data={chartData}
                 dataKey="chartValue"
                 nameKey="label"
-                innerRadius={58}
-                outerRadius={88}
+                innerRadius={44}
+                outerRadius={66}
                 paddingAngle={2}
                 strokeWidth={0}
                 isAnimationActive={false}
