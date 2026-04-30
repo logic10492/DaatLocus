@@ -231,7 +231,7 @@ export function StatusPage() {
     <section
       id="status"
       aria-label="Status"
-      className="min-h-screen w-full px-6 py-10 md:py-12"
+      className="min-h-screen w-full px-6 pb-10 pt-20 md:pb-12 md:pt-24"
     >
       <div className="flex w-full flex-wrap items-start gap-4">
         <DailyTokenUsageCard snapshot={snapshot} />
