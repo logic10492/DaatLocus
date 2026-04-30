@@ -16,15 +16,21 @@ type AgentStatusAnimationProps = {
 };
 
 const idleExpression = [
-  ".................",
-  "..........##.....",
-  "............##...",
-  "..####.......##..",
-  "..............#..",
-  "..####.......##..",
-  "............##...",
-  "..........##.....",
-  ".................",
+  "...........",
+  "...........",
+  "..##...##..",
+  "..##...##..",
+  "..##...##..",
+  "...........",
+  "...........",
+  "...........",
+  ".#.......#.",
+  "..#.....#..",
+  "...#...#...",
+  "....###....",
+  "...........",
+  "...........",
+  "...........",
 ] as const;
 
 const expressionByStatus: Record<AgentAnimationStatus, readonly string[]> = {
@@ -72,7 +78,7 @@ export function AgentStatusAnimation({
     <div
       data-status={status}
       className={cn(
-        "relative flex aspect-[17/9] w-64 items-center justify-center overflow-hidden",
+        "relative flex aspect-[11/15] w-64 items-center justify-center overflow-hidden",
         "rounded-[2rem] border border-border/50 bg-card/70 p-5 shadow-sm",
         "transition-colors duration-500",
         "after:absolute after:inset-x-8 after:bottom-2 after:h-10 after:rounded-full after:bg-primary/10 after:blur-2xl after:content-['']",
