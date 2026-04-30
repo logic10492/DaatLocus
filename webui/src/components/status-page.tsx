@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   AgentStatusAnimation,
@@ -10,10 +10,6 @@ import {
 } from "@/lib/daemon-api";
 
 const DASHBOARD_SNAPSHOT_POLL_MS = 2500;
-const debugAnimationStatuses = [
-  "idle",
-  "running",
-] as const satisfies readonly AgentAnimationStatus[];
 
 type AgentStatusView = {
   animationStatus: AgentAnimationStatus;
@@ -24,7 +20,6 @@ export function StatusPage() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<Error | null>(null);
-  const [debugAnimationIndex, setDebugAnimationIndex] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -60,20 +55,11 @@ export function StatusPage() {
     };
   }, []);
 
-  const agentStatus = useMemo(
-    () =>
-      deriveAgentStatus({
-        hasLoadError: Boolean(loadError),
-        isLoading,
-        snapshot,
-      }),
-    [isLoading, loadError, snapshot],
-  );
-  const debugAnimationStatus = debugAnimationStatuses[debugAnimationIndex];
-  const visibleAgentStatus: AgentStatusView = {
-    animationStatus: debugAnimationStatus,
-    label: `${agentStatus.label} · 调试：${getAnimationDebugLabel(debugAnimationStatus)}`,
-  };
+  const agentStatus = deriveAgentStatus({
+    hasLoadError: Boolean(loadError),
+    isLoading,
+    snapshot,
+  });
 
   return (
     <section
@@ -82,47 +68,18 @@ export function StatusPage() {
     >
       <div className="flex flex-col items-center justify-center gap-5 text-center">
         <AgentStatusAnimation
-          status={visibleAgentStatus.animationStatus}
+          status={agentStatus.animationStatus}
           className="w-64 md:w-80"
         />
-        <p
+        <span
           aria-live="polite"
-          className="text-2xl font-semibold tracking-tight"
+          className="sr-only"
         >
-          {visibleAgentStatus.label}
-        </p>
-        <button
-          className="rounded-full border border-border/70 bg-background/80 px-4 py-2 text-sm font-medium text-muted-foreground shadow-sm transition hover:border-foreground/30 hover:text-foreground"
-          type="button"
-          onClick={() =>
-            setDebugAnimationIndex(
-              (currentIndex) =>
-                (currentIndex + 1) % debugAnimationStatuses.length,
-            )
-          }
-        >
-          切换下个动画（当前：{getAnimationDebugLabel(debugAnimationStatus)}）
-        </button>
+          {agentStatus.label}
+        </span>
       </div>
     </section>
   );
-}
-
-function getAnimationDebugLabel(status: AgentAnimationStatus) {
-  switch (status) {
-    case "idle":
-      return "空闲";
-    case "running":
-      return "工作中";
-    case "error":
-      return "错误";
-    case "thinking":
-      return "思考中";
-    case "tooling":
-      return "调用工具";
-    case "waiting":
-      return "等待中";
-  }
 }
 
 function deriveAgentStatus({
