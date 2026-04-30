@@ -22,6 +22,7 @@ use ratatui::{
 
 use crate::{
     app::AppId,
+    core::TokenUsageInfo,
     events::{EventStore, TerminalIncomingEvent},
     pending_work::{PendingWork, PendingWorkQueue},
     reasoning::turn_compile::{
@@ -37,6 +38,12 @@ const TELEGRAM_ACCESS_PICKER_VISIBLE_ROWS: usize = 8;
 pub struct DashboardPlanStep {
     pub status: String,
     pub step: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct DashboardTokenUsageSnapshot {
+    pub main: Option<TokenUsageInfo>,
+    pub judge: Option<TokenUsageInfo>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -56,6 +63,8 @@ pub struct DashboardState {
     pub runtime_status: Option<String>,
     #[serde(default)]
     pub current_plan_step: Option<DashboardPlanStep>,
+    #[serde(default)]
+    pub token_usage: DashboardTokenUsageSnapshot,
     pub footer_context: String,
     pub footer_estimated_input_tokens: Option<usize>,
 }

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::Local;
 use miette::{Result, miette};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,8 @@ use crate::{
     plan::PlanStatus,
     reasoning::runtime::{AgentTurnRequest, AgentTurnStreamResult, PromptRequest},
 };
+
+const MAX_DAILY_TOKEN_USAGE_DAYS: usize = 30;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct FocusAppArgs {
@@ -176,10 +179,18 @@ pub struct TokenUsage {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub struct DailyTokenUsage {
+    pub date: String,
+    pub usage: TokenUsage,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct TokenUsageInfo {
     pub total_token_usage: TokenUsage,
     pub last_token_usage: TokenUsage,
     pub model_context_window: Option<i64>,
+    #[serde(default)]
+    pub daily_token_usage: Vec<DailyTokenUsage>,
 }
 
 impl TokenUsage {
@@ -203,7 +214,30 @@ impl TokenUsage {
 impl TokenUsageInfo {
     pub fn append_last_usage(&mut self, last: TokenUsage) {
         self.total_token_usage.add_assign(&last);
+        self.append_daily_usage(&last);
         self.last_token_usage = last;
+    }
+
+    fn append_daily_usage(&mut self, usage: &TokenUsage) {
+        let date = Local::now().date_naive().to_string();
+
+        if let Some(day) = self
+            .daily_token_usage
+            .iter_mut()
+            .find(|day| day.date == date)
+        {
+            day.usage.add_assign(usage);
+        } else {
+            self.daily_token_usage.push(DailyTokenUsage {
+                date,
+                usage: usage.clone(),
+            });
+        }
+
+        if self.daily_token_usage.len() > MAX_DAILY_TOKEN_USAGE_DAYS {
+            let excess = self.daily_token_usage.len() - MAX_DAILY_TOKEN_USAGE_DAYS;
+            self.daily_token_usage.drain(0..excess);
+        }
     }
 }
 

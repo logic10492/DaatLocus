@@ -5,12 +5,15 @@ use std::time::Duration;
 use crate::{
     app::AppId,
     context::Context,
+    core::TokenUsageInfo,
     events::EventStatus,
     plan::{PlanStatus, PlanStep},
     sleep_status::SleepStatusSnapshot,
 };
 
-use super::{DashboardPlanStep, DashboardState, render_activity_from_messages};
+use super::{
+    DashboardPlanStep, DashboardState, DashboardTokenUsageSnapshot, render_activity_from_messages,
+};
 
 /// Sleep-related constants used in dashboard rendering.
 pub const AUTO_SLEEP_IDLE_THRESHOLD: Duration = Duration::from_secs(300);
@@ -37,6 +40,7 @@ pub fn sync_dashboard_state(
         state.footer_context =
             render_dashboard_footer_context(context, state.footer_estimated_input_tokens);
         state.current_plan_step = current_plan_step_for_dashboard(context);
+        state.token_usage = token_usage_snapshot_for_dashboard(context);
     });
 }
 
@@ -67,6 +71,21 @@ fn dashboard_plan_status(step: &PlanStep) -> String {
         PlanStatus::Completed => "completed",
     }
     .to_string()
+}
+
+pub fn token_usage_snapshot_for_dashboard(context: &Context) -> DashboardTokenUsageSnapshot {
+    DashboardTokenUsageSnapshot {
+        main: visible_token_usage(context.llm.token_usage_info()),
+        judge: visible_token_usage(context.judge_llm.token_usage_info()),
+    }
+}
+
+fn visible_token_usage(info: Option<TokenUsageInfo>) -> Option<TokenUsageInfo> {
+    info.filter(|info| {
+        !info.total_token_usage.is_zero()
+            || !info.last_token_usage.is_zero()
+            || !info.daily_token_usage.is_empty()
+    })
 }
 
 pub fn render_dashboard_footer_context(

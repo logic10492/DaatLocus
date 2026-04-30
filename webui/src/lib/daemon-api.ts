@@ -20,6 +20,31 @@ export type DashboardPlanStep = {
   step: string;
 };
 
+export type TokenUsage = {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  total_tokens: number;
+};
+
+export type DailyTokenUsage = {
+  date: string;
+  usage: TokenUsage;
+};
+
+export type TokenUsageInfo = {
+  total_token_usage: TokenUsage;
+  last_token_usage: TokenUsage;
+  model_context_window: number | null;
+  daily_token_usage: DailyTokenUsage[];
+};
+
+export type DashboardTokenUsageSnapshot = {
+  main: TokenUsageInfo | null;
+  judge: TokenUsageInfo | null;
+};
+
 export type DashboardSnapshot = {
   focused_app: string | null;
   status_output: string;
@@ -37,6 +62,7 @@ export type DashboardSnapshot = {
   last_cycle_elapsed_ms: number | null;
   runtime_status: string | null;
   current_plan_step: DashboardPlanStep | null;
+  token_usage?: DashboardTokenUsageSnapshot;
   footer_context: string;
   footer_estimated_input_tokens: number | null;
 };

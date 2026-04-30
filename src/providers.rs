@@ -170,6 +170,7 @@ impl OpenAIClient {
                 total_token_usage: TokenUsage::default(),
                 last_token_usage: TokenUsage::default(),
                 model_context_window: Some(context_window_tokens as i64),
+                daily_token_usage: Vec::new(),
             }),
         }
     }
