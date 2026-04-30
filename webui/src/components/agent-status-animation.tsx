@@ -129,7 +129,6 @@ export function AgentStatusAnimation({
     visualKind,
     prefersReducedMotion,
   );
-  const shouldBreathe = status === "idle" && !prefersReducedMotion;
   const shouldAnimateWorking =
     isWorking && !prefersReducedMotion && expressionTransition === null;
   const mouthPath =
@@ -149,7 +148,6 @@ export function AgentStatusAnimation({
       data-status={status}
       className={cn(
         "relative flex aspect-[11/15] w-64 items-center justify-center p-5",
-        shouldBreathe && "motion-safe:animate-pulse",
         className,
       )}
     >
