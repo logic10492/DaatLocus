@@ -20,15 +20,6 @@ type MatrixDot = {
   rowIndex: number;
 };
 
-const expressionToneByStatus: Record<AgentAnimationStatus, string> = {
-  idle: "text-foreground",
-  thinking: "text-primary",
-  running: "text-primary",
-  tooling: "text-primary",
-  waiting: "text-muted-foreground",
-  error: "text-destructive",
-};
-
 const expressionLabelByStatus: Record<AgentAnimationStatus, string> = {
   idle: "Idle dot-matrix expression",
   thinking: "Thinking dot-matrix expression",
@@ -39,8 +30,8 @@ const expressionLabelByStatus: Record<AgentAnimationStatus, string> = {
 };
 
 const matrixCellSize = 6;
-const activeDotRadius = 2.35;
-const inactiveDotRadius = 1.1;
+const activeBlockSize = 4.7;
+const inactiveBlockSize = 2.1;
 const matrixColumnCount = 22;
 const matrixRowCount = 30;
 const faceViewBoxWidth = matrixColumnCount * matrixCellSize;
@@ -118,6 +109,21 @@ const mouthDots: MatrixDot[] = [
 
 const activeDots: MatrixDot[] = [...eyeDots, ...mouthDots];
 
+function getBlockOrigin({
+  blockSize,
+  columnIndex,
+  rowIndex,
+}: MatrixDot & {
+  blockSize: number;
+}) {
+  const cellOffset = (matrixCellSize - blockSize) / 2;
+
+  return {
+    x: columnIndex * matrixCellSize + cellOffset,
+    y: rowIndex * matrixCellSize + cellOffset,
+  };
+}
+
 export function AgentStatusAnimation({
   status,
   className,
@@ -133,7 +139,6 @@ export function AgentStatusAnimation({
         "rounded-[2rem] border border-border/50 bg-card/70 p-5 shadow-sm",
         "transition-colors duration-500",
         "after:absolute after:inset-x-8 after:bottom-2 after:h-10 after:rounded-full after:bg-primary/10 after:blur-2xl after:content-['']",
-        expressionToneByStatus[status],
         shouldBreathe && "motion-safe:animate-pulse",
         className,
       )}
@@ -144,25 +149,43 @@ export function AgentStatusAnimation({
         role="img"
         viewBox={`0 0 ${faceViewBoxWidth} ${faceViewBoxHeight}`}
       >
-        {inactiveDots.map(({ columnIndex, rowIndex }) => (
-          <circle
-            key={`${rowIndex}-${columnIndex}`}
-            cx={columnIndex * matrixCellSize + matrixCellSize / 2}
-            cy={rowIndex * matrixCellSize + matrixCellSize / 2}
-            fill="currentColor"
-            opacity={0.1}
-            r={inactiveDotRadius}
-          />
-        ))}
-        {activeDots.map(({ columnIndex, rowIndex }) => (
-          <circle
-            key={`active-${rowIndex}-${columnIndex}`}
-            cx={columnIndex * matrixCellSize + matrixCellSize / 2}
-            cy={rowIndex * matrixCellSize + matrixCellSize / 2}
-            fill="currentColor"
-            r={activeDotRadius}
-          />
-        ))}
+        {inactiveDots.map(({ columnIndex, rowIndex }) => {
+          const { x, y } = getBlockOrigin({
+            blockSize: inactiveBlockSize,
+            columnIndex,
+            rowIndex,
+          });
+
+          return (
+            <rect
+              key={`${rowIndex}-${columnIndex}`}
+              fill="black"
+              height={inactiveBlockSize}
+              opacity={0.08}
+              width={inactiveBlockSize}
+              x={x}
+              y={y}
+            />
+          );
+        })}
+        {activeDots.map(({ columnIndex, rowIndex }) => {
+          const { x, y } = getBlockOrigin({
+            blockSize: activeBlockSize,
+            columnIndex,
+            rowIndex,
+          });
+
+          return (
+            <rect
+              key={`active-${rowIndex}-${columnIndex}`}
+              fill="black"
+              height={activeBlockSize}
+              width={activeBlockSize}
+              x={x}
+              y={y}
+            />
+          );
+        })}
       </svg>
     </div>
   );
