@@ -43,7 +43,11 @@ pub struct DashboardPlanStep {
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct DashboardTokenUsageSnapshot {
     pub main: Option<TokenUsageInfo>,
+    #[serde(default)]
+    pub main_model: Option<String>,
     pub judge: Option<TokenUsageInfo>,
+    #[serde(default)]
+    pub judge_model: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]

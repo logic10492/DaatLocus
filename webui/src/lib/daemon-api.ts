@@ -42,7 +42,9 @@ export type TokenUsageInfo = {
 
 export type DashboardTokenUsageSnapshot = {
   main: TokenUsageInfo | null;
+  main_model?: string | null;
   judge: TokenUsageInfo | null;
+  judge_model?: string | null;
 };
 
 export type DashboardSnapshot = {

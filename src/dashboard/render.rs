@@ -76,7 +76,15 @@ fn dashboard_plan_status(step: &PlanStep) -> String {
 pub fn token_usage_snapshot_for_dashboard(context: &Context) -> DashboardTokenUsageSnapshot {
     DashboardTokenUsageSnapshot {
         main: visible_token_usage(context.llm.token_usage_info()),
+        main_model: context
+            .llm
+            .model_name()
+            .or_else(|| Some(context.config.main_model_config().model_id.clone())),
         judge: visible_token_usage(context.judge_llm.token_usage_info()),
+        judge_model: context
+            .judge_llm
+            .model_name()
+            .or_else(|| Some(context.config.judge_model_config().model_id.clone())),
     }
 }
 

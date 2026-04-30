@@ -4,36 +4,31 @@ import {
   AgentStatusAnimation,
   type AgentAnimationStatus,
 } from "@/components/agent-status-animation";
-import {
-  Bar,
-  BarChart,
-  XAxis,
-  YAxis,
-} from "recharts";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Bar, BarChart, XAxis, YAxis } from "recharts";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   ChartContainer,
   ChartTooltip,
-  ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
 import {
   subscribeDashboardSnapshots,
   type DashboardSnapshot,
+  type TokenUsage,
   type TokenUsageInfo,
 } from "@/lib/daemon-api";
 
 const DASHBOARD_STREAM_RECONNECT_MS = 1500;
 const SUMMARY_TYPE_INTERVAL_MS = 28;
+const TOKEN_USAGE_LOOKBACK_DAYS = 30;
 const TOKEN_USAGE_CHART_CONFIG = {
-  total: {
-    label: "Tokens",
-    color: "var(--chart-2)",
+  cached: {
+    label: "Cached",
+    color: "#dc2626",
+  },
+  uncached: {
+    label: "Usage",
+    color: "#ec4899",
   },
 } satisfies ChartConfig;
 
@@ -160,7 +155,7 @@ export function StatusPage() {
       <div
         className="min-h-full w-full snap-start px-6 py-10 md:py-12"
       >
-        <div className="w-full columns-1 gap-4 sm:columns-2 xl:columns-3">
+        <div className="w-full">
           <DailyTokenUsageCard snapshot={snapshot} />
         </div>
       </div>
@@ -174,51 +169,62 @@ function DailyTokenUsageCard({
   snapshot: DashboardSnapshot | null;
 }) {
   const chartData = useMemo(() => dailyTokenUsageChartData(snapshot), [snapshot]);
+  const hasUsage = chartData.some((day) => day.total > 0);
 
   return (
-    <Card className="mb-4 break-inside-avoid">
-      <CardHeader>
-        <CardTitle>Token Usage</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Card className="mb-4 overflow-visible bg-transparent py-0 ring-0">
+      <CardContent className="px-0">
         <ChartContainer
           config={TOKEN_USAGE_CHART_CONFIG}
-          className="h-72 w-full"
+          className="h-64 w-full"
         >
           <BarChart
             accessibilityLayer
             data={chartData}
-            margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+            margin={{ top: 8, right: 16, left: -8, bottom: 0 }}
+            barCategoryGap="34%"
           >
             <XAxis
               dataKey="label"
               tickLine={false}
               axisLine={false}
-              tickMargin={8}
+              tickMargin={10}
+              interval="preserveStartEnd"
+              minTickGap={28}
             />
             <YAxis
               width={44}
               tickLine={false}
               axisLine={false}
-              tickFormatter={formatCompactNumber}
+              domain={[0, 1]}
+              ticks={[0, 1]}
+              tickFormatter={formatPercentAxisTick}
             />
             <ChartTooltip
-              cursor={false}
-              content={
-                <ChartTooltipContent
-                  valueFormatter={(value) =>
-                    typeof value === "number" ? formatCompactNumber(value) : value
-                  }
-                />
-              }
+              cursor={{ fill: "var(--muted)" }}
+              content={<TokenUsageTooltip />}
             />
             <Bar
-              dataKey="total"
-              fill="var(--color-total)"
-              radius={[8, 8, 0, 0]}
+              dataKey="cachedRatio"
+              stackId="tokens"
+              fill="var(--color-cached)"
+              isAnimationActive={false}
+              radius={[0, 0, 0, 0]}
+            />
+            <Bar
+              dataKey="uncachedRatio"
+              stackId="tokens"
+              fill="var(--color-uncached)"
+              isAnimationActive={false}
+              radius={[4, 4, 0, 0]}
             />
           </BarChart>
         </ChartContainer>
+        {hasUsage ? null : (
+          <p className="mt-2 text-xs text-muted-foreground">
+            No token usage recorded yet.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -227,41 +233,281 @@ function DailyTokenUsageCard({
 type DailyTokenUsageChartDatum = {
   date: string;
   label: string;
+  cached: number;
+  cachedRatio: number;
+  uncached: number;
+  uncachedRatio: number;
   total: number;
+  models: DailyTokenUsageModelBreakdown[];
+};
+
+type DailyTokenUsageModelBreakdown = {
+  key: string;
+  label: string;
+  usage: TokenUsage;
+};
+
+type TokenUsageTooltipPayloadItem = {
+  payload?: DailyTokenUsageChartDatum;
 };
 
 function dailyTokenUsageChartData(
   snapshot: DashboardSnapshot | null,
 ): DailyTokenUsageChartDatum[] {
-  const usageByDate = new Map<string, number>();
+  const usageByDate = new Map<string, DailyTokenUsageAccumulator>();
 
-  for (const info of [
-    snapshot?.token_usage?.main,
-    snapshot?.token_usage?.judge,
-  ]) {
-    mergeDailyTokenUsage(usageByDate, info);
+  for (const source of tokenUsageSources(snapshot)) {
+    mergeDailyTokenUsage(usageByDate, source);
   }
 
-  return Array.from(usageByDate.entries())
-    .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
-    .slice(-14)
-    .map(([date, total]) => ({
+  const dates = recentTokenUsageDates(usageByDate, snapshot !== null);
+  const maxTotal = Math.max(
+    1,
+    ...dates.map((date) => usageByDate.get(date)?.total ?? 0),
+  );
+
+  return dates.map((date) => {
+    const accumulator =
+      usageByDate.get(date) ?? createDailyTokenUsageAccumulator();
+
+    return {
       date,
       label: formatDateLabel(date),
-      total,
-    }));
+      cached: accumulator.cached,
+      cachedRatio: accumulator.cached / maxTotal,
+      uncached: accumulator.uncached,
+      uncachedRatio: accumulator.uncached / maxTotal,
+      total: accumulator.total,
+      models: Array.from(accumulator.models.entries())
+        .map(([key, usage]) => ({
+          key,
+          label: key,
+          usage,
+        }))
+        .sort((left, right) => right.usage.total_tokens - left.usage.total_tokens),
+    };
+  });
+}
+
+type DailyTokenUsageAccumulator = {
+  cached: number;
+  uncached: number;
+  total: number;
+  models: Map<string, TokenUsage>;
+};
+
+type TokenUsageSource = {
+  label: string;
+  info: TokenUsageInfo | null | undefined;
+};
+
+function tokenUsageSources(snapshot: DashboardSnapshot | null): TokenUsageSource[] {
+  const tokenUsage = snapshot?.token_usage;
+
+  return [
+    {
+      label: tokenUsageModelLabel("main", tokenUsage?.main_model),
+      info: tokenUsage?.main,
+    },
+    {
+      label: tokenUsageModelLabel("judge", tokenUsage?.judge_model),
+      info: tokenUsage?.judge,
+    },
+  ];
+}
+
+function tokenUsageModelLabel(role: string, model: string | null | undefined) {
+  const normalizedModel = model?.trim();
+
+  return normalizedModel || role;
 }
 
 function mergeDailyTokenUsage(
-  usageByDate: Map<string, number>,
-  info: TokenUsageInfo | null | undefined,
+  usageByDate: Map<string, DailyTokenUsageAccumulator>,
+  source: TokenUsageSource,
 ) {
-  for (const day of info?.daily_token_usage ?? []) {
-    usageByDate.set(
-      day.date,
-      (usageByDate.get(day.date) ?? 0) + Math.max(0, day.usage.total_tokens),
+  for (const day of source.info?.daily_token_usage ?? []) {
+    const accumulator =
+      usageByDate.get(day.date) ?? createDailyTokenUsageAccumulator();
+    const usage = normalizedTokenUsage(day.usage);
+    const cachedTokens = Math.min(
+      usage.cached_input_tokens,
+      usage.total_tokens,
     );
+    const existingModelUsage =
+      accumulator.models.get(source.label) ?? createEmptyTokenUsage();
+
+    accumulator.cached += cachedTokens;
+    accumulator.uncached += Math.max(0, usage.total_tokens - cachedTokens);
+    accumulator.total += usage.total_tokens;
+    accumulator.models.set(source.label, addTokenUsage(existingModelUsage, usage));
+    usageByDate.set(day.date, accumulator);
   }
+}
+
+function recentTokenUsageDates(
+  usageByDate: Map<string, DailyTokenUsageAccumulator>,
+  shouldFillEmptyDays: boolean,
+) {
+  if (!usageByDate.size && !shouldFillEmptyDays) {
+    return [];
+  }
+
+  const latestDate =
+    Array.from(usageByDate.keys())
+      .filter(isDateKey)
+      .sort()
+      .at(-1) ?? localDateKey(new Date());
+  const latestDateValue = parseDateKey(latestDate) ?? new Date();
+  const dates: string[] = [];
+
+  for (let index = TOKEN_USAGE_LOOKBACK_DAYS - 1; index >= 0; index -= 1) {
+    dates.push(localDateKey(addDays(latestDateValue, -index)));
+  }
+
+  return dates;
+}
+
+function createDailyTokenUsageAccumulator(): DailyTokenUsageAccumulator {
+  return {
+    cached: 0,
+    uncached: 0,
+    total: 0,
+    models: new Map<string, TokenUsage>(),
+  };
+}
+
+function createEmptyTokenUsage(): TokenUsage {
+  return {
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+    total_tokens: 0,
+  };
+}
+
+function normalizedTokenUsage(usage: TokenUsage): TokenUsage {
+  return {
+    input_tokens: Math.max(0, usage.input_tokens),
+    cached_input_tokens: Math.max(0, usage.cached_input_tokens),
+    output_tokens: Math.max(0, usage.output_tokens),
+    reasoning_output_tokens: Math.max(0, usage.reasoning_output_tokens),
+    total_tokens: Math.max(0, usage.total_tokens),
+  };
+}
+
+function addTokenUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
+  return {
+    input_tokens: left.input_tokens + right.input_tokens,
+    cached_input_tokens: left.cached_input_tokens + right.cached_input_tokens,
+    output_tokens: left.output_tokens + right.output_tokens,
+    reasoning_output_tokens:
+      left.reasoning_output_tokens + right.reasoning_output_tokens,
+    total_tokens: left.total_tokens + right.total_tokens,
+  };
+}
+
+function TokenUsageTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: TokenUsageTooltipPayloadItem[];
+}) {
+  if (!active) {
+    return null;
+  }
+
+  const datum = payload?.[0]?.payload;
+  if (!datum) {
+    return null;
+  }
+
+  return (
+    <div className="grid min-w-72 gap-3 rounded-lg border bg-background px-3 py-2.5 text-xs shadow-xl">
+      <div>
+        <div className="font-medium text-foreground">{datum.date}</div>
+        <div className="mt-1 grid gap-1 text-muted-foreground">
+          <TokenUsageTooltipRow
+            label="Total"
+            value={datum.total}
+          />
+          <TokenUsageTooltipRow
+            label="Cached"
+            value={datum.cached}
+            color="var(--color-cached)"
+          />
+          <TokenUsageTooltipRow
+            label="Uncached"
+            value={datum.uncached}
+            color="var(--color-uncached)"
+          />
+        </div>
+      </div>
+      {datum.models.length ? (
+        <div className="grid gap-2 border-t pt-2">
+          {datum.models.map((model) => (
+            <div
+              key={model.key}
+              className="grid gap-1"
+            >
+              <div className="truncate font-medium text-foreground">
+                {model.label}
+              </div>
+              <div className="grid gap-1 text-muted-foreground">
+                <TokenUsageTooltipRow
+                  label="Total"
+                  value={model.usage.total_tokens}
+                />
+                <TokenUsageTooltipRow
+                  label="Input"
+                  value={model.usage.input_tokens}
+                />
+                <TokenUsageTooltipRow
+                  label="Cached"
+                  value={model.usage.cached_input_tokens}
+                />
+                <TokenUsageTooltipRow
+                  label="Output"
+                  value={model.usage.output_tokens}
+                />
+                <TokenUsageTooltipRow
+                  label="Reasoning"
+                  value={model.usage.reasoning_output_tokens}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TokenUsageTooltipRow({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: number;
+  color?: string;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      {color ? (
+        <span
+          className="size-2 shrink-0 rounded-[2px]"
+          style={{ backgroundColor: color }}
+        />
+      ) : null}
+      <span className="min-w-0 flex-1">{label}</span>
+      <span className="font-mono font-medium tabular-nums text-foreground">
+        {formatCompactNumber(value)}
+      </span>
+    </div>
+  );
 }
 
 function formatDateLabel(date: string) {
@@ -271,7 +517,39 @@ function formatDateLabel(date: string) {
     return date;
   }
 
-  return `${month}/${day}`;
+  return `${Number(month)}月${Number(day)}日`;
+}
+
+function formatPercentAxisTick(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function isDateKey(value: string) {
+  return parseDateKey(value) !== null;
+}
+
+function parseDateKey(value: string) {
+  const [, year, month, day] = value.match(/^(\d{4})-(\d{2})-(\d{2})$/) ?? [];
+
+  if (!year || !month || !day) {
+    return null;
+  }
+
+  return new Date(Number(year), Number(month) - 1, Number(day));
+}
+
+function addDays(date: Date, days: number) {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
+}
+
+function localDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
 }
 
 function formatCompactNumber(value: number) {
