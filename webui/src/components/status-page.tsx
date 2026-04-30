@@ -7,14 +7,12 @@ import {
 import {
   Bar,
   BarChart,
-  CartesianGrid,
   XAxis,
   YAxis,
 } from "recharts";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -160,9 +158,9 @@ export function StatusPage() {
         </div>
       </div>
       <div
-        className="flex min-h-full w-full snap-start items-start justify-center px-6 py-10 md:py-12"
+        className="min-h-full w-full snap-start px-6 py-10 md:py-12"
       >
-        <div className="grid w-full max-w-6xl gap-4">
+        <div className="mx-auto w-full max-w-6xl columns-1 gap-4 sm:columns-2 xl:columns-3">
           <DailyTokenUsageCard snapshot={snapshot} />
         </div>
       </div>
@@ -176,77 +174,51 @@ function DailyTokenUsageCard({
   snapshot: DashboardSnapshot | null;
 }) {
   const chartData = useMemo(() => dailyTokenUsageChartData(snapshot), [snapshot]);
-  const totalTokens = chartData.reduce((sum, item) => sum + item.total, 0);
-  const hasData = chartData.some((item) => item.total > 0);
 
   return (
-    <Card>
+    <Card className="mb-4 break-inside-avoid">
       <CardHeader>
-        <CardTitle>Daily token usage</CardTitle>
-        <CardDescription>
-          最近 14 天 main 与 judge 模型合计 token 消耗
-        </CardDescription>
+        <CardTitle>Token Usage</CardTitle>
       </CardHeader>
       <CardContent>
-        {hasData ? (
-          <div className="grid gap-4">
-            <div className="flex items-end justify-between gap-4">
-              <div>
-                <div className="text-3xl font-semibold tracking-tight tabular-nums">
-                  {formatCompactNumber(totalTokens)}
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  displayed tokens
-                </div>
-              </div>
-            </div>
-            <ChartContainer
-              config={TOKEN_USAGE_CHART_CONFIG}
-              className="h-72 w-full"
-            >
-              <BarChart
-                accessibilityLayer
-                data={chartData}
-                margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
-              >
-                <CartesianGrid vertical={false} />
-                <XAxis
-                  dataKey="label"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                />
-                <YAxis
-                  width={44}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={formatCompactNumber}
-                />
-                <ChartTooltip
-                  cursor={false}
-                  content={
-                    <ChartTooltipContent
-                      valueFormatter={(value) =>
-                        typeof value === "number"
-                          ? formatCompactNumber(value)
-                          : value
-                      }
-                    />
+        <ChartContainer
+          config={TOKEN_USAGE_CHART_CONFIG}
+          className="h-72 w-full"
+        >
+          <BarChart
+            accessibilityLayer
+            data={chartData}
+            margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+          >
+            <XAxis
+              dataKey="label"
+              tickLine={false}
+              axisLine={false}
+              tickMargin={8}
+            />
+            <YAxis
+              width={44}
+              tickLine={false}
+              axisLine={false}
+              tickFormatter={formatCompactNumber}
+            />
+            <ChartTooltip
+              cursor={false}
+              content={
+                <ChartTooltipContent
+                  valueFormatter={(value) =>
+                    typeof value === "number" ? formatCompactNumber(value) : value
                   }
                 />
-                <Bar
-                  dataKey="total"
-                  fill="var(--color-total)"
-                  radius={[8, 8, 0, 0]}
-                />
-              </BarChart>
-            </ChartContainer>
-          </div>
-        ) : (
-          <div className="flex min-h-72 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-            暂无 token usage 数据
-          </div>
-        )}
+              }
+            />
+            <Bar
+              dataKey="total"
+              fill="var(--color-total)"
+              radius={[8, 8, 0, 0]}
+            />
+          </BarChart>
+        </ChartContainer>
       </CardContent>
     </Card>
   );
