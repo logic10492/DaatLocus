@@ -5,7 +5,7 @@ import {
   type AgentAnimationStatus,
 } from "@/components/agent-status-animation";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ChartContainer,
   ChartTooltip,
@@ -173,6 +173,9 @@ function DailyTokenUsageCard({
 
   return (
     <Card className="mb-4 break-inside-avoid overflow-visible bg-transparent py-0 ring-0">
+      <CardHeader className="px-0 pb-2">
+        <CardTitle>Token Usage</CardTitle>
+      </CardHeader>
       <CardContent className="px-0">
         <ChartContainer
           config={TOKEN_USAGE_CHART_CONFIG}
