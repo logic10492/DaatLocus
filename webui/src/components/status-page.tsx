@@ -4,7 +4,7 @@ import {
   AgentStatusAnimation,
   type AgentAnimationStatus,
 } from "@/components/agent-status-animation";
-import { Bar, BarChart, Cell, LabelList, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, Cell, Pie, PieChart, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ChartContainer,
@@ -55,6 +55,10 @@ const WORKFLOW_OPTIMIZATION_CHART_CONFIG = {
   applied: {
     label: "Applied",
     color: "var(--chart-1)",
+  },
+  empty: {
+    label: "No data",
+    color: "var(--muted)",
   },
 } satisfies ChartConfig;
 
@@ -270,6 +274,11 @@ function WorkflowOptimizationCard({
     () => workflowOptimizationProgressData(snapshot),
     [snapshot],
   );
+  const chartData = useMemo(
+    () => workflowOptimizationDonutData(progressData),
+    [progressData],
+  );
+  const total = progressData.reduce((sum, item) => sum + item.value, 0);
 
   return (
     <Card className="overflow-visible">
@@ -277,54 +286,47 @@ function WorkflowOptimizationCard({
         <CardTitle>Workflow Optimization</CardTitle>
       </CardHeader>
       <CardContent>
-        <ChartContainer
-          config={WORKFLOW_OPTIMIZATION_CHART_CONFIG}
-          className="h-64 w-full overflow-visible [&_.recharts-wrapper]:overflow-visible"
-        >
-          <BarChart
-            accessibilityLayer
-            data={progressData}
-            layout="vertical"
-            margin={{ top: 8, right: 36, left: 0, bottom: 0 }}
-            barCategoryGap={12}
+        <div className="relative mx-auto h-64 w-full max-w-64">
+          <ChartContainer
+            config={WORKFLOW_OPTIMIZATION_CHART_CONFIG}
+            className="h-full w-full overflow-visible [&_.recharts-wrapper]:overflow-visible"
           >
-            <XAxis
-              type="number"
-              hide
-              domain={[0, "dataMax"]}
-            />
-            <YAxis
-              dataKey="label"
-              type="category"
-              width={0}
-              hide
-            />
-            <ChartTooltip
-              allowEscapeViewBox={{ y: true }}
-              cursor={{ fill: "var(--muted)" }}
-              wrapperStyle={{ zIndex: 50 }}
-              content={<WorkflowOptimizationTooltip />}
-            />
-            <Bar
-              dataKey="value"
-              radius={[0, 4, 4, 0]}
-              isAnimationActive={false}
-            >
-              {progressData.map((item) => (
-                <Cell
-                  key={item.key}
-                  fill={`var(--color-${item.colorKey})`}
-                />
-              ))}
-              <LabelList
-                dataKey="value"
-                position="right"
-                formatter={(value) => formatCompactNumber(Number(value ?? 0))}
-                className="fill-foreground font-mono text-[10px] font-medium"
+            <PieChart accessibilityLayer>
+              <ChartTooltip
+                cursor={false}
+                wrapperStyle={{ zIndex: 50 }}
+                content={<WorkflowOptimizationTooltip />}
               />
-            </Bar>
-          </BarChart>
-        </ChartContainer>
+              <Pie
+                data={chartData}
+                dataKey="chartValue"
+                nameKey="label"
+                innerRadius={58}
+                outerRadius={88}
+                paddingAngle={2}
+                strokeWidth={0}
+                isAnimationActive={false}
+              >
+                {chartData.map((item) => (
+                  <Cell
+                    key={item.key}
+                    fill={`var(--color-${item.colorKey})`}
+                  />
+                ))}
+              </Pie>
+            </PieChart>
+          </ChartContainer>
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="text-center">
+              <div className="font-mono text-2xl font-medium tabular-nums text-foreground">
+                {formatCompactNumber(total)}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {total > 0 ? "Events" : "No data"}
+              </div>
+            </div>
+          </div>
+        </div>
       </CardContent>
     </Card>
   );
@@ -359,8 +361,12 @@ type WorkflowOptimizationChartDatum = {
   detail: string;
 };
 
+type WorkflowOptimizationDonutDatum = WorkflowOptimizationChartDatum & {
+  chartValue: number;
+};
+
 type WorkflowOptimizationTooltipPayloadItem = {
-  payload?: WorkflowOptimizationChartDatum;
+  payload?: WorkflowOptimizationDonutDatum;
 };
 
 function dailyTokenUsageChartData(
@@ -568,6 +574,32 @@ function workflowOptimizationProgressData(
       detail: `${formatCompactNumber(patchApplied)} patches · ${formatCompactNumber(
         mergeApplied,
       )} merges`,
+    },
+  ];
+}
+
+function workflowOptimizationDonutData(
+  progressData: WorkflowOptimizationChartDatum[],
+): WorkflowOptimizationDonutDatum[] {
+  const activeData = progressData
+    .filter((item) => item.value > 0)
+    .map((item) => ({
+      ...item,
+      chartValue: item.value,
+    }));
+
+  if (activeData.length > 0) {
+    return activeData;
+  }
+
+  return [
+    {
+      key: "empty",
+      label: "No data",
+      value: 0,
+      chartValue: 1,
+      colorKey: "empty",
+      detail: "No workflow optimization activity yet",
     },
   ];
 }
