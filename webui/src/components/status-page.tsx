@@ -101,7 +101,7 @@ type AgentStatusView = {
   label: string;
 };
 
-export function StatusPage() {
+function useDashboardSnapshot() {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<Error | null>(null);
@@ -173,6 +173,11 @@ export function StatusPage() {
     };
   }, []);
 
+  return { isLoading, loadError, snapshot };
+}
+
+export function AgentPage() {
+  const { isLoading, loadError, snapshot } = useDashboardSnapshot();
   const agentStatus = deriveAgentStatus({
     hasLoadError: Boolean(loadError),
     isLoading,
@@ -183,51 +188,55 @@ export function StatusPage() {
 
   return (
     <section
-      aria-label="Agent and runtime status"
-      className="h-screen w-full snap-y snap-mandatory overflow-y-auto overscroll-contain scroll-smooth"
+      id="agent"
+      aria-label="Agent"
+      className="flex min-h-screen w-full items-center justify-center px-6 py-10"
     >
-      <div
-        id="agent"
-        className="flex min-h-full snap-start items-center justify-center px-6 py-10"
-      >
-        <div className="flex flex-col items-center justify-center gap-5 text-center">
-          <AgentStatusAnimation
-            status={agentStatus.animationStatus}
-            className="w-64 md:w-80"
-          />
-          <p
-            aria-live="polite"
-            className="min-h-6 max-w-[min(32rem,calc(100vw-3rem))] text-balance text-sm font-medium leading-6 text-muted-foreground md:text-base"
-          >
-            {typedSummaryText ? (
-              <>
-                <span>{typedSummaryText}</span>
-                {isTyping ? (
-                  <span
-                    aria-hidden="true"
-                    className="ml-0.5 inline-block h-4 w-px translate-y-0.5 bg-muted-foreground/70 motion-reduce:hidden"
-                  />
-                ) : null}
-              </>
-            ) : null}
-          </p>
-          <span
-            aria-live="polite"
-            className="sr-only"
-          >
-            {agentStatus.label}
-          </span>
-        </div>
+      <div className="flex flex-col items-center justify-center gap-5 text-center">
+        <AgentStatusAnimation
+          status={agentStatus.animationStatus}
+          className="w-64 md:w-80"
+        />
+        <p
+          aria-live="polite"
+          className="min-h-6 max-w-[min(32rem,calc(100vw-3rem))] text-balance text-sm font-medium leading-6 text-muted-foreground md:text-base"
+        >
+          {typedSummaryText ? (
+            <>
+              <span>{typedSummaryText}</span>
+              {isTyping ? (
+                <span
+                  aria-hidden="true"
+                  className="ml-0.5 inline-block h-4 w-px translate-y-0.5 bg-muted-foreground/70 motion-reduce:hidden"
+                />
+              ) : null}
+            </>
+          ) : null}
+        </p>
+        <span
+          aria-live="polite"
+          className="sr-only"
+        >
+          {agentStatus.label}
+        </span>
       </div>
-      <div
-        id="status"
-        className="min-h-full w-full snap-start px-6 py-10 md:py-12"
-      >
-        <div className="flex w-full flex-wrap items-start gap-4">
-          <DailyTokenUsageCard snapshot={snapshot} />
-          <WorkflowOptimizationCard snapshot={snapshot} />
-          <RuntimeOptimizationCard snapshot={snapshot} />
-        </div>
+    </section>
+  );
+}
+
+export function StatusPage() {
+  const { snapshot } = useDashboardSnapshot();
+
+  return (
+    <section
+      id="status"
+      aria-label="Status"
+      className="min-h-screen w-full px-6 py-10 md:py-12"
+    >
+      <div className="flex w-full flex-wrap items-start gap-4">
+        <DailyTokenUsageCard snapshot={snapshot} />
+        <WorkflowOptimizationCard snapshot={snapshot} />
+        <RuntimeOptimizationCard snapshot={snapshot} />
       </div>
     </section>
   );
