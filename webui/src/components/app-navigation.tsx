@@ -1,4 +1,4 @@
-import { Activity, CircleDot, KeyRound, ShieldCheck } from "lucide-react";
+import { Activity } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -9,8 +9,6 @@ import {
   navigationMenuTriggerStyle,
 } from "@/components/ui/navigation-menu";
 import { cn } from "@/lib/utils";
-
-export type AuthStatus = "anonymous" | "saved" | "authenticated";
 
 type NavigationItem = {
   label: string;
@@ -26,34 +24,7 @@ const navigationItems: NavigationItem[] = [
   { label: "Logs", href: "#logs", disabled: true },
 ];
 
-function authStatusLabel(authStatus: AuthStatus) {
-  switch (authStatus) {
-    case "authenticated":
-      return "Token verified";
-    case "saved":
-      return "Saved token";
-    case "anonymous":
-      return "Signed out";
-  }
-}
-
-function authStatusVariant(authStatus: AuthStatus) {
-  return authStatus === "authenticated" ? "default" : "secondary";
-}
-
-function AuthStatusIcon({ authStatus }: { authStatus: AuthStatus }) {
-  if (authStatus === "authenticated") {
-    return <ShieldCheck className="size-3.5" />;
-  }
-
-  if (authStatus === "saved") {
-    return <KeyRound className="size-3.5" />;
-  }
-
-  return <CircleDot className="size-3.5" />;
-}
-
-export function AppNavigation({ authStatus }: { authStatus: AuthStatus }) {
+export function AppNavigation() {
   return (
     <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <div className="flex h-16 w-full items-center justify-between gap-4 px-4">
@@ -83,10 +54,6 @@ export function AppNavigation({ authStatus }: { authStatus: AuthStatus }) {
           </NavigationMenuList>
         </NavigationMenu>
 
-        <Badge variant={authStatusVariant(authStatus)} className="h-9 gap-1.5 px-3">
-          <AuthStatusIcon authStatus={authStatus} />
-          {authStatusLabel(authStatus)}
-        </Badge>
       </div>
     </header>
   );

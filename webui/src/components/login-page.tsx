@@ -1,6 +1,5 @@
 import { type FormEvent, useState } from "react";
 
-import { type AuthStatus } from "@/components/app-navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,11 +10,7 @@ import {
 
 type LoginState = "idle" | "checking" | "authenticated" | "error";
 
-export function LoginPage({
-  onAuthStatusChange,
-}: {
-  onAuthStatusChange: (status: AuthStatus) => void;
-}) {
+export function LoginPage() {
   const [token, setToken] = useState(() => getStoredDaemonToken());
   const [loginState, setLoginState] = useState<LoginState>("idle");
   const [message, setMessage] = useState("");
@@ -27,7 +22,6 @@ export function LoginPage({
     if (!trimmedToken) {
       setLoginState("error");
       setMessage("Enter the daemon token.");
-      onAuthStatusChange("anonymous");
       return;
     }
 
@@ -40,13 +34,11 @@ export function LoginPage({
       setToken(trimmedToken);
       setLoginState("authenticated");
       setMessage("Token verified. Future pages will reuse this token.");
-      onAuthStatusChange("authenticated");
       return;
     }
 
     setLoginState("error");
     setMessage(result.message);
-    onAuthStatusChange("anonymous");
   }
 
   const isChecking = loginState === "checking";
@@ -70,7 +62,6 @@ export function LoginPage({
             setMessage("");
             if (loginState !== "checking") {
               setLoginState("idle");
-              onAuthStatusChange(event.target.value.trim() ? "saved" : "anonymous");
             }
           }}
           placeholder="Token"
