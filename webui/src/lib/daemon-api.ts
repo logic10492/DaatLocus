@@ -15,6 +15,11 @@ export type DaemonStatus = {
   connected_clients: number;
 };
 
+export type DashboardPlanStep = {
+  status: "pending" | "in_progress" | "completed";
+  step: string;
+};
+
 export type DashboardSnapshot = {
   focused_app: string | null;
   status_output: string;
@@ -31,6 +36,7 @@ export type DashboardSnapshot = {
   }>;
   last_cycle_elapsed_ms: number | null;
   runtime_status: string | null;
+  current_plan_step: DashboardPlanStep | null;
   footer_context: string;
   footer_estimated_input_tokens: number | null;
 };

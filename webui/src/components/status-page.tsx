@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   AgentStatusAnimation,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/daemon-api";
 
 const DASHBOARD_SNAPSHOT_POLL_MS = 2500;
+const SUMMARY_TYPE_INTERVAL_MS = 28;
 
 type AgentStatusView = {
   animationStatus: AgentAnimationStatus;
@@ -60,6 +61,8 @@ export function StatusPage() {
     isLoading,
     snapshot,
   });
+  const summaryText = derivePlanSummaryText(snapshot);
+  const { isTyping, text: typedSummaryText } = useTypewriterText(summaryText);
 
   return (
     <section
@@ -71,6 +74,22 @@ export function StatusPage() {
           status={agentStatus.animationStatus}
           className="w-64 md:w-80"
         />
+        <p
+          aria-live="polite"
+          className="min-h-6 max-w-[min(32rem,calc(100vw-3rem))] text-balance text-sm font-medium leading-6 text-muted-foreground md:text-base"
+        >
+          {typedSummaryText ? (
+            <>
+              <span>{typedSummaryText}</span>
+              {isTyping ? (
+                <span
+                  aria-hidden="true"
+                  className="ml-0.5 inline-block h-4 w-px translate-y-0.5 bg-muted-foreground/70 motion-reduce:hidden"
+                />
+              ) : null}
+            </>
+          ) : null}
+        </p>
         <span
           aria-live="polite"
           className="sr-only"
@@ -80,6 +99,48 @@ export function StatusPage() {
       </div>
     </section>
   );
+}
+
+function useTypewriterText(text: string) {
+  const characters = useMemo(() => Array.from(text), [text]);
+  const [visibleCharacters, setVisibleCharacters] = useState(0);
+
+  useEffect(() => {
+    setVisibleCharacters(0);
+
+    if (characters.length === 0) {
+      return;
+    }
+
+    let nextLength = 0;
+    const intervalId = window.setInterval(() => {
+      nextLength += 1;
+      setVisibleCharacters(nextLength);
+
+      if (nextLength >= characters.length) {
+        window.clearInterval(intervalId);
+      }
+    }, SUMMARY_TYPE_INTERVAL_MS);
+
+    return () => window.clearInterval(intervalId);
+  }, [characters]);
+
+  return {
+    isTyping: visibleCharacters < characters.length,
+    text: characters.slice(0, visibleCharacters).join(""),
+  };
+}
+
+function derivePlanSummaryText(snapshot: DashboardSnapshot | null) {
+  const planStep = snapshot?.current_plan_step;
+
+  if (!planStep?.step.trim()) {
+    return "";
+  }
+
+  const prefix = planStep.status === "pending" ? "下一步" : "正在";
+
+  return `${prefix}：${planStep.step.trim()}`;
 }
 
 function deriveAgentStatus({

@@ -8,6 +8,7 @@ use crate::{
         ActivateWorkflowArgs, CreateWorkflowArgs, DeepRecallArgs, EventResolveArgs, FocusAppArgs,
         NoticeResolvedArgs, PutAwayAppArgs, ReadWorkflowArgs, UpdatePlanArgs, UpdateWorkflowArgs,
     },
+    dashboard::render::current_plan_step_for_dashboard,
     events::{EventDisposition, EventPayload, EventStatus},
     hindsight::HindsightReflectOptions,
     plan::{Plan, PlanStatus, PlanStep},
@@ -449,6 +450,12 @@ fn execute_update_plan_tool<'a>(
             context.plan.sync_to_disk().await?;
         }
         let effective_steps = context.plan.steps().to_vec();
+        if let Some(tx) = &context.dashboard_tx {
+            let current_plan_step = current_plan_step_for_dashboard(context);
+            tx.send_modify(|state| {
+                state.current_plan_step = current_plan_step.clone();
+            });
+        }
         let summary = if effective_steps.is_empty() {
             if changed {
                 context.queue_active_workflow_run_for_flush(WorkflowRunOutcome::Completed);

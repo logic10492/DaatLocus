@@ -2,9 +2,15 @@
 
 use std::time::Duration;
 
-use crate::{app::AppId, context::Context, events::EventStatus, sleep_status::SleepStatusSnapshot};
+use crate::{
+    app::AppId,
+    context::Context,
+    events::EventStatus,
+    plan::{PlanStatus, PlanStep},
+    sleep_status::SleepStatusSnapshot,
+};
 
-use super::{DashboardState, render_activity_from_messages};
+use super::{DashboardPlanStep, DashboardState, render_activity_from_messages};
 
 /// Sleep-related constants used in dashboard rendering.
 pub const AUTO_SLEEP_IDLE_THRESHOLD: Duration = Duration::from_secs(300);
@@ -30,7 +36,37 @@ pub fn sync_dashboard_state(
         state.last_cycle_elapsed_ms = last_cycle_elapsed_ms;
         state.footer_context =
             render_dashboard_footer_context(context, state.footer_estimated_input_tokens);
+        state.current_plan_step = current_plan_step_for_dashboard(context);
     });
+}
+
+pub fn current_plan_step_for_dashboard(context: &Context) -> Option<DashboardPlanStep> {
+    let step = context
+        .plan
+        .steps()
+        .iter()
+        .find(|step| matches!(step.status, PlanStatus::InProgress))
+        .or_else(|| {
+            context
+                .plan
+                .steps()
+                .iter()
+                .find(|step| matches!(step.status, PlanStatus::Pending))
+        })?;
+
+    Some(DashboardPlanStep {
+        status: dashboard_plan_status(step),
+        step: step.step.clone(),
+    })
+}
+
+fn dashboard_plan_status(step: &PlanStep) -> String {
+    match step.status {
+        PlanStatus::Pending => "pending",
+        PlanStatus::InProgress => "in_progress",
+        PlanStatus::Completed => "completed",
+    }
+    .to_string()
 }
 
 pub fn render_dashboard_footer_context(

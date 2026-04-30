@@ -33,6 +33,12 @@ use serde::{Deserialize, Serialize};
 
 const TELEGRAM_ACCESS_PICKER_VISIBLE_ROWS: usize = 8;
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DashboardPlanStep {
+    pub status: String,
+    pub step: String,
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct DashboardState {
     pub focused_app: Option<AppId>,
@@ -48,6 +54,8 @@ pub struct DashboardState {
     pub live_activity_cells: Vec<LiveActivityCell>,
     pub last_cycle_elapsed_ms: Option<u128>,
     pub runtime_status: Option<String>,
+    #[serde(default)]
+    pub current_plan_step: Option<DashboardPlanStep>,
     pub footer_context: String,
     pub footer_estimated_input_tokens: Option<usize>,
 }
