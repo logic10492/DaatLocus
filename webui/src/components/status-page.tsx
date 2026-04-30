@@ -20,7 +20,7 @@ import {
 
 const DASHBOARD_STREAM_RECONNECT_MS = 1500;
 const SUMMARY_TYPE_INTERVAL_MS = 28;
-const TOKEN_USAGE_LOOKBACK_DAYS = 30;
+const TOKEN_USAGE_LOOKBACK_DAYS = 7;
 const TOKEN_USAGE_CHART_CONFIG = {
   cached: {
     label: "Cached",
