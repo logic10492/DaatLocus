@@ -12,6 +12,7 @@ import {
 const DASHBOARD_SNAPSHOT_POLL_MS = 2500;
 const debugAnimationStatuses = [
   "idle",
+  "thinking",
   "running",
 ] as const satisfies readonly AgentAnimationStatus[];
 
