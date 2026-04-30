@@ -211,11 +211,11 @@ function DailyTokenUsageCard({
   const hasUsage = chartData.some((day) => day.total > 0);
 
   return (
-    <Card className="mb-4 break-inside-avoid overflow-visible bg-transparent py-0 ring-0">
-      <CardHeader className="px-0 pb-2">
+    <Card className="overflow-visible">
+      <CardHeader>
         <CardTitle>Token Usage</CardTitle>
       </CardHeader>
-      <CardContent className="px-0">
+      <CardContent>
         <ChartContainer
           config={TOKEN_USAGE_CHART_CONFIG}
           className="h-64 w-full overflow-visible [&_.recharts-wrapper]:overflow-visible"
@@ -293,8 +293,8 @@ function WorkflowOptimizationCard({
     frontierData.some((item) => item.value > 0);
 
   return (
-    <Card className="mb-4 break-inside-avoid overflow-visible bg-transparent py-0 ring-0">
-      <CardHeader className="px-0 pb-2">
+    <Card className="overflow-visible">
+      <CardHeader>
         <CardTitle>Workflow Optimization</CardTitle>
         <CardDescription>Sleep-time workflow improvement status</CardDescription>
         <CardAction>
@@ -303,7 +303,7 @@ function WorkflowOptimizationCard({
           </Badge>
         </CardAction>
       </CardHeader>
-      <CardContent className="px-0">
+      <CardContent>
         <ChartContainer
           config={WORKFLOW_OPTIMIZATION_CHART_CONFIG}
           className="h-64 w-full overflow-visible [&_.recharts-wrapper]:overflow-visible"
