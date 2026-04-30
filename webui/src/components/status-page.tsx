@@ -160,7 +160,7 @@ export function StatusPage() {
       <div
         className="min-h-full w-full snap-start px-6 py-10 md:py-12"
       >
-        <div className="mx-auto w-full max-w-6xl columns-1 gap-4 sm:columns-2 xl:columns-3">
+        <div className="w-full columns-1 gap-4 sm:columns-2 xl:columns-3">
           <DailyTokenUsageCard snapshot={snapshot} />
         </div>
       </div>
