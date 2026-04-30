@@ -238,11 +238,17 @@ export function StatusPage() {
       aria-label="Status"
       className="min-h-screen w-full px-6 pb-10 pt-20 md:pb-12 md:pt-24"
     >
-      <div className="flex w-full flex-wrap items-start gap-4">
-        <TelegramApprovalCard snapshot={snapshot} />
-        <DailyTokenUsageCard snapshot={snapshot} />
-        <WorkflowOptimizationCard snapshot={snapshot} />
-        <RuntimeOptimizationCard snapshot={snapshot} />
+      <div className="grid w-full grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="flex min-w-0 flex-col gap-4">
+          <TelegramApprovalCard snapshot={snapshot} />
+          <RuntimeOptimizationCard snapshot={snapshot} />
+        </div>
+        <div className="flex min-w-0 flex-col gap-4">
+          <DailyTokenUsageCard snapshot={snapshot} />
+        </div>
+        <div className="flex min-w-0 flex-col gap-4 sm:col-span-2 xl:col-span-1">
+          <WorkflowOptimizationCard snapshot={snapshot} />
+        </div>
       </div>
     </section>
   );
@@ -274,7 +280,7 @@ function TelegramApprovalCard({
   }
 
   return (
-    <Card className="w-full sm:w-96">
+    <Card className="w-full">
       <CardHeader>
         <CardTitle>Telegram Approval</CardTitle>
       </CardHeader>
@@ -351,7 +357,7 @@ function DailyTokenUsageCard({
   const hasUsage = chartData.some((day) => day.total > 0);
 
   return (
-    <Card className="w-full overflow-visible sm:w-[28rem]">
+    <Card className="w-full overflow-visible">
       <CardHeader>
         <CardTitle>Token Usage</CardTitle>
       </CardHeader>
@@ -429,7 +435,7 @@ function WorkflowOptimizationCard({
   const total = progressData.reduce((sum, item) => sum + item.value, 0);
 
   return (
-    <Card className="w-full overflow-visible sm:w-72">
+    <Card className="w-full overflow-visible">
       <CardHeader>
         <CardTitle>Workflow Optimization</CardTitle>
       </CardHeader>
@@ -496,7 +502,7 @@ function RuntimeOptimizationCard({
   const total = progressData.reduce((sum, item) => sum + item.value, 0);
 
   return (
-    <Card className="w-full overflow-visible sm:w-72">
+    <Card className="w-full overflow-visible">
       <CardHeader>
         <CardTitle>Runtime Optimization</CardTitle>
       </CardHeader>
