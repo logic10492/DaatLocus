@@ -79,8 +79,8 @@ export function LogsPage() {
     sources.find((source) => source.id === selectedSourceId) ?? null;
 
   const entries = useMemo(
-    () => lines.map((line) => parseLogEntry(line, selectedSource)),
-    [lines, selectedSource],
+    () => lines.map((line) => parseLogEntry(line)),
+    [lines],
   );
 
   const filteredEntries = useMemo(() => {
@@ -361,7 +361,7 @@ export function LogsPage() {
                       {source.label}
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">
-                      {source.category} · {source.format}
+                      {source.description}
                     </span>
                   </span>
                   <span
@@ -567,24 +567,19 @@ function emptyStateMessage({
   return null;
 }
 
-function parseLogEntry(line: LogLine, source: LogSource | null): LogEntry {
+function parseLogEntry(line: LogLine): LogEntry {
   const raw = line.text.trimEnd();
   const fallback: LogEntry = {
     id: line.id,
     raw,
     timestamp: null,
     level: inferLevel(raw),
-    target: source?.category ?? null,
+    target: null,
     message: raw || "(blank)",
   };
 
   if (!raw) {
     return fallback;
-  }
-
-  const json = parseJsonObject(raw);
-  if (json) {
-    return parseJsonLogEntry(line, json, source);
   }
 
   const pythonMatch = raw.match(
@@ -610,142 +605,12 @@ function parseLogEntry(line: LogLine, source: LogSource | null): LogEntry {
       raw,
       timestamp: tracingMatch[1],
       level: normalizeLevel(tracingMatch[2]),
-      target: tracingMatch[3] ?? source?.category ?? null,
+      target: tracingMatch[3] ?? null,
       message: tracingMatch[4] || raw,
     };
   }
 
   return fallback;
-}
-
-function parseJsonLogEntry(
-  line: LogLine,
-  json: Record<string, unknown>,
-  source: LogSource | null,
-): LogEntry {
-  const timestamp =
-    timestampFromJsonValue(firstJsonValue(json, TIMESTAMP_KEYS)) ?? null;
-  const level = normalizeLevel(
-    stringFromJsonValue(firstJsonValue(json, LEVEL_KEYS)) ?? inferLevel(line.text),
-  );
-  const target =
-    stringFromJsonValue(firstJsonValue(json, TARGET_KEYS)) ??
-    source?.category ??
-    null;
-  const explicitMessage = stringFromJsonValue(firstJsonValue(json, MESSAGE_KEYS));
-
-  return {
-    id: line.id,
-    raw: line.text,
-    timestamp,
-    level,
-    target,
-    message: explicitMessage ?? summarizeJson(json),
-  };
-}
-
-const TIMESTAMP_KEYS = [
-  "timestamp",
-  "time",
-  "created_at",
-  "created_at_ms",
-  "started_at_ms",
-  "arrived_at_ms",
-  "completed_at_ms",
-  "last_updated_at_ms",
-] as const;
-
-const LEVEL_KEYS = ["level", "severity", "status", "disposition"] as const;
-const TARGET_KEYS = [
-  "target",
-  "module",
-  "kind",
-  "type",
-  "event",
-  "workflow_id",
-] as const;
-const MESSAGE_KEYS = [
-  "message",
-  "msg",
-  "text",
-  "summary",
-  "note",
-  "reason",
-  "error",
-  "reply_message",
-] as const;
-
-function parseJsonObject(text: string): Record<string, unknown> | null {
-  if (!text.startsWith("{") || !text.endsWith("}")) {
-    return null;
-  }
-
-  try {
-    const value: unknown = JSON.parse(text);
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function firstJsonValue(
-  json: Record<string, unknown>,
-  keys: readonly string[],
-): unknown {
-  for (const key of keys) {
-    if (key in json) {
-      return json[key];
-    }
-  }
-  return undefined;
-}
-
-function stringFromJsonValue(value: unknown): string | null {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return null;
-}
-
-function timestampFromJsonValue(value: unknown): string | null {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const millis = value > 10_000_000_000 ? value : value * 1_000;
-    return formatTimestamp(millis);
-  }
-  return null;
-}
-
-function summarizeJson(json: Record<string, unknown>) {
-  const preferredKeys = [
-    "id",
-    "event_id",
-    "workflow_id",
-    "app",
-    "tool_name",
-    "status",
-    "step",
-  ];
-  const parts = preferredKeys
-    .map((key) => [key, stringFromJsonValue(json[key])] as const)
-    .filter(([, value]) => value)
-    .map(([key, value]) => `${key}=${value}`);
-
-  if (parts.length > 0) {
-    return parts.join(" · ");
-  }
-
-  const serialized = JSON.stringify(json);
-  return serialized.length > 600
-    ? `${serialized.slice(0, 600)}…`
-    : serialized;
 }
 
 function inferLevel(text: string): string | null {
@@ -897,14 +762,4 @@ function toLogLines(rawLines: string[], responseCursor: number): LogLine[] {
 
 function trimLogLines(lines: LogLine[], maxLines: number) {
   return lines.length > maxLines ? lines.slice(lines.length - maxLines) : lines;
-}
-
-function formatTimestamp(ms: number) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(new Date(ms));
 }

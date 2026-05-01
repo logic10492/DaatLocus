@@ -120,13 +120,10 @@ export type LogSource = {
   id: string;
   label: string;
   description: string;
-  category: string;
-  format: "text" | "jsonl" | string;
   path: string;
   exists: boolean;
   size_bytes: number;
   modified_at_ms: number | null;
-  sensitive: boolean;
 };
 
 export type LogSourcesResponse = {

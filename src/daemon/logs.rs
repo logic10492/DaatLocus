@@ -19,12 +19,6 @@ use crate::{config::load_config, daat_locus_paths::daat_locus_paths};
 
 use super::{DAEMON_MAIN_LOG, DAEMON_STDERR_LOG, ServerState};
 
-const CURRENT_TURN_MESSAGES_LOG: &str = "current_turn_messages.txt";
-const CURRENT_TURN_RESPONSE_LOG: &str = "current_turn_response.txt";
-const REASONING_TRACES_JOURNAL: &str = "reasoning_traces.jsonl";
-const RUNTIME_COMPACTION_EVENTS_JOURNAL: &str = "runtime_compaction_events.jsonl";
-const RUNTIME_ERROR_CASES_JOURNAL: &str = "runtime_error_cases.jsonl";
-const WORKFLOW_RUN_RECORDS_JOURNAL: &str = "run_records.jsonl";
 const DEFAULT_HINDSIGHT_PROFILE: &str = "daat-locus";
 const DEFAULT_LOG_LINE_LIMIT: usize = 500;
 const MAX_LOG_LINE_LIMIT: usize = 2_000;
@@ -37,13 +31,10 @@ pub(super) struct LogSourceEntry {
     pub id: String,
     pub label: String,
     pub description: String,
-    pub category: &'static str,
-    pub format: &'static str,
     pub path: String,
     pub exists: bool,
     pub size_bytes: u64,
     pub modified_at_ms: Option<i64>,
-    pub sensitive: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -164,83 +155,14 @@ async fn log_sources() -> Vec<LogSourceEntry> {
             "daemon-main",
             "Daemon main log",
             "Runtime and daemon tracing output.",
-            "runtime",
-            "text",
             paths.logs_file(DAEMON_MAIN_LOG),
-            false,
         )
         .await,
         log_source_entry(
             "daemon-stderr",
             "Daemon stderr",
             "Detached daemon stderr, useful for startup failures and panics.",
-            "runtime",
-            "text",
             paths.logs_file(DAEMON_STDERR_LOG),
-            false,
-        )
-        .await,
-        log_source_entry(
-            "current-turn-messages",
-            "Current turn messages",
-            "Latest turn request/message dump; overwritten every turn.",
-            "diagnostic",
-            "text",
-            paths.logs_file(CURRENT_TURN_MESSAGES_LOG),
-            true,
-        )
-        .await,
-        log_source_entry(
-            "current-turn-response",
-            "Current turn response",
-            "Latest turn response dump; overwritten every turn.",
-            "diagnostic",
-            "text",
-            paths.logs_file(CURRENT_TURN_RESPONSE_LOG),
-            true,
-        )
-        .await,
-        log_source_entry(
-            "reasoning-traces",
-            "Reasoning traces",
-            "Program trace journal for runtime reasoning diagnostics.",
-            "journal",
-            "jsonl",
-            paths.journal_file(REASONING_TRACES_JOURNAL),
-            true,
-        )
-        .await,
-        log_source_entry(
-            "runtime-compaction-events",
-            "Runtime compaction events",
-            "Context compaction telemetry journal.",
-            "journal",
-            "jsonl",
-            paths.journal_file(RUNTIME_COMPACTION_EVENTS_JOURNAL),
-            false,
-        )
-        .await,
-        log_source_entry(
-            "runtime-error-cases",
-            "Runtime error cases",
-            "Queued runtime error correction cases.",
-            "journal",
-            "jsonl",
-            paths.journal_file(RUNTIME_ERROR_CASES_JOURNAL),
-            true,
-        )
-        .await,
-        log_source_entry(
-            "workflow-run-records",
-            "Workflow run records",
-            "Workflow execution records used by sleep-time workflow optimization.",
-            "workflow",
-            "jsonl",
-            paths
-                .state_dir()
-                .join("workflows")
-                .join(WORKFLOW_RUN_RECORDS_JOURNAL),
-            false,
         )
         .await,
     ];
@@ -251,13 +173,10 @@ async fn log_sources() -> Vec<LogSourceEntry> {
                 "hindsight-profile",
                 format!("Hindsight profile `{hindsight_profile}`"),
                 "Managed hindsight sidecar log.",
-                "hindsight",
-                "text",
                 home_dir
                     .join(".hindsight")
                     .join("profiles")
                     .join(format!("{hindsight_profile}.log")),
-                false,
             )
             .await,
         );
@@ -270,10 +189,7 @@ async fn log_source_entry(
     id: impl Into<String>,
     label: impl Into<String>,
     description: impl Into<String>,
-    category: &'static str,
-    format: &'static str,
     path: PathBuf,
-    sensitive: bool,
 ) -> LogSourceEntry {
     let metadata = tokio::fs::metadata(&path).await.ok();
     let modified_at_ms = metadata
@@ -286,8 +202,6 @@ async fn log_source_entry(
         id: id.into(),
         label: label.into(),
         description: description.into(),
-        category,
-        format,
         path: path.display().to_string(),
         exists: metadata.as_ref().is_some_and(|metadata| metadata.is_file()),
         size_bytes: metadata
@@ -295,7 +209,6 @@ async fn log_source_entry(
             .map(|metadata| metadata.len())
             .unwrap_or(0),
         modified_at_ms,
-        sensitive,
     }
 }
 
