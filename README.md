@@ -103,6 +103,9 @@ cd DaatLocus
 cargo run --locked
 ```
 
+`cargo build` and `cargo run` build the Rust core only. Use `cargo xtask build`
+for a full release-style binary with the WebUI assets embedded into the daemon.
+
 [releases-url]: https://github.com/shadow3aaa/DaatLocus/releases
 
 ## Documentation

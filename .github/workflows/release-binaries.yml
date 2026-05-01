@@ -39,6 +39,14 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable Corepack
+        run: corepack enable
+
       - name: Cache Cargo build outputs
         uses: Swatinem/rust-cache@v2
 
@@ -50,7 +58,7 @@ jobs:
           echo "target=$target" >> "$GITHUB_OUTPUT"
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo xtask build
 
       - name: Package release binary
         shell: bash

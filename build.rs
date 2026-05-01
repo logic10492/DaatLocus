@@ -6,12 +6,22 @@ use std::{
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     emit_build_target();
+    emit_embedded_webui_inputs(&manifest_dir);
     write_builtin_workflow_bindings(&manifest_dir);
 }
 
 fn emit_build_target() {
     let target = env::var("TARGET").expect("target triple");
     println!("cargo:rustc-env=DAAT_LOCUS_BUILD_TARGET={target}");
+}
+
+fn emit_embedded_webui_inputs(manifest_dir: &Path) {
+    if env::var_os("CARGO_FEATURE_EMBEDDED_WEBUI").is_none() {
+        return;
+    }
+
+    let webui_dist = manifest_dir.join("webui").join("dist");
+    println!("cargo:rerun-if-changed={}", webui_dist.display());
 }
 
 fn write_builtin_workflow_bindings(manifest_dir: &Path) {

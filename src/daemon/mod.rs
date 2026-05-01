@@ -18,7 +18,18 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+#[cfg(feature = "embedded-webui")]
+use axum::{
+    body::Body,
+    http::{
+        Uri,
+        header::{CACHE_CONTROL, CONTENT_TYPE},
+    },
+    response::Response,
+};
 use futures_util::StreamExt;
+#[cfg(feature = "embedded-webui")]
+use include_dir::{Dir, include_dir};
 use miette::{Result, miette};
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, System};
@@ -60,6 +71,9 @@ const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const DAEMON_MAIN_LOG: &str = "daat-locus.log";
 const DAEMON_STDERR_LOG: &str = "daemon-stderr.log";
 pub const DAEMONIZE_ENV: &str = "DAAT_LOCUS_DAEMONIZE";
+
+#[cfg(feature = "embedded-webui")]
+static EMBEDDED_WEBUI_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/webui/dist");
 
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -460,6 +474,9 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
         .route("/daemon/restart", post(restart_handler))
         .with_state(app_state.clone());
 
+    #[cfg(feature = "embedded-webui")]
+    let router = router.fallback(get(embedded_webui_handler));
+
     let join = tokio::spawn(async move {
         let server = axum::serve(listener, router).with_graceful_shutdown(async move {
             let _ = shutdown_rx.await;
@@ -473,6 +490,103 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
         port: local_addr.port(),
         join,
     })
+}
+
+#[cfg(feature = "embedded-webui")]
+async fn embedded_webui_handler(uri: Uri) -> Response {
+    let request_path = uri.path().trim_start_matches('/');
+    let asset_path = if request_path.is_empty() {
+        "index.html"
+    } else {
+        request_path
+    };
+
+    if !is_safe_embedded_webui_path(asset_path) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    if let Some(response) = embedded_webui_asset_response(asset_path) {
+        return response;
+    }
+
+    if is_daemon_api_path(asset_path) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    if !looks_like_static_asset_path(asset_path)
+        && let Some(response) = embedded_webui_asset_response("index.html")
+    {
+        return response;
+    }
+
+    StatusCode::NOT_FOUND.into_response()
+}
+
+#[cfg(feature = "embedded-webui")]
+fn embedded_webui_asset_response(path: &str) -> Option<Response> {
+    let file = EMBEDDED_WEBUI_DIST.get_file(path)?;
+    let mut response = Response::new(Body::from(file.contents().to_vec()));
+    let headers = response.headers_mut();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(webui_content_type(path)),
+    );
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static(webui_cache_control(path)),
+    );
+    Some(response)
+}
+
+#[cfg(feature = "embedded-webui")]
+fn is_safe_embedded_webui_path(path: &str) -> bool {
+    !path
+        .split('/')
+        .any(|component| component.is_empty() || component == "." || component == "..")
+}
+
+#[cfg(feature = "embedded-webui")]
+fn looks_like_static_asset_path(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|name| name.contains('.'))
+}
+
+#[cfg(feature = "embedded-webui")]
+fn is_daemon_api_path(path: &str) -> bool {
+    matches!(
+        path.split('/').next().unwrap_or_default(),
+        "commands" | "daemon" | "dashboard" | "health" | "logs" | "settings" | "status"
+    )
+}
+
+#[cfg(feature = "embedded-webui")]
+fn webui_content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or_default() {
+        "css" => "text/css; charset=utf-8",
+        "gif" => "image/gif",
+        "html" => "text/html; charset=utf-8",
+        "ico" => "image/x-icon",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" | "map" => "application/json; charset=utf-8",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "txt" => "text/plain; charset=utf-8",
+        "wasm" => "application/wasm",
+        "webp" => "image/webp",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
+
+#[cfg(feature = "embedded-webui")]
+fn webui_cache_control(path: &str) -> &'static str {
+    if path == "index.html" {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    }
 }
 
 async fn health_handler() -> impl IntoResponse {

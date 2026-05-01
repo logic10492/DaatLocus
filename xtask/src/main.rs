@@ -23,6 +23,7 @@ const HINDSIGHT_TORCH_BACKEND: &str = "cpu";
 const HINDSIGHT_EMBED_PACKAGE: &str = "hindsight-embed==0.5.5";
 const HINDSIGHT_API_PACKAGE: &str = "hindsight-api-slim[embedded-db,local-ml]==0.5.5";
 const HINDSIGHT_PACKAGE_VERSION: &str = "0.5.5";
+const EMBEDDED_WEBUI_FEATURE: &str = "embedded-webui";
 
 fn main() -> ExitCode {
     match run() {
@@ -43,6 +44,7 @@ fn run() -> Result<()> {
 
     let command = args.remove(0);
     match command.as_str() {
+        "build" => build_product(parse_product_build_args(&args)?)?,
         "build-hindsight-sidecar" => build_hindsight_sidecar(parse_build_args(&args)?)?,
         "verify-hindsight-sidecars" => verify_hindsight_sidecars()?,
         "smoke-hindsight-sidecar" => smoke_hindsight_sidecar(parse_target_arg(&args)?)?,
@@ -58,12 +60,14 @@ fn print_help() {
     println!(
         "\
 Usage:
+  cargo xtask build [--target TARGET] [--no-locked]
   cargo xtask build-hindsight-sidecar [--spec PATH | --entry-script PATH] [--target TARGET]
   cargo xtask verify-hindsight-sidecars
   cargo xtask smoke-hindsight-sidecar [--target TARGET]
   cargo xtask package-release-binary [--target TARGET] [--release-dir PATH] [--out-dir PATH]
 
 Commands:
+  build                      Build the full release binary with embedded WebUI assets.
   build-hindsight-sidecar    Build the current host sidecar with PyInstaller and update assets.
   verify-hindsight-sidecars  Verify manifest checksums and archive layouts.
   smoke-hindsight-sidecar    Extract and run the current-host sidecar entry.
@@ -158,6 +162,12 @@ impl PyInstallerCommand {
 }
 
 #[derive(Debug)]
+struct ProductBuildArgs {
+    target: Option<String>,
+    locked: bool,
+}
+
+#[derive(Debug)]
 struct PackageReleaseArgs {
     target: String,
     release_dir: Option<PathBuf>,
@@ -173,6 +183,31 @@ struct RootManifest {
 struct RootPackage {
     name: String,
     version: String,
+}
+
+fn parse_product_build_args(raw: &[String]) -> Result<ProductBuildArgs> {
+    let mut target = None;
+    let mut locked = true;
+
+    let mut index = 0;
+    while index < raw.len() {
+        match raw[index].as_str() {
+            "--target" => {
+                target = Some(next_value(raw, &mut index, "--target")?);
+            }
+            "--no-locked" => {
+                locked = false;
+            }
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown build flag `{other}`").into()),
+        }
+        index += 1;
+    }
+
+    Ok(ProductBuildArgs { target, locked })
 }
 
 fn parse_build_args(raw: &[String]) -> Result<BuildArgs> {
@@ -298,6 +333,85 @@ fn next_value(raw: &[String], index: &mut usize, flag: &str) -> Result<String> {
     raw.get(*index)
         .cloned()
         .ok_or_else(|| format!("{flag} requires a value").into())
+}
+
+fn build_product(args: ProductBuildArgs) -> Result<()> {
+    build_webui()?;
+    build_release_binary_with_embedded_webui(args)?;
+    Ok(())
+}
+
+fn build_webui() -> Result<()> {
+    let webui_dir = repo_root().join("webui");
+    let package_json = webui_dir.join("package.json");
+    if !package_json.is_file() {
+        return Err(format!("WebUI package.json not found: {}", package_json.display()).into());
+    }
+
+    let mut install_command = webui_package_manager_command();
+    install_command
+        .arg("install")
+        .arg("--immutable")
+        .current_dir(&webui_dir);
+    run_command(&mut install_command, "WebUI dependency install")?;
+
+    let mut build_command = webui_package_manager_command();
+    build_command.arg("build").current_dir(&webui_dir);
+    run_command(&mut build_command, "WebUI build")?;
+
+    let index_html = webui_dir.join("dist").join("index.html");
+    if !index_html.is_file() {
+        return Err(format!(
+            "WebUI build did not produce required entry {}",
+            index_html.display()
+        )
+        .into());
+    }
+
+    println!("built WebUI assets at {}", webui_dir.join("dist").display());
+    Ok(())
+}
+
+fn webui_package_manager_command() -> Command {
+    if command_exists("corepack") {
+        let mut command = Command::new("corepack");
+        command.arg("yarn");
+        return command;
+    }
+    Command::new("yarn")
+}
+
+fn build_release_binary_with_embedded_webui(args: ProductBuildArgs) -> Result<()> {
+    let mut command = Command::new("cargo");
+    command
+        .arg("build")
+        .arg("-p")
+        .arg("daat-locus")
+        .arg("--release")
+        .arg("--features")
+        .arg(EMBEDDED_WEBUI_FEATURE);
+
+    if args.locked {
+        command.arg("--locked");
+    }
+    if let Some(target) = args.target {
+        command.arg("--target").arg(target);
+    }
+
+    command.current_dir(repo_root());
+    run_command(&mut command, "release build with embedded WebUI")?;
+    Ok(())
+}
+
+fn run_command(command: &mut Command, label: &str) -> Result<()> {
+    let status = command
+        .status()
+        .map_err(|err| format!("failed to spawn {label}: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{label} failed with status {status}").into())
+    }
 }
 
 fn build_hindsight_sidecar(args: BuildArgs) -> Result<()> {
@@ -529,7 +643,7 @@ fn package_release_binary(args: PackageReleaseArgs) -> Result<()> {
     let binary_path = release_dir.join(&binary_name);
     if !binary_path.is_file() {
         return Err(format!(
-            "release binary does not exist: {}. Run `cargo build --release --locked` first.",
+            "release binary does not exist: {}. Run `cargo xtask build` first for an embedded-WebUI release binary.",
             binary_path.display()
         )
         .into());
