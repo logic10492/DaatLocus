@@ -85,12 +85,7 @@ cargo run --locked
 ```
 
 `cargo build` 和 `cargo run` 只构建 Rust 核心。需要带内置 WebUI 的完整
-发布式二进制时，使用 `cargo xtask build`。额外的 `cargo build` 参数可放在
-`--` 之后透传，例如：
-
-```bash
-cargo xtask build -- --timings
-```
+发布式二进制时，使用 `cargo xtask build`。
 
 [releases-url]: https://github.com/shadow3aaa/DaatLocus/releases
 

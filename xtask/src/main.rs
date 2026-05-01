@@ -60,7 +60,7 @@ fn print_help() {
     println!(
         "\
 Usage:
-  cargo xtask build [--target TARGET] [--no-locked] [-- CARGO_BUILD_ARGS...]
+  cargo xtask build [--target TARGET] [--no-locked]
   cargo xtask build-hindsight-sidecar [--spec PATH | --entry-script PATH] [--target TARGET]
   cargo xtask verify-hindsight-sidecars
   cargo xtask smoke-hindsight-sidecar [--target TARGET]
@@ -68,7 +68,6 @@ Usage:
 
 Commands:
   build                      Build the full release binary with embedded WebUI assets.
-                             Arguments after `--` are forwarded to cargo build.
   build-hindsight-sidecar    Build the current host sidecar with PyInstaller and update assets.
   verify-hindsight-sidecars  Verify manifest checksums and archive layouts.
   smoke-hindsight-sidecar    Extract and run the current-host sidecar entry.
@@ -166,7 +165,6 @@ impl PyInstallerCommand {
 struct ProductBuildArgs {
     target: Option<String>,
     locked: bool,
-    cargo_build_args: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -190,15 +188,10 @@ struct RootPackage {
 fn parse_product_build_args(raw: &[String]) -> Result<ProductBuildArgs> {
     let mut target = None;
     let mut locked = true;
-    let mut cargo_build_args = Vec::new();
 
     let mut index = 0;
     while index < raw.len() {
         match raw[index].as_str() {
-            "--" => {
-                cargo_build_args.extend_from_slice(&raw[index + 1..]);
-                break;
-            }
             "--target" => {
                 target = Some(next_value(raw, &mut index, "--target")?);
             }
@@ -209,21 +202,12 @@ fn parse_product_build_args(raw: &[String]) -> Result<ProductBuildArgs> {
                 print_help();
                 std::process::exit(0);
             }
-            other => {
-                return Err(format!(
-                    "unknown build flag `{other}`. Pass cargo build arguments after `--`."
-                )
-                .into());
-            }
+            other => return Err(format!("unknown build flag `{other}`").into()),
         }
         index += 1;
     }
 
-    Ok(ProductBuildArgs {
-        target,
-        locked,
-        cargo_build_args,
-    })
+    Ok(ProductBuildArgs { target, locked })
 }
 
 fn parse_build_args(raw: &[String]) -> Result<BuildArgs> {
@@ -413,7 +397,6 @@ fn build_release_binary_with_embedded_webui(args: ProductBuildArgs) -> Result<()
     if let Some(target) = args.target {
         command.arg("--target").arg(target);
     }
-    command.args(args.cargo_build_args);
 
     command.current_dir(repo_root());
     run_command(&mut command, "release build with embedded WebUI")?;
@@ -1265,59 +1248,4 @@ fn slash_path_without_cur_dir(path: &Path) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn strings(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
-    }
-
-    #[test]
-    fn parses_product_build_passthrough_after_separator() {
-        let args = parse_product_build_args(&strings(&[
-            "--target",
-            "aarch64-apple-darwin",
-            "--no-locked",
-            "--",
-            "--timings",
-            "--features",
-            "extra-feature",
-        ]))
-        .expect("build args should parse");
-
-        assert_eq!(args.target.as_deref(), Some("aarch64-apple-darwin"));
-        assert!(!args.locked);
-        assert_eq!(
-            args.cargo_build_args,
-            strings(&["--timings", "--features", "extra-feature"])
-        );
-    }
-
-    #[test]
-    fn keeps_build_like_flags_after_separator_as_passthrough() {
-        let args =
-            parse_product_build_args(&strings(&["--", "--target", "x86_64-unknown-linux-gnu"]))
-                .expect("build args should parse");
-
-        assert_eq!(args.target, None);
-        assert!(args.locked);
-        assert_eq!(
-            args.cargo_build_args,
-            strings(&["--target", "x86_64-unknown-linux-gnu"])
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_product_build_flags_before_separator() {
-        let err = parse_product_build_args(&strings(&["--timings"]))
-            .expect_err("unknown build flags should fail before `--`");
-
-        assert!(
-            err.to_string().contains("after `--`"),
-            "unexpected error: {err}"
-        );
-    }
 }
