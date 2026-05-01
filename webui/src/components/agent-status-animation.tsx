@@ -87,10 +87,10 @@ const rightWorkingEyeFrames = {
 const idleLookDistance = 8;
 const idleLookIntervalMs = 3_000;
 const idleLookMoveDurationMs = 420;
-const idleLookHoldMs = 760;
+const idleLookSideHoldMs = 320;
 
 type ExpressionVisualKind = keyof typeof mouthPathByVisualKind;
-type IdleLookDirection = -1 | 0 | 1;
+type IdleLookDirection = -1 | 1;
 
 type ExpressionTransition = {
   from: ExpressionVisualKind;
@@ -464,7 +464,6 @@ function useIdleEyeLook(isActive: boolean) {
   const [lookOffset, setLookOffset] = useState(0);
   const animationFrameRef = useRef<number | null>(null);
   const currentOffsetRef = useRef(0);
-  const queuedLookDirectionsRef = useRef<IdleLookDirection[]>([]);
 
   useEffect(() => {
     let isCurrent = true;
@@ -530,17 +529,10 @@ function useIdleEyeLook(isActive: boolean) {
       timeoutIds.clear();
     };
 
-    const pickLookDirection = () => {
-      if (queuedLookDirectionsRef.current.length === 0) {
-        queuedLookDirectionsRef.current =
-          Math.random() < 0.5 ? [-1, 1] : [1, -1];
-      }
-
-      return queuedLookDirectionsRef.current.shift() ?? 1;
-    };
+    const pickLookDirections = (): [IdleLookDirection, IdleLookDirection] =>
+      Math.random() < 0.5 ? [-1, 1] : [1, -1];
 
     if (!isActive) {
-      queuedLookDirectionsRef.current = [];
       animateToOffset(0);
 
       return () => {
@@ -550,15 +542,20 @@ function useIdleEyeLook(isActive: boolean) {
       };
     }
 
-    const returnToCenter = () => {
-      animateToOffset(0);
-    };
+    const playLookSweep = () => {
+      const [firstDirection, secondDirection] = pickLookDirections();
 
-    const lookAside = () => {
-      const nextDirection = pickLookDirection();
-
-      animateToOffset(nextDirection * idleLookDistance);
-      setManagedTimeout(returnToCenter, idleLookHoldMs);
+      animateToOffset(firstDirection * idleLookDistance);
+      setManagedTimeout(() => {
+        if (isCurrent) {
+          animateToOffset(secondDirection * idleLookDistance);
+        }
+      }, idleLookMoveDurationMs + idleLookSideHoldMs);
+      setManagedTimeout(() => {
+        if (isCurrent) {
+          animateToOffset(0);
+        }
+      }, idleLookMoveDurationMs * 2 + idleLookSideHoldMs * 2);
     };
 
     function scheduleNextLook() {
@@ -567,7 +564,7 @@ function useIdleEyeLook(isActive: boolean) {
           return;
         }
 
-        lookAside();
+        playLookSweep();
         scheduleNextLook();
       }, idleLookIntervalMs);
     }
