@@ -34,6 +34,8 @@ Use this checklist before tagging a Daat Locus release.
 - Build local release candidates through `cargo xtask build` so WebUI assets are
   generated before Rust compilation and embedded via the non-default
   `embedded-webui` feature.
+  - Pass additional `cargo build` arguments after `--`, for example
+    `cargo xtask build -- --timings`.
 - Run the `Release Binaries` workflow for the release tag and confirm Linux,
   macOS, and Windows artifacts are uploaded to the GitHub Release.
 - Confirm release binaries embed the WebUI assets but do not embed Hindsight
