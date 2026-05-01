@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -26,32 +26,19 @@ const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 type LoadState = "idle" | "loading" | "error";
 type Tone = "good" | "warn" | "neutral";
 
-type DetailItem = {
+type SettingLine = {
   label: string;
   value: ReactNode;
   meta?: ReactNode;
+  action?: ReactNode;
   mono?: boolean;
   breakAll?: boolean;
-};
-
-type MetricItem = {
-  label: string;
-  value: ReactNode;
-  meta?: ReactNode;
 };
 
 export function SettingsPage() {
   const [summary, setSummary] = useState<SettingsSummary | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState<string | null>(null);
-
-  const providerByName = useMemo(() => {
-    const providers = new Map<string, SettingsProviderSummary>();
-    for (const provider of summary?.providers ?? []) {
-      providers.set(provider.name, provider);
-    }
-    return providers;
-  }, [summary]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -95,12 +82,15 @@ export function SettingsPage() {
         ) : null}
 
         {summary ? (
-          <SettingsGrid
-            summary={summary}
-            providerByName={providerByName}
-            isLoading={isLoading}
-            onRefresh={() => void loadSummary()}
-          />
+          <div className="grid w-full grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <CoreCard
+              summary={summary}
+              isLoading={isLoading}
+              onRefresh={() => void loadSummary()}
+            />
+            <ProvidersCard providers={summary.providers} />
+            <ModelsCard models={summary.models} />
+          </div>
         ) : (
           <SettingsSkeleton />
         )}
@@ -109,41 +99,7 @@ export function SettingsPage() {
   );
 }
 
-function SettingsGrid({
-  summary,
-  providerByName,
-  isLoading,
-  onRefresh,
-}: {
-  summary: SettingsSummary;
-  providerByName: Map<string, SettingsProviderSummary>;
-  isLoading: boolean;
-  onRefresh: () => void;
-}) {
-  return (
-    <div className="grid w-full grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
-      <div className="flex min-w-0 flex-col gap-4">
-        <OverviewCard
-          summary={summary}
-          isLoading={isLoading}
-          onRefresh={onRefresh}
-        />
-        <RuntimeCard summary={summary} />
-      </div>
-
-      <div className="flex min-w-0 flex-col gap-4">
-        <ProvidersCard providers={summary.providers} />
-        <ServicesCard summary={summary} />
-      </div>
-
-      <div className="flex min-w-0 flex-col gap-4 lg:col-span-2 xl:col-span-1">
-        <ModelsCard models={summary.models} providerByName={providerByName} />
-      </div>
-    </div>
-  );
-}
-
-function OverviewCard({
+function CoreCard({
   summary,
   isLoading,
   onRefresh,
@@ -152,20 +108,16 @@ function OverviewCard({
   isLoading: boolean;
   onRefresh: () => void;
 }) {
+  const portChanged = summary.daemon.configured_port !== summary.daemon.serving_port;
+
   return (
     <Card className="w-full">
       <CardHeader>
         <CardTitle>Settings</CardTitle>
-        <CardAction className="flex items-center gap-2">
-          <Badge
-            variant={summary.telegram.has_real_credentials ? "secondary" : "outline"}
-            className="rounded-full"
-          >
-            Telegram {summary.telegram.has_real_credentials ? "ready" : "check"}
-          </Badge>
+        <CardAction>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="icon-sm"
             aria-label="Refresh settings"
             onClick={onRefresh}
@@ -178,81 +130,68 @@ function OverviewCard({
           </Button>
         </CardAction>
       </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid grid-cols-2 gap-4">
-          <HeroMetric label="Main" value={summary.main_model} />
-          <HeroMetric
-            label="Locale"
-            value={summary.locale}
-            meta={summary.locale_label}
-          />
-        </div>
-
-        <DetailList
-          items={[
+      <CardContent>
+        <SettingList
+          lines={[
             {
-              label: "Loaded",
-              value: formatDateTime(summary.loaded_at_ms),
+              label: "Main",
+              value: summary.main_model,
+              action: <BadgeLine labels={modelRoles(summary, summary.main_model)} />,
             },
             {
-              label: "Models",
-              value: `${summary.models.length}`,
-              meta: `${summary.providers.length} providers`,
+              label: "Locale",
+              value: summary.locale,
+              meta: summary.locale_label,
+            },
+            {
+              label: "Daemon",
+              value: `:${summary.daemon.serving_port}`,
+              meta: portChanged ? `config :${summary.daemon.configured_port}` : undefined,
+            },
+            {
+              label: "Sandbox",
+              value: summary.sandbox.strong_filesystem,
+              action: (
+                <StatusBadge
+                  tone={summary.sandbox.enabled ? "good" : "neutral"}
+                  label={summary.sandbox.enabled ? "on" : "off"}
+                />
+              ),
+            },
+            {
+              label: "Judge",
+              value: summary.judge.effective_model,
+              action: (
+                <StatusBadge
+                  tone={summary.judge.enabled ? "good" : "neutral"}
+                  label={summary.judge.enabled ? "on" : "off"}
+                />
+              ),
+            },
+            {
+              label: "Hindsight",
+              value: summary.hindsight.effective_model,
+              meta: `${summary.hindsight.profile} · :${summary.hindsight.port}`,
+            },
+            {
+              label: "Telegram",
+              value: `${summary.telegram.poll_timeout_secs}s poll`,
+              action: (
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <StatusBadge
+                    tone={summary.telegram.enabled ? "good" : "neutral"}
+                    label={summary.telegram.enabled ? "on" : "off"}
+                  />
+                  <CredentialBadge credential={summary.telegram.credential} />
+                </div>
+              ),
             },
             {
               label: "Config",
               value: summary.config_path,
+              meta: formatDateTime(summary.loaded_at_ms),
               mono: true,
               breakAll: true,
-            },
-            {
-              label: "Home",
-              value: summary.home_path,
-              mono: true,
-              breakAll: true,
-            },
-          ]}
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-function RuntimeCard({ summary }: { summary: SettingsSummary }) {
-  const portChanged = summary.daemon.configured_port !== summary.daemon.serving_port;
-
-  return (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle>Runtime</CardTitle>
-        <CardAction>
-          <StatusBadge
-            tone={summary.sandbox.enabled ? "good" : "neutral"}
-            label={summary.sandbox.enabled ? "Sandbox" : "No sandbox"}
-          />
-        </CardAction>
-      </CardHeader>
-      <CardContent>
-        <DetailList
-          items={[
-            {
-              label: "Daemon",
-              value: `:${summary.daemon.serving_port}`,
-              meta: portChanged
-                ? `configured :${summary.daemon.configured_port}`
-                : undefined,
-            },
-            {
-              label: "Filesystem",
-              value: summary.sandbox.strong_filesystem,
-            },
-            {
-              label: "Judge",
-              value: summary.judge_model,
-            },
-            {
-              label: "Hindsight",
-              value: summary.hindsight_model,
             },
           ]}
         />
@@ -276,7 +215,7 @@ function ProvidersCard({ providers }: { providers: SettingsProviderSummary[] }) 
         {providers.length ? (
           <div className="divide-y divide-border/60">
             {providers.map((provider) => (
-              <ProviderRow key={provider.name} provider={provider} />
+              <ProviderLine key={provider.name} provider={provider} />
             ))}
           </div>
         ) : (
@@ -287,40 +226,26 @@ function ProvidersCard({ providers }: { providers: SettingsProviderSummary[] }) 
   );
 }
 
-function ProviderRow({ provider }: { provider: SettingsProviderSummary }) {
+function ProviderLine({ provider }: { provider: SettingsProviderSummary }) {
   const endpoint = provider.base_url ?? provider.auth_file;
 
   return (
-    <div className="py-3 first:pt-0 last:pb-0">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate font-medium">{provider.name}</div>
-          {endpoint ? (
-            <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
-              {endpoint}
-            </div>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-          <Badge variant="outline" className="rounded-full">
-            {provider.provider_type}
-          </Badge>
-          <CredentialBadge credential={provider.credential} />
-        </div>
-      </div>
-    </div>
+    <SettingLineRow
+      line={{
+        label: provider.provider_type,
+        value: provider.name,
+        meta: endpoint,
+        action: <CredentialBadge credential={provider.credential} />,
+        breakAll: Boolean(endpoint),
+        mono: Boolean(endpoint),
+      }}
+    />
   );
 }
 
-function ModelsCard({
-  models,
-  providerByName,
-}: {
-  models: SettingsModelSummary[];
-  providerByName: Map<string, SettingsProviderSummary>;
-}) {
+function ModelsCard({ models }: { models: SettingsModelSummary[] }) {
   return (
-    <Card className="w-full">
+    <Card className="w-full sm:col-span-2 xl:col-span-1">
       <CardHeader>
         <CardTitle>Models</CardTitle>
         <CardAction>
@@ -333,11 +258,7 @@ function ModelsCard({
         {models.length ? (
           <div className="divide-y divide-border/60">
             {models.map((model) => (
-              <ModelRow
-                key={model.name}
-                model={model}
-                provider={providerByName.get(model.provider) ?? null}
-              />
+              <ModelLine key={model.name} model={model} />
             ))}
           </div>
         ) : (
@@ -348,268 +269,89 @@ function ModelsCard({
   );
 }
 
-function ModelRow({
-  model,
-  provider,
-}: {
-  model: SettingsModelSummary;
-  provider: SettingsProviderSummary | null;
-}) {
-  const roles = [
-    model.is_main ? "main" : null,
-    model.is_judge ? "judge" : null,
-    model.is_hindsight ? "hindsight" : null,
-  ].filter((role): role is string => Boolean(role));
-
+function ModelLine({ model }: { model: SettingsModelSummary }) {
   return (
-    <div className="py-3 first:pt-0 last:pb-0">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="truncate font-medium">{model.name}</h3>
-            {roles.map((role) => (
-              <Badge key={role} variant="outline" className="rounded-full">
-                {role}
-              </Badge>
-            ))}
-          </div>
-          <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
-            {model.model_id}
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-wrap gap-1.5 sm:justify-end">
-          <Badge variant="secondary" className="rounded-full">
-            {provider?.provider_type ?? model.provider}
-          </Badge>
-          {model.thinking_budget ? (
-            <Badge variant="outline" className="rounded-full">
-              {model.thinking_budget}
-            </Badge>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-4">
-        <MicroMetric
-          label="Context"
-          value={formatNumber(model.context_window_tokens)}
-          meta={`${model.effective_context_window_percent}%`}
-        />
-        <MicroMetric
-          label="Compact"
-          value={formatNumber(model.auto_compact_token_limit)}
-          meta={formatNumber(model.effective_context_window_tokens)}
-        />
-        <MicroMetric
-          label="Output"
-          value={formatNumber(model.max_completion_tokens)}
-          meta={`${formatNumber(model.tool_output_max_tokens)} tool`}
-        />
-        <MicroMetric
-          label="Timeout"
-          value={`${model.request_timeout_secs}s`}
-          meta={`${model.stream_idle_timeout_secs}s idle`}
-        />
-      </div>
-    </div>
+    <SettingLineRow
+      line={{
+        label: model.provider,
+        value: model.name,
+        meta: (
+          <>
+            <span className="font-mono">{model.model_id}</span>
+            <span aria-hidden="true"> · </span>
+            <span>{modelFootprint(model)}</span>
+          </>
+        ),
+        action: <BadgeLine labels={modelRolesFromFlags(model)} />,
+      }}
+    />
   );
 }
 
-function ServicesCard({ summary }: { summary: SettingsSummary }) {
-  return (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle>Services</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="divide-y divide-border/60">
-          <ServiceRow
-            title="Judge"
-            action={
-              <StatusBadge
-                tone={summary.judge.enabled ? "good" : "neutral"}
-                label={summary.judge.enabled ? "Enabled" : "Disabled"}
-              />
-            }
-            items={[
-              {
-                label: "Model",
-                value: summary.judge.effective_model,
-                meta: summary.judge.model ? "custom" : undefined,
-              },
-              {
-                label: "Candidates",
-                value: formatNumber(summary.judge.max_pairwise_candidates),
-              },
-              {
-                label: "Cases",
-                value: formatNumber(summary.judge.max_pairwise_cases),
-              },
-            ]}
-          />
-
-          <ServiceRow
-            title="Hindsight"
-            action={
-              <Badge variant="outline" className="rounded-full">
-                :{summary.hindsight.port}
-              </Badge>
-            }
-            items={[
-              {
-                label: "Profile",
-                value: summary.hindsight.profile,
-                meta: `${summary.hindsight.namespace}/${summary.hindsight.bank_id}`,
-              },
-              {
-                label: "Model",
-                value: summary.hindsight.effective_model,
-                meta: summary.hindsight.model ? "custom" : undefined,
-              },
-              {
-                label: "Timeout",
-                value: `${summary.hindsight.request_timeout_secs}s`,
-              },
-            ]}
-          />
-
-          <ServiceRow
-            title="Telegram"
-            action={
-              <div className="flex flex-wrap justify-end gap-1.5">
-                <StatusBadge
-                  tone={summary.telegram.enabled ? "good" : "neutral"}
-                  label={summary.telegram.enabled ? "Enabled" : "Disabled"}
-                />
-                <CredentialBadge credential={summary.telegram.credential} />
-              </div>
-            }
-            items={[
-              {
-                label: "Poll",
-                value: `${summary.telegram.poll_timeout_secs}s`,
-              },
-              {
-                label: "Credential",
-                value: credentialStatusLabel(summary.telegram.credential.status),
-                meta: summary.telegram.has_real_credentials ? "ready" : "check",
-              },
-            ]}
-          />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function ServiceRow({
-  title,
-  action,
-  items,
-}: {
-  title: string;
-  action: ReactNode;
-  items: MetricItem[];
-}) {
-  return (
-    <div className="py-3 first:pt-0 last:pb-0">
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="font-medium">{title}</h3>
-        {action}
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-        {items.map((item) => (
-          <MicroMetric
-            key={item.label}
-            label={item.label}
-            value={item.value}
-            meta={item.meta}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function HeroMetric({
-  label,
-  value,
-  meta,
-}: {
-  label: string;
-  value: ReactNode;
-  meta?: ReactNode;
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className="mt-1 truncate text-2xl font-semibold tracking-tight">
-        {value}
-      </div>
-      {meta ? (
-        <div className="mt-1 truncate text-xs text-muted-foreground">{meta}</div>
-      ) : null}
-    </div>
-  );
-}
-
-function DetailList({ items }: { items: DetailItem[] }) {
+function SettingList({ lines }: { lines: SettingLine[] }) {
   return (
     <div className="divide-y divide-border/60">
-      {items.map((item) => (
-        <DetailRow key={item.label} item={item} />
+      {lines.map((line) => (
+        <SettingLineRow key={`${line.label}-${String(line.value)}`} line={line} />
       ))}
     </div>
   );
 }
 
-function DetailRow({ item }: { item: DetailItem }) {
+function SettingLineRow({ line }: { line: SettingLine }) {
   return (
-    <div className="grid gap-1 py-2.5 first:pt-0 last:pb-0 sm:grid-cols-[6rem_1fr] sm:gap-3">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        {item.label}
-      </div>
-      <div className="min-w-0">
+    <div className="flex min-w-0 items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
+      <div className="min-w-0 space-y-1">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          {line.label}
+        </div>
         <div
           className={cn(
-            "font-medium",
-            item.mono && "font-mono text-xs",
-            item.breakAll ? "break-all" : "truncate",
+            "truncate text-sm font-medium",
+            line.mono && "font-mono text-xs",
+            line.breakAll && "whitespace-normal break-all",
           )}
         >
-          {item.value}
+          {line.value}
         </div>
-        {item.meta ? (
-          <div className="mt-0.5 truncate text-xs text-muted-foreground">
-            {item.meta}
+        {line.meta ? (
+          <div
+            className={cn(
+              "truncate text-xs text-muted-foreground",
+              line.mono && "font-mono",
+              line.breakAll && "whitespace-normal break-all",
+            )}
+          >
+            {line.meta}
           </div>
         ) : null}
       </div>
+      {line.action ? <div className="shrink-0">{line.action}</div> : null}
     </div>
   );
 }
 
-function MicroMetric({
-  label,
-  value,
-  meta,
-}: {
-  label: string;
-  value: ReactNode;
-  meta?: ReactNode;
-}) {
+function BadgeLine({ labels }: { labels: string[] }) {
+  if (!labels.length) {
+    return null;
+  }
+
   return (
-    <div className="min-w-0">
-      <div className="text-[0.68rem] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className="mt-0.5 truncate font-medium">{value}</div>
-      {meta ? (
-        <div className="mt-0.5 truncate text-muted-foreground">{meta}</div>
-      ) : null}
+    <div className="flex flex-wrap justify-end gap-1.5">
+      {labels.map((label) => (
+        <Badge key={label} variant="outline" className="rounded-full">
+          {label}
+        </Badge>
+      ))}
     </div>
+  );
+}
+
+function StatusBadge({ tone, label }: { tone: Tone; label: string }) {
+  return (
+    <Badge variant="outline" className={cn("rounded-full", toneClassName(tone))}>
+      {label}
+    </Badge>
   );
 }
 
@@ -618,68 +360,62 @@ function CredentialBadge({
 }: {
   credential: SettingsCredentialSummary;
 }) {
-  const tone = credentialTone(credential.status);
-
   return (
     <StatusBadge
-      tone={tone}
+      tone={credentialTone(credential.status)}
       label={credentialStatusLabel(credential.status)}
-      title={credential.source ? `Source: ${credential.source}` : undefined}
     />
   );
 }
 
-function StatusBadge({
-  tone,
-  label,
-  title,
-}: {
-  tone: Tone;
-  label: string;
-  title?: string;
-}) {
-  return (
-    <Badge
-      variant={tone === "good" ? "secondary" : "outline"}
-      className={cn(
-        "rounded-full",
-        tone === "warn" && "border-destructive/40 text-destructive",
-      )}
-      title={title}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "size-1.5 rounded-full",
-          tone === "good" && "bg-emerald-500",
-          tone === "warn" && "bg-destructive",
-          tone === "neutral" && "bg-muted-foreground/45",
-        )}
-      />
-      {label}
-    </Badge>
-  );
-}
-
 function EmptyState({ children }: { children: ReactNode }) {
-  return <div className="py-3 text-sm text-muted-foreground">{children}</div>;
+  return <div className="py-6 text-center text-sm text-muted-foreground">{children}</div>;
 }
 
 function SettingsSkeleton() {
   return (
-    <div className="grid w-full grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
-      {Array.from({ length: 5 }).map((_, index) => (
-        <Card key={index} className={cn(index === 4 && "lg:col-span-2 xl:col-span-1")}>
-          <CardContent className="grid gap-3">
-            <div className="h-5 w-28 animate-pulse rounded bg-muted" />
-            <div className="h-4 w-2/3 animate-pulse rounded bg-muted" />
-            <div className="h-4 w-1/2 animate-pulse rounded bg-muted" />
-            <div className="h-4 w-5/6 animate-pulse rounded bg-muted" />
+    <div className="grid w-full grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {Array.from({ length: 3 }, (_, index) => (
+        <Card key={index} className="w-full">
+          <CardHeader>
+            <div className="h-5 w-24 animate-pulse rounded bg-muted" />
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            {Array.from({ length: 6 }, (_, rowIndex) => (
+              <div key={rowIndex} className="space-y-2">
+                <div className="h-3 w-16 animate-pulse rounded bg-muted" />
+                <div className="h-4 w-3/4 animate-pulse rounded bg-muted" />
+              </div>
+            ))}
           </CardContent>
         </Card>
       ))}
     </div>
   );
+}
+
+function modelRoles(summary: SettingsSummary, modelName: string) {
+  return [
+    summary.main_model === modelName ? "main" : null,
+    summary.judge_model === modelName ? "judge" : null,
+    summary.hindsight_model === modelName ? "hindsight" : null,
+  ].filter((role): role is string => Boolean(role));
+}
+
+function modelRolesFromFlags(model: SettingsModelSummary) {
+  return [
+    model.is_main ? "main" : null,
+    model.is_judge ? "judge" : null,
+    model.is_hindsight ? "hindsight" : null,
+  ].filter((role): role is string => Boolean(role));
+}
+
+function modelFootprint(model: SettingsModelSummary) {
+  const context = `${formatNumber(model.context_window_tokens)} ctx`;
+  const output = `${formatNumber(model.max_completion_tokens)} out`;
+  const timeout = `${model.request_timeout_secs}s`;
+
+  return `${context} · ${output} · ${timeout}`;
 }
 
 function credentialTone(status: SettingsCredentialStatus): Tone {
@@ -692,33 +428,50 @@ function credentialTone(status: SettingsCredentialStatus): Tone {
     case "missing":
     case "placeholder":
       return "warn";
+    default:
+      return "neutral";
   }
 }
 
 function credentialStatusLabel(status: SettingsCredentialStatus) {
   switch (status) {
     case "configured":
-      return "Configured";
+      return "set";
     case "env_configured":
-      return "Env ready";
+      return "env";
     case "env_missing":
-      return "Env missing";
+      return "missing env";
     case "missing":
-      return "Missing";
+      return "missing";
     case "placeholder":
-      return "Placeholder";
+      return "placeholder";
     case "oauth_file":
-      return "OAuth file";
+      return "oauth";
+    default:
+      return status;
   }
+}
+
+function toneClassName(tone: Tone) {
+  switch (tone) {
+    case "good":
+      return "border-emerald-500/30 text-emerald-600 dark:text-emerald-400";
+    case "warn":
+      return "border-amber-500/30 text-amber-600 dark:text-amber-400";
+    default:
+      return "text-muted-foreground";
+  }
+}
+
+function formatDateTime(value: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function formatNumber(value: number) {
   return NUMBER_FORMATTER.format(value);
-}
-
-function formatDateTime(timestampMs: number) {
-  return new Date(timestampMs).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  });
 }
