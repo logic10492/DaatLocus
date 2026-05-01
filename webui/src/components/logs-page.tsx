@@ -1,24 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-  AlertTriangleIcon,
-  CopyIcon,
-  DownloadIcon,
-  FileTextIcon,
-  PauseIcon,
-  PlayIcon,
-  RefreshCwIcon,
-  SearchIcon,
-} from "lucide-react";
+import { ChevronDownIcon, SearchIcon } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   fetchLogSources,
@@ -28,13 +18,22 @@ import {
 } from "@/lib/daemon-api";
 import { cn } from "@/lib/utils";
 
-const LOG_READ_LIMIT = 700;
-const FOLLOW_POLL_MS = 1500;
-const MAX_RENDERED_LINES = 3_000;
+const LOG_READ_LIMIT = 1_000;
+const FOLLOW_POLL_MS = 1_500;
+const MAX_RENDERED_LINES = 5_000;
 
 type LogLine = {
   id: string;
   text: string;
+};
+
+type LogEntry = {
+  id: string;
+  raw: string;
+  timestamp: string | null;
+  level: string | null;
+  target: string | null;
+  message: string;
 };
 
 type LoadState = "idle" | "loading" | "error";
@@ -48,33 +47,45 @@ export function LogsPage() {
   const [readError, setReadError] = useState<string | null>(null);
   const [lines, setLines] = useState<LogLine[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
-  const [fileSizeBytes, setFileSizeBytes] = useState(0);
-  const [truncatedStart, setTruncatedStart] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-  const [followTail, setFollowTail] = useState(true);
   const [query, setQuery] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [isSourceMenuOpen, setIsSourceMenuOpen] = useState(false);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const sourceMenuRef = useRef<HTMLDivElement | null>(null);
 
   const selectedSource =
     sources.find((source) => source.id === selectedSourceId) ?? null;
 
-  const filteredLines = useMemo(() => {
+  const entries = useMemo(
+    () => lines.map((line) => parseLogEntry(line, selectedSource)),
+    [lines, selectedSource],
+  );
+
+  const filteredEntries = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     if (!normalizedQuery) {
-      return lines;
+      return entries;
     }
 
-    return lines.filter((line) =>
-      line.text.toLowerCase().includes(normalizedQuery),
+    return entries.filter((entry) =>
+      [
+        entry.raw,
+        entry.timestamp,
+        entry.level,
+        entry.target,
+        entry.message,
+      ]
+        .filter(Boolean)
+        .join("\n")
+        .toLowerCase()
+        .includes(normalizedQuery),
     );
-  }, [lines, query]);
+  }, [entries, query]);
 
   const virtualizer = useVirtualizer({
-    count: filteredLines.length,
+    count: filteredEntries.length,
     getScrollElement: () => viewportRef.current,
-    estimateSize: () => 24,
-    overscan: 18,
+    estimateSize: () => 76,
+    overscan: 16,
   });
 
   useEffect(() => {
@@ -116,10 +127,8 @@ export function LogsPage() {
   useEffect(() => {
     setLines([]);
     setCursor(null);
-    setFileSizeBytes(0);
-    setTruncatedStart(false);
-    setHasMore(false);
     setReadError(null);
+    setIsSourceMenuOpen(false);
     if (!selectedSourceId) {
       return;
     }
@@ -131,7 +140,7 @@ export function LogsPage() {
   }, [selectedSourceId]);
 
   useEffect(() => {
-    if (!selectedSourceId || !followTail) {
+    if (!selectedSourceId || cursor === null) {
       return;
     }
 
@@ -140,17 +149,46 @@ export function LogsPage() {
     }, FOLLOW_POLL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [cursor, followTail, selectedSourceId]);
+  }, [cursor, readLoadState, selectedSourceId]);
 
   useEffect(() => {
-    if (!followTail || query.trim() || filteredLines.length === 0) {
+    if (query.trim() || filteredEntries.length === 0) {
       return;
     }
 
     requestAnimationFrame(() => {
-      virtualizer.scrollToIndex(filteredLines.length - 1, { align: "end" });
+      virtualizer.scrollToIndex(filteredEntries.length - 1, { align: "end" });
     });
-  }, [filteredLines.length, followTail, query, virtualizer]);
+  }, [filteredEntries.length, query, virtualizer]);
+
+  useEffect(() => {
+    if (!isSourceMenuOpen) {
+      return;
+    }
+
+    function closeOnOutsidePointer(event: MouseEvent) {
+      if (
+        sourceMenuRef.current &&
+        !sourceMenuRef.current.contains(event.target as Node)
+      ) {
+        setIsSourceMenuOpen(false);
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsSourceMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isSourceMenuOpen]);
 
   async function loadInitialLog(sourceId: string, signal?: AbortSignal) {
     setReadLoadState("loading");
@@ -174,15 +212,11 @@ export function LogsPage() {
   }
 
   async function refreshLog({ onlyNew }: { onlyNew: boolean }) {
-    if (!selectedSourceId) {
+    if (!selectedSourceId || readLoadState === "loading") {
       return;
     }
 
     const nextCursor = onlyNew && cursor !== null ? cursor : undefined;
-    if (readLoadState === "loading") {
-      return;
-    }
-
     setReadLoadState("loading");
     setReadError(null);
 
@@ -213,359 +247,494 @@ export function LogsPage() {
         : nextLines,
     );
     setCursor(response.next_cursor);
-    setFileSizeBytes(response.file_size_bytes);
-    setTruncatedStart(response.truncated_start);
-    setHasMore(response.has_more);
   }
 
-  async function copyVisibleLines() {
-    const text = filteredLines.map((line) => line.text).join("\n");
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
-  }
-
-  function downloadVisibleLines() {
-    const text = filteredLines.map((line) => line.text).join("\n");
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${selectedSource?.id ?? "logs"}.txt`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
+  const visibleItems = virtualizer.getVirtualItems();
+  const emptyMessage = emptyStateMessage({
+    sourceLoadState,
+    sourceError,
+    readLoadState,
+    readError,
+    selectedSource,
+    entriesCount: entries.length,
+    filteredCount: filteredEntries.length,
+    query,
+  });
 
   return (
     <section
       id="logs"
       aria-label="Logs"
-      className="min-h-screen px-4 pt-20 pb-6 md:px-6 md:pt-24"
+      className="h-screen overflow-hidden bg-background pt-20"
     >
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
-        <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div>
-            <p className="text-xs font-semibold tracking-[0.24em] text-muted-foreground uppercase">
-              Daat Locus
-            </p>
-            <h1 className="mt-1 text-3xl font-semibold tracking-tight">Logs</h1>
-            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-              Inspect daemon, hindsight, and diagnostic journals from an
-              allowlisted set of local log files.
-            </p>
-          </div>
+      <div
+        ref={sourceMenuRef}
+        className="fixed top-4 left-16 z-50 md:top-6 md:left-20"
+      >
+        <Button
+          type="button"
+          variant="outline"
+          aria-haspopup="menu"
+          aria-expanded={isSourceMenuOpen}
+          disabled={sourceLoadState === "loading" && sources.length === 0}
+          onClick={() => setIsSourceMenuOpen((open) => !open)}
+          className="max-w-[48vw] rounded-full border-border/60 bg-background/70 px-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/55"
+        >
+          <span className="truncate">
+            {selectedSource?.label ??
+              (sourceLoadState === "loading" ? "Loading logs" : "Logs")}
+          </span>
+          <ChevronDownIcon
+            className={cn(
+              "size-4 transition-transform",
+              isSourceMenuOpen && "rotate-180",
+            )}
+          />
+        </Button>
 
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <Badge variant={selectedSource?.exists ? "secondary" : "outline"}>
-              {selectedSource?.exists ? "available" : "missing"}
-            </Badge>
-            <span>{formatBytes(fileSizeBytes || selectedSource?.size_bytes || 0)}</span>
-            {selectedSource?.modified_at_ms ? (
-              <span>updated {formatTimestamp(selectedSource.modified_at_ms)}</span>
+        {isSourceMenuOpen ? (
+          <div
+            role="menu"
+            className="absolute top-full left-0 mt-2 max-h-[min(24rem,70vh)] w-72 max-w-[calc(100vw-2rem)] overflow-auto rounded-xl border border-border/70 bg-popover p-1 text-popover-foreground shadow-xl"
+          >
+            {sourceLoadState === "error" ? (
+              <div className="px-3 py-2 text-sm text-destructive">
+                {sourceError ?? "Unable to load log sources."}
+              </div>
             ) : null}
-          </div>
-        </header>
 
-        <div className="grid min-h-[calc(100vh-11rem)] gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
-          <Card className="min-h-0">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <FileTextIcon className="size-4" />
-                Sources
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="min-h-0">
-              <div className="grid gap-2">
-                {sourceLoadState === "error" ? (
-                  <StateMessage tone="error" message={sourceError} />
-                ) : null}
-
-                {sources.map((source) => (
-                  <button
-                    key={source.id}
-                    type="button"
-                    onClick={() => setSelectedSourceId(source.id)}
-                    className={cn(
-                      "rounded-lg border p-3 text-left transition hover:bg-muted/70",
-                      selectedSourceId === source.id
-                        ? "border-foreground/20 bg-muted"
-                        : "border-border/60 bg-background",
-                    )}
-                  >
-                    <span className="flex items-center justify-between gap-2">
-                      <span className="truncate text-sm font-medium">
-                        {source.label}
-                      </span>
-                      <span
-                        className={cn(
-                          "size-2 rounded-full",
-                          source.exists ? "bg-emerald-500" : "bg-muted-foreground/35",
-                        )}
-                      />
-                    </span>
-                    <span className="mt-1 line-clamp-2 block text-xs text-muted-foreground">
-                      {source.description}
-                    </span>
-                    <span className="mt-2 flex flex-wrap gap-1">
-                      <Badge variant="outline">{source.category}</Badge>
-                      <Badge variant="outline">{source.format}</Badge>
-                      {source.sensitive ? (
-                        <Badge variant="destructive">sensitive</Badge>
-                      ) : null}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="min-h-0">
-            <CardHeader className="gap-3">
-              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                <div className="min-w-0">
-                  <CardTitle className="truncate">
-                    {selectedSource?.label ?? "Select a log"}
-                  </CardTitle>
-                  <p className="mt-1 truncate text-xs text-muted-foreground">
-                    {selectedSource?.path ?? "No source selected"}
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant={followTail ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setFollowTail((value) => !value)}
-                  >
-                    {followTail ? (
-                      <PauseIcon className="size-3.5" />
-                    ) : (
-                      <PlayIcon className="size-3.5" />
-                    )}
-                    {followTail ? "Following" : "Paused"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!selectedSourceId || readLoadState === "loading"}
-                    onClick={() => void refreshLog({ onlyNew: false })}
-                  >
-                    <RefreshCwIcon className="size-3.5" />
-                    Refresh
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={filteredLines.length === 0}
-                    onClick={() => void copyVisibleLines()}
-                  >
-                    <CopyIcon className="size-3.5" />
-                    {copied ? "Copied" : "Copy"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={filteredLines.length === 0}
-                    onClick={downloadVisibleLines}
-                  >
-                    <DownloadIcon className="size-3.5" />
-                    Download
-                  </Button>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <label className="relative block flex-1">
-                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Search visible lines"
-                    className="pl-8"
-                  />
-                </label>
-
-                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                  <span>{filteredLines.length.toLocaleString()} shown</span>
-                  <span>{lines.length.toLocaleString()} loaded</span>
-                  {truncatedStart ? <span>tail truncated</span> : null}
-                  {hasMore ? <span>more pending</span> : null}
-                  {readLoadState === "loading" ? <span>loading…</span> : null}
-                </div>
-              </div>
-            </CardHeader>
-
-            <CardContent className="min-h-0">
-              {selectedSource?.sensitive ? (
-                <div className="mb-3 flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 p-3 text-xs text-destructive">
-                  <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
-                  <span>
-                    This source may contain raw prompts, responses, or diagnostic
-                    payloads. Avoid copying it into external channels unless needed.
-                  </span>
-                </div>
-              ) : null}
-
-              {readLoadState === "error" ? (
-                <StateMessage tone="error" message={readError} />
-              ) : null}
-
-              <div
-                ref={viewportRef}
-                className="h-[calc(100vh-23rem)] min-h-[28rem] overflow-auto rounded-xl border border-border/70 bg-zinc-950 text-zinc-100 shadow-inner"
-              >
-                {filteredLines.length === 0 ? (
-                  <div className="flex h-full items-center justify-center p-6 text-center text-sm text-zinc-400">
-                    {readLoadState === "loading"
-                      ? "Loading log lines…"
-                      : query.trim()
-                        ? "No visible lines match the search."
-                        : "No log lines to display."}
-                  </div>
-                ) : (
-                  <div
-                    className="relative w-full"
-                    style={{ height: `${virtualizer.getTotalSize()}px` }}
-                  >
-                    {virtualizer.getVirtualItems().map((virtualRow) => {
-                      const line = filteredLines[virtualRow.index];
-                      return (
-                        <div
-                          key={line.id}
-                          ref={virtualizer.measureElement}
-                          data-index={virtualRow.index}
-                          className="absolute top-0 left-0 grid w-full grid-cols-[4.5rem_minmax(0,1fr)] gap-3 border-b border-white/5 px-3 py-1.5 font-mono text-[11px] leading-5"
-                          style={{
-                            transform: `translateY(${virtualRow.start}px)`,
-                          }}
-                        >
-                          <span className="select-none text-right text-zinc-500">
-                            {(virtualRow.index + 1).toLocaleString()}
-                          </span>
-                          <HighlightedLogLine line={line.text} query={query} />
-                        </div>
-                      );
-                    })}
-                  </div>
+            {sources.map((source) => (
+              <button
+                key={source.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={source.id === selectedSourceId}
+                onClick={() => {
+                  setSelectedSourceId(source.id);
+                  setIsSourceMenuOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition hover:bg-muted",
+                  source.id === selectedSourceId && "bg-muted",
                 )}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">
+                    {source.label}
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {source.category} · {source.format}
+                  </span>
+                </span>
+                <span
+                  aria-label={source.exists ? "available" : "missing"}
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    source.exists ? "bg-emerald-500" : "bg-muted-foreground/35",
+                  )}
+                />
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="fixed top-4 right-4 z-50 md:top-6 md:right-6">
+        <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search logs"
+          aria-label="Search logs"
+          className="h-10 w-[min(44vw,20rem)] rounded-full border-border/60 bg-background/70 pl-9 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/55"
+        />
+      </div>
+
+      <div ref={viewportRef} className="h-full overflow-auto px-3 pb-6 md:px-6">
+        <div
+          className="relative mx-auto w-full max-w-7xl"
+          style={{
+            height:
+              filteredEntries.length > 0
+                ? `${virtualizer.getTotalSize()}px`
+                : "100%",
+          }}
+        >
+          {emptyMessage ? <EmptyLogState message={emptyMessage} /> : null}
+
+          {visibleItems.map((virtualItem) => {
+            const entry = filteredEntries[virtualItem.index];
+            if (!entry) {
+              return null;
+            }
+
+            return (
+              <div
+                key={virtualItem.key}
+                data-index={virtualItem.index}
+                ref={virtualizer.measureElement}
+                className="absolute top-0 left-0 w-full"
+                style={{
+                  transform: `translateY(${virtualItem.start}px)`,
+                }}
+              >
+                <LogEntryRow entry={entry} query={query} />
               </div>
-            </CardContent>
-          </Card>
+            );
+          })}
         </div>
       </div>
     </section>
   );
 }
 
-function StateMessage({
-  message,
-  tone,
-}: {
-  message: string | null;
-  tone: "error";
-}) {
+function LogEntryRow({ entry, query }: { entry: LogEntry; query: string }) {
   return (
-    <div
-      className={cn(
-        "rounded-lg border p-3 text-sm",
-        tone === "error" &&
-          "border-destructive/25 bg-destructive/5 text-destructive",
-      )}
-    >
-      {message ?? "Something went wrong."}
+    <article className="grid gap-1 border-b border-border/60 px-1 py-3 transition hover:bg-muted/35 md:grid-cols-[9.5rem_5rem_minmax(8rem,16rem)_1fr] md:gap-3 md:px-0">
+      <time className="min-w-0 truncate text-xs text-muted-foreground md:pt-1">
+        {entry.timestamp ?? "—"}
+      </time>
+      <div className="md:pt-0.5">
+        <span
+          className={cn(
+            "inline-flex rounded-full px-2 py-0.5 text-[0.68rem] font-semibold tracking-wide uppercase",
+            levelClassName(entry.level),
+          )}
+        >
+          {entry.level ?? "log"}
+        </span>
+      </div>
+      <div className="min-w-0 truncate text-xs text-muted-foreground md:pt-1">
+        {entry.target ?? "—"}
+      </div>
+      <p className="min-w-0 whitespace-pre-wrap break-words text-sm leading-6">
+        {highlightText(entry.message, query)}
+      </p>
+    </article>
+  );
+}
+
+function EmptyLogState({ message }: { message: string }) {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+      {message}
     </div>
   );
 }
 
-function HighlightedLogLine({
-  line,
+function emptyStateMessage({
+  sourceLoadState,
+  sourceError,
+  readLoadState,
+  readError,
+  selectedSource,
+  entriesCount,
+  filteredCount,
   query,
 }: {
-  line: string;
+  sourceLoadState: LoadState;
+  sourceError: string | null;
+  readLoadState: LoadState;
+  readError: string | null;
+  selectedSource: LogSource | null;
+  entriesCount: number;
+  filteredCount: number;
   query: string;
 }) {
-  const normalizedQuery = query.trim();
-  if (!normalizedQuery) {
-    return <span className="whitespace-pre-wrap break-words">{line}</span>;
+  if (sourceLoadState === "error" && !selectedSource) {
+    return sourceError ?? "Unable to load log sources.";
   }
-
-  const lowerLine = line.toLowerCase();
-  const lowerQuery = normalizedQuery.toLowerCase();
-  const parts: Array<{ text: string; match: boolean }> = [];
-  let cursor = 0;
-
-  while (cursor < line.length) {
-    const matchIndex = lowerLine.indexOf(lowerQuery, cursor);
-    if (matchIndex === -1) {
-      parts.push({ text: line.slice(cursor), match: false });
-      break;
-    }
-    if (matchIndex > cursor) {
-      parts.push({ text: line.slice(cursor, matchIndex), match: false });
-    }
-    parts.push({
-      text: line.slice(matchIndex, matchIndex + normalizedQuery.length),
-      match: true,
-    });
-    cursor = matchIndex + normalizedQuery.length;
+  if (!selectedSource) {
+    return sourceLoadState === "loading"
+      ? "Loading log sources…"
+      : "No log source selected.";
   }
-
-  return (
-    <span className="whitespace-pre-wrap break-words">
-      {parts.map((part, index) =>
-        part.match ? (
-          <mark
-            key={`${part.text}-${index}`}
-            className="rounded-sm bg-yellow-300/25 px-0.5 text-yellow-100"
-          >
-            {part.text}
-          </mark>
-        ) : (
-          <span key={`${part.text}-${index}`}>{part.text}</span>
-        ),
-      )}
-    </span>
-  );
+  if (readLoadState === "error" && entriesCount === 0) {
+    return readError ?? "Unable to read this log.";
+  }
+  if (readLoadState === "loading" && entriesCount === 0) {
+    return "Loading log entries…";
+  }
+  if (entriesCount === 0) {
+    return "No log entries.";
+  }
+  if (query.trim() && filteredCount === 0) {
+    return "No matching log entries.";
+  }
+  return null;
 }
 
-function toLogLines(rawLines: string[], cursor: number): LogLine[] {
+function parseLogEntry(line: LogLine, source: LogSource | null): LogEntry {
+  const raw = line.text.trimEnd();
+  const fallback: LogEntry = {
+    id: line.id,
+    raw,
+    timestamp: null,
+    level: inferLevel(raw),
+    target: source?.category ?? null,
+    message: raw || "(blank)",
+  };
+
+  if (!raw) {
+    return fallback;
+  }
+
+  const json = parseJsonObject(raw);
+  if (json) {
+    return parseJsonLogEntry(line, json, source);
+  }
+
+  const pythonMatch = raw.match(
+    /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[,.]\d+)?)\s+-\s+([A-Z]+)\s+-\s+(.+?)\s+-\s+(.*)$/,
+  );
+  if (pythonMatch) {
+    return {
+      id: line.id,
+      raw,
+      timestamp: pythonMatch[1],
+      level: normalizeLevel(pythonMatch[2]),
+      target: pythonMatch[3],
+      message: pythonMatch[4],
+    };
+  }
+
+  const tracingMatch = raw.match(
+    /^(\d{4}-\d{2}-\d{2}[T ][^\s]+)\s+([A-Z]+)\s+(?:ThreadId\([^)]+\)\s+)?(?:([^:]+):\s*)?(.*)$/,
+  );
+  if (tracingMatch) {
+    return {
+      id: line.id,
+      raw,
+      timestamp: tracingMatch[1],
+      level: normalizeLevel(tracingMatch[2]),
+      target: tracingMatch[3] ?? source?.category ?? null,
+      message: tracingMatch[4] || raw,
+    };
+  }
+
+  return fallback;
+}
+
+function parseJsonLogEntry(
+  line: LogLine,
+  json: Record<string, unknown>,
+  source: LogSource | null,
+): LogEntry {
+  const timestamp =
+    timestampFromJsonValue(firstJsonValue(json, TIMESTAMP_KEYS)) ?? null;
+  const level = normalizeLevel(
+    stringFromJsonValue(firstJsonValue(json, LEVEL_KEYS)) ?? inferLevel(line.text),
+  );
+  const target =
+    stringFromJsonValue(firstJsonValue(json, TARGET_KEYS)) ??
+    source?.category ??
+    null;
+  const explicitMessage = stringFromJsonValue(firstJsonValue(json, MESSAGE_KEYS));
+
+  return {
+    id: line.id,
+    raw: line.text,
+    timestamp,
+    level,
+    target,
+    message: explicitMessage ?? summarizeJson(json),
+  };
+}
+
+const TIMESTAMP_KEYS = [
+  "timestamp",
+  "time",
+  "created_at",
+  "created_at_ms",
+  "started_at_ms",
+  "arrived_at_ms",
+  "completed_at_ms",
+  "last_updated_at_ms",
+] as const;
+
+const LEVEL_KEYS = ["level", "severity", "status", "disposition"] as const;
+const TARGET_KEYS = [
+  "target",
+  "module",
+  "kind",
+  "type",
+  "event",
+  "workflow_id",
+] as const;
+const MESSAGE_KEYS = [
+  "message",
+  "msg",
+  "text",
+  "summary",
+  "note",
+  "reason",
+  "error",
+  "reply_message",
+] as const;
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  if (!text.startsWith("{") || !text.endsWith("}")) {
+    return null;
+  }
+
+  try {
+    const value: unknown = JSON.parse(text);
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function firstJsonValue(
+  json: Record<string, unknown>,
+  keys: readonly string[],
+): unknown {
+  for (const key of keys) {
+    if (key in json) {
+      return json[key];
+    }
+  }
+  return undefined;
+}
+
+function stringFromJsonValue(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+function timestampFromJsonValue(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const millis = value > 10_000_000_000 ? value : value * 1_000;
+    return formatTimestamp(millis);
+  }
+  return null;
+}
+
+function summarizeJson(json: Record<string, unknown>) {
+  const preferredKeys = [
+    "id",
+    "event_id",
+    "workflow_id",
+    "app",
+    "tool_name",
+    "status",
+    "step",
+  ];
+  const parts = preferredKeys
+    .map((key) => [key, stringFromJsonValue(json[key])] as const)
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key}=${value}`);
+
+  if (parts.length > 0) {
+    return parts.join(" · ");
+  }
+
+  const serialized = JSON.stringify(json);
+  return serialized.length > 600
+    ? `${serialized.slice(0, 600)}…`
+    : serialized;
+}
+
+function inferLevel(text: string): string | null {
+  const match = text.match(/\b(TRACE|DEBUG|INFO|WARN|WARNING|ERROR)\b/i);
+  return match ? normalizeLevel(match[1]) : null;
+}
+
+function normalizeLevel(level: string | null | undefined): string | null {
+  if (!level) {
+    return null;
+  }
+  const normalized = level.toLowerCase();
+  if (normalized === "warning") {
+    return "warn";
+  }
+  if (["trace", "debug", "info", "warn", "error"].includes(normalized)) {
+    return normalized;
+  }
+  return normalized;
+}
+
+function levelClassName(level: string | null) {
+  switch (normalizeLevel(level)) {
+    case "error":
+      return "bg-destructive/15 text-destructive";
+    case "warn":
+      return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+    case "info":
+      return "bg-sky-500/15 text-sky-700 dark:text-sky-300";
+    case "debug":
+      return "bg-violet-500/15 text-violet-700 dark:text-violet-300";
+    case "trace":
+      return "bg-muted text-muted-foreground";
+    default:
+      return "bg-secondary text-secondary-foreground";
+  }
+}
+
+function highlightText(text: string, query: string): ReactNode {
+  const needle = query.trim();
+  if (!needle) {
+    return text;
+  }
+
+  const lowerText = text.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const index = lowerText.indexOf(lowerNeedle, cursor);
+    if (index === -1) {
+      parts.push(text.slice(cursor));
+      break;
+    }
+
+    if (index > cursor) {
+      parts.push(text.slice(cursor, index));
+    }
+
+    parts.push(
+      <mark
+        key={`${index}-${lowerNeedle}`}
+        className="rounded bg-primary/20 px-0.5 text-foreground"
+      >
+        {text.slice(index, index + needle.length)}
+      </mark>,
+    );
+    cursor = index + needle.length;
+  }
+
+  return parts;
+}
+
+function toLogLines(rawLines: string[], responseCursor: number): LogLine[] {
   return rawLines.map((text, index) => ({
-    id: `${cursor}-${index}-${text.length}`,
+    id: `${responseCursor}-${index}-${text.length}`,
     text,
   }));
 }
 
 function trimLogLines(lines: LogLine[], maxLines: number) {
-  if (lines.length <= maxLines) {
-    return lines;
-  }
-  return lines.slice(lines.length - maxLines);
+  return lines.length > maxLines ? lines.slice(lines.length - maxLines) : lines;
 }
 
-function formatBytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "0 B";
-  }
-
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
-}
-
-function formatTimestamp(timestampMs: number) {
+function formatTimestamp(ms: number) {
   return new Intl.DateTimeFormat(undefined, {
-    month: "short",
+    month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(timestampMs));
+    second: "2-digit",
+  }).format(new Date(ms));
 }
