@@ -1,18 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import {
-  BotIcon,
-  BrainCircuitIcon,
-  CheckCircle2Icon,
-  CpuIcon,
-  FolderCogIcon,
-  KeyRoundIcon,
-  LanguagesIcon,
-  MessageCircleIcon,
-  RefreshCwIcon,
-  ServerCogIcon,
-  ShieldCheckIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
+import { RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -21,11 +8,9 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import {
   fetchSettingsSummary,
   type SettingsCredentialStatus,
@@ -39,11 +24,20 @@ import { cn } from "@/lib/utils";
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 
 type LoadState = "idle" | "loading" | "error";
+type Tone = "good" | "warn" | "neutral";
+
+type DetailItem = {
+  label: string;
+  value: ReactNode;
+  meta?: ReactNode;
+  mono?: boolean;
+  breakAll?: boolean;
+};
 
 type MetricItem = {
   label: string;
   value: ReactNode;
-  description?: ReactNode;
+  meta?: ReactNode;
 };
 
 export function SettingsPage() {
@@ -89,60 +83,9 @@ export function SettingsPage() {
     <section
       id="settings"
       aria-label="Settings"
-      className="min-h-screen w-full px-4 pb-10 pt-20 md:px-6 md:pb-12 md:pt-24"
+      className="min-h-screen w-full px-6 pb-10 pt-20 md:pb-12 md:pt-24"
     >
       <div className="flex w-full flex-col gap-4">
-        <div className="flex flex-col gap-4 rounded-2xl border border-border/60 bg-card/70 p-5 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/60 md:flex-row md:items-end md:justify-between">
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="rounded-full">
-                Configuration
-              </Badge>
-              {summary ? (
-                <Badge
-                  variant={summary.telegram.has_real_credentials ? "secondary" : "outline"}
-                  className="rounded-full"
-                >
-                  Telegram {summary.telegram.has_real_credentials ? "ready" : "not ready"}
-                </Badge>
-              ) : null}
-            </div>
-            <div>
-              <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
-                Settings
-              </h1>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-                Review the active daemon configuration, provider readiness, model
-                budgets, runtime services, and integration switches.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
-            <div className="text-xs text-muted-foreground">
-              {summary ? (
-                <>
-                  Loaded <time>{formatDateTime(summary.loaded_at_ms)}</time>
-                </>
-              ) : (
-                "Waiting for daemon settings…"
-              )}
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void loadSummary()}
-              disabled={isLoading}
-            >
-              <RefreshCwIcon
-                className={cn("size-4", isLoading && "animate-spin")}
-                aria-hidden="true"
-              />
-              Refresh
-            </Button>
-          </div>
-        </div>
-
         {loadError ? (
           <Alert variant="destructive">
             <TriangleAlertIcon className="size-4" aria-hidden="true" />
@@ -152,26 +95,12 @@ export function SettingsPage() {
         ) : null}
 
         {summary ? (
-          <>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-              <OverviewCard summary={summary} />
-              <RuntimeCard summary={summary} />
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-              <ProvidersCard providers={summary.providers} />
-              <ModelsCard
-                models={summary.models}
-                providerByName={providerByName}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              <JudgeCard summary={summary} />
-              <HindsightCard summary={summary} />
-              <TelegramCard summary={summary} />
-            </div>
-          </>
+          <SettingsGrid
+            summary={summary}
+            providerByName={providerByName}
+            isLoading={isLoading}
+            onRefresh={() => void loadSummary()}
+          />
         ) : (
           <SettingsSkeleton />
         )}
@@ -180,46 +109,110 @@ export function SettingsPage() {
   );
 }
 
-function OverviewCard({ summary }: { summary: SettingsSummary }) {
-  const mainModel = summary.models.find((model) => model.is_main);
-
+function SettingsGrid({
+  summary,
+  providerByName,
+  isLoading,
+  onRefresh,
+}: {
+  summary: SettingsSummary;
+  providerByName: Map<string, SettingsProviderSummary>;
+  isLoading: boolean;
+  onRefresh: () => void;
+}) {
   return (
-    <Card className="min-h-full">
+    <div className="grid w-full grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
+      <div className="flex min-w-0 flex-col gap-4">
+        <OverviewCard
+          summary={summary}
+          isLoading={isLoading}
+          onRefresh={onRefresh}
+        />
+        <RuntimeCard summary={summary} />
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-4">
+        <ProvidersCard providers={summary.providers} />
+        <ServicesCard summary={summary} />
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-4 lg:col-span-2 xl:col-span-1">
+        <ModelsCard models={summary.models} providerByName={providerByName} />
+      </div>
+    </div>
+  );
+}
+
+function OverviewCard({
+  summary,
+  isLoading,
+  onRefresh,
+}: {
+  summary: SettingsSummary;
+  isLoading: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <Card className="w-full">
       <CardHeader>
-        <CardTitle>Overview</CardTitle>
-        <CardDescription>
-          Active identity and primary model selection.
-        </CardDescription>
-        <CardAction>
-          <LanguagesIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+        <CardTitle>Settings</CardTitle>
+        <CardAction className="flex items-center gap-2">
+          <Badge
+            variant={summary.telegram.has_real_credentials ? "secondary" : "outline"}
+            className="rounded-full"
+          >
+            Telegram {summary.telegram.has_real_credentials ? "ready" : "check"}
+          </Badge>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            aria-label="Refresh settings"
+            onClick={onRefresh}
+            disabled={isLoading}
+          >
+            <RefreshCwIcon
+              className={cn("size-4", isLoading && "animate-spin")}
+              aria-hidden="true"
+            />
+          </Button>
         </CardAction>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <MetricTile
-            icon={<LanguagesIcon className="size-4" aria-hidden="true" />}
+        <div className="grid grid-cols-2 gap-4">
+          <HeroMetric label="Main" value={summary.main_model} />
+          <HeroMetric
             label="Locale"
             value={summary.locale}
-            description={summary.locale_label}
-          />
-          <MetricTile
-            icon={<BotIcon className="size-4" aria-hidden="true" />}
-            label="Main model"
-            value={summary.main_model}
-            description={mainModel?.model_id ?? "Model key"}
-          />
-          <MetricTile
-            icon={<KeyRoundIcon className="size-4" aria-hidden="true" />}
-            label="Providers"
-            value={String(summary.providers.length)}
-            description={`${summary.models.length} model definitions`}
+            meta={summary.locale_label}
           />
         </div>
 
-        <div className="grid gap-3 rounded-xl border bg-muted/20 p-3 text-sm">
-          <PathRow label="Home" value={summary.home_path} />
-          <PathRow label="Config" value={summary.config_path} />
-        </div>
+        <DetailList
+          items={[
+            {
+              label: "Loaded",
+              value: formatDateTime(summary.loaded_at_ms),
+            },
+            {
+              label: "Models",
+              value: `${summary.models.length}`,
+              meta: `${summary.providers.length} providers`,
+            },
+            {
+              label: "Config",
+              value: summary.config_path,
+              mono: true,
+              breakAll: true,
+            },
+            {
+              label: "Home",
+              value: summary.home_path,
+              mono: true,
+              breakAll: true,
+            },
+          ]}
+        />
       </CardContent>
     </Card>
   );
@@ -229,49 +222,40 @@ function RuntimeCard({ summary }: { summary: SettingsSummary }) {
   const portChanged = summary.daemon.configured_port !== summary.daemon.serving_port;
 
   return (
-    <Card className="min-h-full">
+    <Card className="w-full">
       <CardHeader>
         <CardTitle>Runtime</CardTitle>
-        <CardDescription>
-          Daemon listener and sandbox safety controls.
-        </CardDescription>
         <CardAction>
-          <ServerCogIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+          <StatusBadge
+            tone={summary.sandbox.enabled ? "good" : "neutral"}
+            label={summary.sandbox.enabled ? "Sandbox" : "No sandbox"}
+          />
         </CardAction>
       </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid grid-cols-2 gap-3">
-          <MetricTile
-            icon={<ServerCogIcon className="size-4" aria-hidden="true" />}
-            label="Serving port"
-            value={String(summary.daemon.serving_port)}
-            description={
-              portChanged
-                ? `Configured ${summary.daemon.configured_port}`
-                : "Matches config"
-            }
-          />
-          <MetricTile
-            icon={<ShieldCheckIcon className="size-4" aria-hidden="true" />}
-            label="Sandbox"
-            value={summary.sandbox.enabled ? "Enabled" : "Disabled"}
-            description={`Filesystem ${summary.sandbox.strong_filesystem}`}
-          />
-        </div>
-
-        <div className="rounded-xl border bg-muted/20 p-3">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <span className="text-sm font-medium">Strong filesystem mode</span>
-            <Badge variant="outline" className="rounded-full">
-              {summary.sandbox.strong_filesystem}
-            </Badge>
-          </div>
-          <p className="text-xs leading-5 text-muted-foreground">
-            The sandbox switch controls runtime command isolation. Strong
-            filesystem mode indicates whether hardened file access is disabled,
-            automatic, or required.
-          </p>
-        </div>
+      <CardContent>
+        <DetailList
+          items={[
+            {
+              label: "Daemon",
+              value: `:${summary.daemon.serving_port}`,
+              meta: portChanged
+                ? `configured :${summary.daemon.configured_port}`
+                : undefined,
+            },
+            {
+              label: "Filesystem",
+              value: summary.sandbox.strong_filesystem,
+            },
+            {
+              label: "Judge",
+              value: summary.judge_model,
+            },
+            {
+              label: "Hindsight",
+              value: summary.hindsight_model,
+            },
+          ]}
+        />
       </CardContent>
     </Card>
   );
@@ -279,25 +263,24 @@ function RuntimeCard({ summary }: { summary: SettingsSummary }) {
 
 function ProvidersCard({ providers }: { providers: SettingsProviderSummary[] }) {
   return (
-    <Card>
+    <Card className="w-full">
       <CardHeader>
         <CardTitle>Providers</CardTitle>
-        <CardDescription>
-          Credential readiness without exposing secret values.
-        </CardDescription>
         <CardAction>
-          <KeyRoundIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+          <Badge variant="outline" className="rounded-full">
+            {providers.length}
+          </Badge>
         </CardAction>
       </CardHeader>
       <CardContent>
         {providers.length ? (
-          <div className="grid gap-3">
+          <div className="divide-y divide-border/60">
             {providers.map((provider) => (
               <ProviderRow key={provider.name} provider={provider} />
             ))}
           </div>
         ) : (
-          <EmptyState>No providers configured.</EmptyState>
+          <EmptyState>No providers</EmptyState>
         )}
       </CardContent>
     </Card>
@@ -305,29 +288,25 @@ function ProvidersCard({ providers }: { providers: SettingsProviderSummary[] }) 
 }
 
 function ProviderRow({ provider }: { provider: SettingsProviderSummary }) {
+  const endpoint = provider.base_url ?? provider.auth_file;
+
   return (
-    <div className="rounded-xl border bg-muted/15 p-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-medium">{provider.name}</h3>
-            <Badge variant="secondary" className="rounded-full">
-              {provider.provider_type}
-            </Badge>
-          </div>
-          {provider.base_url ? (
-            <p className="break-all text-xs text-muted-foreground">
-              {provider.base_url}
-            </p>
-          ) : provider.auth_file ? (
-            <p className="break-all text-xs text-muted-foreground">
-              Auth file: {provider.auth_file}
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">No base URL required.</p>
-          )}
+    <div className="py-3 first:pt-0 last:pb-0">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate font-medium">{provider.name}</div>
+          {endpoint ? (
+            <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
+              {endpoint}
+            </div>
+          ) : null}
         </div>
-        <CredentialBadge credential={provider.credential} />
+        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+          <Badge variant="outline" className="rounded-full">
+            {provider.provider_type}
+          </Badge>
+          <CredentialBadge credential={provider.credential} />
+        </div>
       </div>
     </div>
   );
@@ -341,19 +320,18 @@ function ModelsCard({
   providerByName: Map<string, SettingsProviderSummary>;
 }) {
   return (
-    <Card>
+    <Card className="w-full">
       <CardHeader>
         <CardTitle>Models</CardTitle>
-        <CardDescription>
-          Context budget, timeout, and role assignment per model key.
-        </CardDescription>
         <CardAction>
-          <CpuIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+          <Badge variant="outline" className="rounded-full">
+            {models.length}
+          </Badge>
         </CardAction>
       </CardHeader>
       <CardContent>
         {models.length ? (
-          <div className="grid gap-3">
+          <div className="divide-y divide-border/60">
             {models.map((model) => (
               <ModelRow
                 key={model.name}
@@ -363,7 +341,7 @@ function ModelsCard({
             ))}
           </div>
         ) : (
-          <EmptyState>No models configured.</EmptyState>
+          <EmptyState>No models</EmptyState>
         )}
       </CardContent>
     </Card>
@@ -381,163 +359,142 @@ function ModelRow({
     model.is_main ? "main" : null,
     model.is_judge ? "judge" : null,
     model.is_hindsight ? "hindsight" : null,
-  ].filter(Boolean);
+  ].filter((role): role is string => Boolean(role));
 
   return (
-    <div className="rounded-xl border bg-muted/15 p-3">
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-medium">{model.name}</h3>
-              {roles.map((role) => (
-                <Badge key={role} variant="outline" className="rounded-full">
-                  {role}
-                </Badge>
-              ))}
-            </div>
-            <p className="mt-1 break-all text-xs text-muted-foreground">
-              {model.model_id}
-            </p>
-          </div>
+    <div className="py-3 first:pt-0 last:pb-0">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary" className="rounded-full">
-              {provider?.provider_type ?? model.provider}
-            </Badge>
-            {model.thinking_budget ? (
-              <Badge variant="outline" className="rounded-full">
-                thinking {model.thinking_budget}
+            <h3 className="truncate font-medium">{model.name}</h3>
+            {roles.map((role) => (
+              <Badge key={role} variant="outline" className="rounded-full">
+                {role}
               </Badge>
-            ) : null}
+            ))}
+          </div>
+          <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
+            {model.model_id}
           </div>
         </div>
-
-        <Separator />
-
-        <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
-          <InlineMetric
-            label="Context"
-            value={formatNumber(model.context_window_tokens)}
-            description={`${model.effective_context_window_percent}% effective`}
-          />
-          <InlineMetric
-            label="Auto compact"
-            value={formatNumber(model.auto_compact_token_limit)}
-            description={`${formatNumber(model.effective_context_window_tokens)} effective`}
-          />
-          <InlineMetric
-            label="Max output"
-            value={formatNumber(model.max_completion_tokens)}
-            description={`${formatNumber(model.tool_output_max_tokens)} tool output`}
-          />
-          <InlineMetric
-            label="Timeouts"
-            value={`${model.request_timeout_secs}s`}
-            description={`${model.stream_idle_timeout_secs}s idle`}
-          />
+        <div className="flex shrink-0 flex-wrap gap-1.5 sm:justify-end">
+          <Badge variant="secondary" className="rounded-full">
+            {provider?.provider_type ?? model.provider}
+          </Badge>
+          {model.thinking_budget ? (
+            <Badge variant="outline" className="rounded-full">
+              {model.thinking_budget}
+            </Badge>
+          ) : null}
         </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-4">
+        <MicroMetric
+          label="Context"
+          value={formatNumber(model.context_window_tokens)}
+          meta={`${model.effective_context_window_percent}%`}
+        />
+        <MicroMetric
+          label="Compact"
+          value={formatNumber(model.auto_compact_token_limit)}
+          meta={formatNumber(model.effective_context_window_tokens)}
+        />
+        <MicroMetric
+          label="Output"
+          value={formatNumber(model.max_completion_tokens)}
+          meta={`${formatNumber(model.tool_output_max_tokens)} tool`}
+        />
+        <MicroMetric
+          label="Timeout"
+          value={`${model.request_timeout_secs}s`}
+          meta={`${model.stream_idle_timeout_secs}s idle`}
+        />
       </div>
     </div>
   );
 }
 
-function JudgeCard({ summary }: { summary: SettingsSummary }) {
+function ServicesCard({ summary }: { summary: SettingsSummary }) {
   return (
-    <ConfigCard
-      icon={<BrainCircuitIcon className="size-4 text-muted-foreground" aria-hidden="true" />}
-      title="Judge"
-      description="Pairwise evaluation settings."
-      badge={summary.judge.enabled ? "Enabled" : "Disabled"}
-      badgeVariant={summary.judge.enabled ? "secondary" : "outline"}
-      items={[
-        {
-          label: "Effective model",
-          value: summary.judge.effective_model,
-          description: summary.judge.model ? "Configured explicitly" : "Falls back to main model",
-        },
-        {
-          label: "Candidates",
-          value: formatNumber(summary.judge.max_pairwise_candidates),
-          description: "Maximum pairwise candidates",
-        },
-        {
-          label: "Cases",
-          value: formatNumber(summary.judge.max_pairwise_cases),
-          description: "Maximum pairwise cases",
-        },
-      ]}
-    />
-  );
-}
-
-function HindsightCard({ summary }: { summary: SettingsSummary }) {
-  return (
-    <ConfigCard
-      icon={<FolderCogIcon className="size-4 text-muted-foreground" aria-hidden="true" />}
-      title="Hindsight"
-      description="Memory sidecar and reflection profile."
-      badge={`:${summary.hindsight.port}`}
-      badgeVariant="outline"
-      items={[
-        {
-          label: "Profile",
-          value: summary.hindsight.profile,
-          description: `${summary.hindsight.namespace}/${summary.hindsight.bank_id}`,
-        },
-        {
-          label: "Effective model",
-          value: summary.hindsight.effective_model,
-          description: summary.hindsight.model
-            ? "Configured explicitly"
-            : "Falls back to main model",
-        },
-        {
-          label: "Request timeout",
-          value: `${summary.hindsight.request_timeout_secs}s`,
-          description: "Sidecar operation budget",
-        },
-      ]}
-    />
-  );
-}
-
-function TelegramCard({ summary }: { summary: SettingsSummary }) {
-  return (
-    <Card>
+    <Card className="w-full">
       <CardHeader>
-        <CardTitle>Telegram</CardTitle>
-        <CardDescription>
-          Remote delivery and polling integration.
-        </CardDescription>
-        <CardAction>
-          <MessageCircleIcon className="size-4 text-muted-foreground" aria-hidden="true" />
-        </CardAction>
+        <CardTitle>Services</CardTitle>
       </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge
-            variant={summary.telegram.enabled ? "secondary" : "outline"}
-            className="rounded-full"
-          >
-            {summary.telegram.enabled ? "Enabled" : "Disabled"}
-          </Badge>
-          <CredentialBadge credential={summary.telegram.credential} />
-        </div>
-
-        <div className="grid gap-3 text-sm">
-          <InlineMetric
-            label="Poll timeout"
-            value={`${summary.telegram.poll_timeout_secs}s`}
-            description="Long-poll request duration"
-          />
-          <InlineMetric
-            label="Credential state"
-            value={credentialStatusLabel(summary.telegram.credential.status)}
-            description={
-              summary.telegram.has_real_credentials
-                ? "Ready for real Telegram polling"
-                : "Token is missing or still a placeholder"
+      <CardContent>
+        <div className="divide-y divide-border/60">
+          <ServiceRow
+            title="Judge"
+            action={
+              <StatusBadge
+                tone={summary.judge.enabled ? "good" : "neutral"}
+                label={summary.judge.enabled ? "Enabled" : "Disabled"}
+              />
             }
+            items={[
+              {
+                label: "Model",
+                value: summary.judge.effective_model,
+                meta: summary.judge.model ? "custom" : undefined,
+              },
+              {
+                label: "Candidates",
+                value: formatNumber(summary.judge.max_pairwise_candidates),
+              },
+              {
+                label: "Cases",
+                value: formatNumber(summary.judge.max_pairwise_cases),
+              },
+            ]}
+          />
+
+          <ServiceRow
+            title="Hindsight"
+            action={
+              <Badge variant="outline" className="rounded-full">
+                :{summary.hindsight.port}
+              </Badge>
+            }
+            items={[
+              {
+                label: "Profile",
+                value: summary.hindsight.profile,
+                meta: `${summary.hindsight.namespace}/${summary.hindsight.bank_id}`,
+              },
+              {
+                label: "Model",
+                value: summary.hindsight.effective_model,
+                meta: summary.hindsight.model ? "custom" : undefined,
+              },
+              {
+                label: "Timeout",
+                value: `${summary.hindsight.request_timeout_secs}s`,
+              },
+            ]}
+          />
+
+          <ServiceRow
+            title="Telegram"
+            action={
+              <div className="flex flex-wrap justify-end gap-1.5">
+                <StatusBadge
+                  tone={summary.telegram.enabled ? "good" : "neutral"}
+                  label={summary.telegram.enabled ? "Enabled" : "Disabled"}
+                />
+                <CredentialBadge credential={summary.telegram.credential} />
+              </div>
+            }
+            items={[
+              {
+                label: "Poll",
+                value: `${summary.telegram.poll_timeout_secs}s`,
+              },
+              {
+                label: "Credential",
+                value: credentialStatusLabel(summary.telegram.credential.status),
+                meta: summary.telegram.has_real_credentials ? "ready" : "check",
+              },
+            ]}
           />
         </div>
       </CardContent>
@@ -545,107 +502,113 @@ function TelegramCard({ summary }: { summary: SettingsSummary }) {
   );
 }
 
-function ConfigCard({
-  icon,
+function ServiceRow({
   title,
-  description,
-  badge,
-  badgeVariant,
+  action,
   items,
 }: {
-  icon: ReactNode;
   title: string;
-  description: string;
-  badge: string;
-  badgeVariant: "outline" | "secondary";
+  action: ReactNode;
   items: MetricItem[];
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-        <CardAction className="flex items-center gap-2">
-          <Badge variant={badgeVariant} className="rounded-full">
-            {badge}
-          </Badge>
-          {icon}
-        </CardAction>
-      </CardHeader>
-      <CardContent className="grid gap-3 text-sm">
+    <div className="py-3 first:pt-0 last:pb-0">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="font-medium">{title}</h3>
+        {action}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
         {items.map((item) => (
-          <InlineMetric
+          <MicroMetric
             key={item.label}
             label={item.label}
             value={item.value}
-            description={item.description}
+            meta={item.meta}
           />
         ))}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
-function MetricTile({
-  icon,
+function HeroMetric({
   label,
   value,
-  description,
+  meta,
 }: {
-  icon: ReactNode;
   label: string;
   value: ReactNode;
-  description?: ReactNode;
+  meta?: ReactNode;
 }) {
   return (
-    <div className="rounded-xl border bg-muted/20 p-3">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <span className="text-xs uppercase tracking-wide text-muted-foreground">
-          {label}
-        </span>
-        <span className="text-muted-foreground">{icon}</span>
+    <div className="min-w-0">
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">
+        {label}
       </div>
-      <div className="truncate text-lg font-semibold leading-none">{value}</div>
-      {description ? (
-        <div className="mt-2 truncate text-xs text-muted-foreground">
-          {description}
-        </div>
+      <div className="mt-1 truncate text-2xl font-semibold tracking-tight">
+        {value}
+      </div>
+      {meta ? (
+        <div className="mt-1 truncate text-xs text-muted-foreground">{meta}</div>
       ) : null}
     </div>
   );
 }
 
-function InlineMetric({
-  label,
-  value,
-  description,
-}: {
-  label: string;
-  value: ReactNode;
-  description?: ReactNode;
-}) {
+function DetailList({ items }: { items: DetailItem[] }) {
   return (
-    <div className="min-w-0 rounded-lg bg-muted/20 p-3">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className="mt-1 truncate font-medium">{value}</div>
-      {description ? (
-        <div className="mt-1 truncate text-xs text-muted-foreground">
-          {description}
-        </div>
-      ) : null}
+    <div className="divide-y divide-border/60">
+      {items.map((item) => (
+        <DetailRow key={item.label} item={item} />
+      ))}
     </div>
   );
 }
 
-function PathRow({ label, value }: { label: string; value: string }) {
+function DetailRow({ item }: { item: DetailItem }) {
   return (
-    <div className="grid gap-1 sm:grid-cols-[5rem_1fr] sm:gap-3">
+    <div className="grid gap-1 py-2.5 first:pt-0 last:pb-0 sm:grid-cols-[6rem_1fr] sm:gap-3">
       <div className="text-xs uppercase tracking-wide text-muted-foreground">
+        {item.label}
+      </div>
+      <div className="min-w-0">
+        <div
+          className={cn(
+            "font-medium",
+            item.mono && "font-mono text-xs",
+            item.breakAll ? "break-all" : "truncate",
+          )}
+        >
+          {item.value}
+        </div>
+        {item.meta ? (
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+            {item.meta}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function MicroMetric({
+  label,
+  value,
+  meta,
+}: {
+  label: string;
+  value: ReactNode;
+  meta?: ReactNode;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[0.68rem] uppercase tracking-wide text-muted-foreground">
         {label}
       </div>
-      <div className="break-all font-mono text-xs">{value}</div>
+      <div className="mt-0.5 truncate font-medium">{value}</div>
+      {meta ? (
+        <div className="mt-0.5 truncate text-muted-foreground">{meta}</div>
+      ) : null}
     </div>
   );
 }
@@ -656,8 +619,25 @@ function CredentialBadge({
   credential: SettingsCredentialSummary;
 }) {
   const tone = credentialTone(credential.status);
-  const Icon = credentialIcon(credential.status);
 
+  return (
+    <StatusBadge
+      tone={tone}
+      label={credentialStatusLabel(credential.status)}
+      title={credential.source ? `Source: ${credential.source}` : undefined}
+    />
+  );
+}
+
+function StatusBadge({
+  tone,
+  label,
+  title,
+}: {
+  tone: Tone;
+  label: string;
+  title?: string;
+}) {
   return (
     <Badge
       variant={tone === "good" ? "secondary" : "outline"}
@@ -665,44 +645,44 @@ function CredentialBadge({
         "rounded-full",
         tone === "warn" && "border-destructive/40 text-destructive",
       )}
-      title={credential.source ? `Source: ${credential.source}` : undefined}
+      title={title}
     >
-      <Icon className="size-3" aria-hidden="true" />
-      {credentialStatusLabel(credential.status)}
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-1.5 rounded-full",
+          tone === "good" && "bg-emerald-500",
+          tone === "warn" && "bg-destructive",
+          tone === "neutral" && "bg-muted-foreground/45",
+        )}
+      />
+      {label}
     </Badge>
   );
 }
 
 function EmptyState({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-xl border border-dashed bg-muted/10 p-6 text-center text-sm text-muted-foreground">
-      {children}
-    </div>
-  );
+  return <div className="py-3 text-sm text-muted-foreground">{children}</div>;
 }
 
 function SettingsSkeleton() {
   return (
-    <div className="grid gap-4">
-      <Card>
-        <CardContent className="grid gap-3 pt-2">
-          <div className="h-5 w-40 animate-pulse rounded bg-muted" />
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="h-24 animate-pulse rounded-xl bg-muted" />
-            <div className="h-24 animate-pulse rounded-xl bg-muted" />
-            <div className="h-24 animate-pulse rounded-xl bg-muted" />
-          </div>
-        </CardContent>
-      </Card>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="h-56 animate-pulse rounded-xl bg-muted" />
-        <div className="h-56 animate-pulse rounded-xl bg-muted" />
-      </div>
+    <div className="grid w-full grid-cols-1 items-start gap-4 lg:grid-cols-2 xl:grid-cols-3">
+      {Array.from({ length: 5 }).map((_, index) => (
+        <Card key={index} className={cn(index === 4 && "lg:col-span-2 xl:col-span-1")}>
+          <CardContent className="grid gap-3">
+            <div className="h-5 w-28 animate-pulse rounded bg-muted" />
+            <div className="h-4 w-2/3 animate-pulse rounded bg-muted" />
+            <div className="h-4 w-1/2 animate-pulse rounded bg-muted" />
+            <div className="h-4 w-5/6 animate-pulse rounded bg-muted" />
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }
 
-function credentialTone(status: SettingsCredentialStatus) {
+function credentialTone(status: SettingsCredentialStatus): Tone {
   switch (status) {
     case "configured":
     case "env_configured":
@@ -712,19 +692,6 @@ function credentialTone(status: SettingsCredentialStatus) {
     case "missing":
     case "placeholder":
       return "warn";
-  }
-}
-
-function credentialIcon(status: SettingsCredentialStatus) {
-  switch (status) {
-    case "configured":
-    case "env_configured":
-    case "oauth_file":
-      return CheckCircle2Icon;
-    case "env_missing":
-    case "missing":
-    case "placeholder":
-      return TriangleAlertIcon;
   }
 }
 
