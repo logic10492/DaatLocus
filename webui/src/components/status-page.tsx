@@ -67,6 +67,7 @@ const AGENT_CHAT_MAX_VISIBLE_BUBBLES = 24;
 const AGENT_CHAT_MESSAGE_LINE_LIMIT = 5;
 const AGENT_CHAT_FOCUSED_MESSAGE_LINE_LIMIT = 12;
 const AGENT_CHAT_DETAIL_LINE_LIMIT = 8;
+const AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT = Number.MAX_SAFE_INTEGER;
 const TOKEN_USAGE_CHART_CONFIG = {
   cached: {
     label: "Cached",
@@ -562,10 +563,16 @@ function AgentChatBubbleItem({
 }) {
   const isUser = bubble.role === "user";
   const isAssistant = bubble.role === "assistant";
-  const primaryBlocks = bubble.blocks.length > 0
+  const isConversationMessage = agentChatBubbleIsConversationMessage(bubble);
+  const rawPrimaryBlocks = bubble.blocks.length > 0
     ? bubble.blocks
     : ([{ type: "text", text: bubble.title }] as WebActivityBlock[]);
-  const visibleBlockLimit = isFocused ? 6 : 3;
+  const primaryBlocks = agentChatDisplayBlocksForBubble(bubble, rawPrimaryBlocks);
+  const visibleBlockLimit = isConversationMessage && isFocused
+    ? primaryBlocks.length
+    : isFocused
+      ? 6
+      : 3;
   const visibleBlocks = primaryBlocks.slice(0, visibleBlockLimit);
   const hiddenBlocks = primaryBlocks.slice(visibleBlockLimit);
   const hasDetails =
@@ -615,6 +622,7 @@ function AgentChatBubbleItem({
               block={block}
               blockId={`${bubble.id}-block-${index}`}
               isFocused={isFocused}
+              messageMode={isConversationMessage}
             />
           ))}
         </div>
@@ -639,6 +647,7 @@ function AgentChatBubbleItem({
                   block={block}
                   blockId={`${bubble.id}-hidden-${index}`}
                   isFocused={true}
+                  messageMode={isConversationMessage}
                 />
               ))}
               {bubble.detailBlocks.map((block, index) => (
@@ -686,17 +695,21 @@ function AgentChatBlock({
   block,
   blockId,
   isFocused,
+  messageMode = false,
   detail = false,
 }: {
   block: WebActivityBlock;
   blockId: string;
   isFocused: boolean;
+  messageMode?: boolean;
   detail?: boolean;
 }) {
   const record = asRecord(block);
   const type = typeof record?.type === "string" ? record.type : "unknown";
   const lineLimit = detail
     ? AGENT_CHAT_DETAIL_LINE_LIMIT
+    : messageMode && isFocused
+      ? AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT
     : isFocused
       ? AGENT_CHAT_FOCUSED_MESSAGE_LINE_LIMIT
       : AGENT_CHAT_MESSAGE_LINE_LIMIT;
@@ -1092,6 +1105,95 @@ function agentChatStatusLabel(status: string) {
     default:
       return status;
   }
+}
+
+function agentChatBubbleIsConversationMessage(bubble: AgentChatBubble) {
+  return (
+    bubble.kind === "message" &&
+    (bubble.role === "assistant" || bubble.role === "user" || bubble.role === "telegram")
+  );
+}
+
+function agentChatDisplayBlocksForBubble(
+  bubble: AgentChatBubble,
+  blocks: WebActivityBlock[],
+): WebActivityBlock[] {
+  if (!agentChatBubbleIsConversationMessage(bubble)) {
+    return blocks;
+  }
+
+  return blocks.flatMap((block) => agentChatSplitMarkdownCodeFences(block));
+}
+
+function agentChatSplitMarkdownCodeFences(block: WebActivityBlock): WebActivityBlock[] {
+  const record = asRecord(block);
+
+  if (!record || record.type !== "text") {
+    return [block];
+  }
+
+  const text = stringValue(record.text, "");
+
+  if (!text.includes("```")) {
+    return [block];
+  }
+
+  const blocks: WebActivityBlock[] = [];
+  const lines = text.split(/\r?\n/);
+  let textLines: string[] = [];
+  let codeLines: string[] | null = null;
+  let codeLanguage = "";
+
+  function flushText() {
+    const content = textLines.join("\n").trim();
+    textLines = [];
+
+    if (content) {
+      blocks.push({ type: "text", text: content });
+    }
+  }
+
+  function flushCode() {
+    if (!codeLines) {
+      return;
+    }
+
+    blocks.push({
+      type: "code",
+      code: codeLines.join("\n"),
+      language: codeLanguage || undefined,
+    });
+    codeLines = null;
+    codeLanguage = "";
+  }
+
+  for (const line of lines) {
+    const fenceMatch = line.match(/^\s*```\s*([A-Za-z0-9_+.-]*)\s*$/);
+
+    if (fenceMatch) {
+      if (codeLines) {
+        flushCode();
+      } else {
+        flushText();
+        codeLines = [];
+        codeLanguage = fenceMatch[1] ?? "";
+      }
+      continue;
+    }
+
+    if (codeLines) {
+      codeLines.push(line);
+    } else {
+      textLines.push(line);
+    }
+  }
+
+  if (codeLines) {
+    flushCode();
+  }
+  flushText();
+
+  return blocks.length > 0 ? blocks : [block];
 }
 
 type AgentChatDiffFile = {
