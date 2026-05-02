@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   type DragEvent,
-  type FocusEvent,
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
@@ -441,10 +440,7 @@ function AgentChatComposer({
     onFocusChange(true);
   }
 
-  function handleBlur(event: FocusEvent<HTMLFormElement>) {
-    if (event.currentTarget.contains(event.relatedTarget)) {
-      return;
-    }
+  function handleCloseFocus() {
     onFocusChange(false);
   }
 
@@ -482,7 +478,6 @@ function AgentChatComposer({
       aria-label="Send message to agent"
       onSubmit={handleSubmit}
       onFocus={handleFocus}
-      onBlur={handleBlur}
       className={cn(
         "fixed bottom-5 left-1/2 z-30 w-[min(42rem,calc(100vw-2rem))] -translate-x-1/2 rounded-[2rem] border bg-background/85 p-2 shadow-2xl shadow-background/40 backdrop-blur-xl transition-all duration-300",
         isFocused
@@ -509,6 +504,18 @@ function AgentChatComposer({
           }}
           className="max-h-32 min-h-11 flex-1 resize-none bg-transparent px-4 py-3 text-sm leading-5 outline-none placeholder:text-muted-foreground/70"
         />
+        {isFocused ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-lg"
+            aria-label="Collapse agent chat"
+            onClick={handleCloseFocus}
+            className="mb-0.5 rounded-full text-muted-foreground hover:text-foreground"
+          >
+            <XIcon className="size-4" />
+          </Button>
+        ) : null}
         <Button
           type="submit"
           size="icon-lg"
