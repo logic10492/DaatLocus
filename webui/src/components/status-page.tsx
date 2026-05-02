@@ -382,10 +382,10 @@ function AgentChatBubbles({
       aria-label="Agent chat preview"
       aria-hidden={!isFocused}
       className={cn(
-        "absolute inset-0 z-0 w-full text-left transition-[filter,opacity] duration-300 ease-out",
+        "absolute inset-0 w-full text-left transition-[filter,opacity] duration-300 ease-out",
         isFocused
-          ? "pointer-events-auto overflow-y-auto px-4 pb-[calc(50vh+9rem)] pt-6 opacity-100 [scrollbar-gutter:stable] md:px-8"
-          : "pointer-events-none overflow-hidden px-4 pb-24 pt-[calc(50vh+8rem)] opacity-35 blur-[1px] md:px-8",
+          ? "pointer-events-auto z-20 overflow-y-auto px-4 pb-[calc(50vh+9rem)] pt-6 opacity-100 [scrollbar-gutter:stable] md:px-8"
+          : "pointer-events-none z-0 overflow-hidden px-4 pb-24 pt-[calc(50vh+8rem)] opacity-35 blur-[1px] md:px-8",
       )}
     >
       <div
