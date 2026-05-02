@@ -315,11 +315,17 @@ export function AgentPage() {
       <div className="relative z-10 flex flex-col items-center justify-center gap-5 text-center">
         <AgentStatusAnimation
           status={agentStatus.animationStatus}
-          className="relative z-20 w-64 md:w-80"
+          className={cn(
+            "relative z-20 w-64 transition-[filter,opacity,transform] duration-300 md:w-80",
+            isChatFocused && "scale-95 opacity-35 blur-[2px]",
+          )}
         />
         <p
           aria-live="polite"
-          className="relative z-20 min-h-6 max-w-[min(32rem,calc(100vw-3rem))] text-balance text-sm font-medium leading-6 text-muted-foreground md:text-base"
+          className={cn(
+            "relative z-20 min-h-6 max-w-[min(32rem,calc(100vw-3rem))] text-balance text-sm font-medium leading-6 text-muted-foreground transition-opacity duration-300 md:text-base",
+            isChatFocused && "opacity-40",
+          )}
         >
           {typedSummaryText ? (
             <>
@@ -389,8 +395,15 @@ function AgentChatBubbles({
       )}
     >
       <div
+        aria-hidden="true"
         className={cn(
-          "flex min-h-full w-full flex-col gap-3 transition-transform duration-300 ease-out",
+          "pointer-events-none absolute left-1/2 top-1/2 z-0 h-[min(34rem,72vw)] w-[min(34rem,72vw)] -translate-x-1/2 -translate-y-1/2 rounded-full bg-background/10 opacity-0 backdrop-blur-0 transition-[backdrop-filter,opacity] duration-300",
+          isFocused && "opacity-100 backdrop-blur-md",
+        )}
+      />
+      <div
+        className={cn(
+          "relative z-10 flex min-h-full w-full flex-col gap-3 transition-transform duration-300 ease-out",
           isFocused ? "justify-end" : "justify-start translate-y-8",
         )}
       >
@@ -404,7 +417,7 @@ function AgentChatBubbles({
           ))
         ) : (
           <p className="mx-auto max-w-[min(32rem,calc(100vw-3rem))] px-4 py-3 text-center text-xs text-muted-foreground/70">
-            聚焦底部输入框后，消息气泡会在整个屏幕上围绕 agent 浮动。
+            聚焦底部输入框后，消息流会在整个屏幕上围绕 agent 浮动。
           </p>
         )}
       </div>
@@ -431,31 +444,25 @@ function AgentChatBubbleItem({
   return (
     <article
       className={cn(
-        "flex w-full",
-        isUser ? "justify-end" : "justify-start",
+        "w-full",
         !isFocused && "select-none",
       )}
     >
       <div
         className={cn(
-          "max-w-[min(34rem,85%)] rounded-[1.35rem] px-4 py-3 text-sm leading-5 shadow-sm",
-          isUser
-            ? "rounded-br-md bg-primary text-primary-foreground"
-            : isAssistant
-              ? "rounded-bl-md border border-cyan-400/20 bg-cyan-950/40 text-cyan-50"
-              : bubble.role === "telegram"
-                ? "rounded-bl-md border border-sky-400/20 bg-sky-950/35 text-sky-50"
-                : "rounded-bl-md border border-border/70 bg-card/90 text-card-foreground",
+          "max-w-[min(34rem,85%)] px-1 py-2 text-sm leading-5 text-foreground",
         )}
       >
         <div
           className={cn(
             "mb-1 flex items-center gap-2 text-[0.68rem] font-semibold uppercase tracking-[0.16em]",
             isUser
-              ? "text-primary-foreground/75"
+              ? "text-primary"
               : isAssistant
-                ? "text-cyan-200/75"
-                : "text-muted-foreground",
+                ? "text-cyan-300"
+                : bubble.role === "telegram"
+                  ? "text-sky-300"
+                  : "text-muted-foreground",
           )}
         >
           {bubble.live ? (
@@ -463,7 +470,7 @@ function AgentChatBubbleItem({
           ) : null}
           <span>{agentChatBubbleLabel(bubble)}</span>
         </div>
-        <div className="space-y-1">
+        <div className="space-y-1 text-foreground/90">
           {visibleLines.map((line, index) => (
             <p
               key={`${bubble.id}-line-${index}`}
@@ -476,10 +483,7 @@ function AgentChatBubbleItem({
         {detailLines.length > 0 ? (
           <div
             className={cn(
-              "mt-2 space-y-0.5 border-t pt-2 text-xs",
-              isUser
-                ? "border-primary-foreground/20 text-primary-foreground/70"
-                : "border-white/10 text-muted-foreground",
+              "mt-2 space-y-0.5 text-xs text-muted-foreground",
             )}
           >
             {detailLines.slice(0, 2).map((line, index) => (
