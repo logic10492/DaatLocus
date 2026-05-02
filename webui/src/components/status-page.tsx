@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
+  type UIEvent,
 } from "react";
 
 import {
@@ -16,6 +17,7 @@ import {
   type AgentAnimationStatus,
 } from "@/components/agent-status-animation";
 import {
+  ArrowDownIcon,
   CheckIcon,
   GripVerticalIcon,
   Loader2Icon,
@@ -68,6 +70,8 @@ const AGENT_CHAT_MESSAGE_LINE_LIMIT = 5;
 const AGENT_CHAT_FOCUSED_MESSAGE_LINE_LIMIT = 12;
 const AGENT_CHAT_DETAIL_LINE_LIMIT = 8;
 const AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT = Number.MAX_SAFE_INTEGER;
+const AGENT_CHAT_STICKY_BOTTOM_THRESHOLD_PX = 72;
+const AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX = 160;
 const TOKEN_USAGE_CHART_CONFIG = {
   cached: {
     label: "Cached",
@@ -548,54 +552,184 @@ function AgentChatBubbles({
     () => agentChatTimelineSectionsFromSnapshot(snapshot, bubbles),
     [snapshot, bubbles],
   );
+  const lastFocusedScrollTopRef = useRef(0);
+  const hasFocusedScrollPositionRef = useRef(false);
+  const shouldRestoreFocusScrollRef = useRef(false);
+  const isFocusedNearBottomRef = useRef(true);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
-  useEffect(() => {
-    if (!isFocused || !panelRef.current) {
+  function scrollToChatBottom(behavior: ScrollBehavior = "auto") {
+    const panel = panelRef.current;
+    if (!panel) {
       return;
     }
-    panelRef.current.scrollTop = panelRef.current.scrollHeight;
+
+    panel.scrollTo({
+      top: panel.scrollHeight,
+      behavior,
+    });
+  }
+
+  function updateScrollButtonVisibility(panel: HTMLDivElement) {
+    const distanceFromBottom =
+      panel.scrollHeight - panel.clientHeight - panel.scrollTop;
+    setShowScrollToBottom(
+      isFocused && distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX,
+    );
+  }
+
+  function handleScroll(event: UIEvent<HTMLDivElement>) {
+    const panel = event.currentTarget;
+    const distanceFromBottom =
+      panel.scrollHeight - panel.clientHeight - panel.scrollTop;
+
+    if (isFocused) {
+      lastFocusedScrollTopRef.current = panel.scrollTop;
+      hasFocusedScrollPositionRef.current = true;
+      isFocusedNearBottomRef.current =
+        distanceFromBottom <= AGENT_CHAT_STICKY_BOTTOM_THRESHOLD_PX;
+    }
+
+    setShowScrollToBottom(
+      isFocused && distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX,
+    );
+  }
+
+  function handleScrollToBottomClick() {
+    isFocusedNearBottomRef.current = true;
+    scrollToChatBottom("smooth");
+    setShowScrollToBottom(false);
+  }
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) {
+      return;
+    }
+
+    if (isFocused) {
+      if (!hasFocusedScrollPositionRef.current) {
+        lastFocusedScrollTopRef.current = panel.scrollHeight;
+        hasFocusedScrollPositionRef.current = true;
+        isFocusedNearBottomRef.current = true;
+      }
+      shouldRestoreFocusScrollRef.current = true;
+      return;
+    }
+
+    shouldRestoreFocusScrollRef.current = false;
+    setShowScrollToBottom(false);
+    window.requestAnimationFrame(() => {
+      scrollToChatBottom();
+    });
+  }, [isFocused, panelRef]);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) {
+      return;
+    }
+
+    if (!isFocused) {
+      window.requestAnimationFrame(() => {
+        scrollToChatBottom();
+      });
+      return;
+    }
+
+    if (shouldRestoreFocusScrollRef.current) {
+      shouldRestoreFocusScrollRef.current = false;
+      window.requestAnimationFrame(() => {
+        const latestPanel = panelRef.current;
+        if (!latestPanel) {
+          return;
+        }
+        if (isFocusedNearBottomRef.current) {
+          scrollToChatBottom();
+        } else {
+          latestPanel.scrollTop = Math.min(
+            lastFocusedScrollTopRef.current,
+            Math.max(0, latestPanel.scrollHeight - latestPanel.clientHeight),
+          );
+        }
+        updateScrollButtonVisibility(latestPanel);
+        isFocusedNearBottomRef.current =
+          latestPanel.scrollHeight - latestPanel.clientHeight - latestPanel.scrollTop <=
+          AGENT_CHAT_STICKY_BOTTOM_THRESHOLD_PX;
+      });
+      return;
+    }
+
+    const distanceFromBottom =
+      panel.scrollHeight - panel.clientHeight - panel.scrollTop;
+    if (isFocusedNearBottomRef.current) {
+      window.requestAnimationFrame(() => {
+        scrollToChatBottom();
+      });
+    } else {
+      setShowScrollToBottom(
+        distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX,
+      );
+    }
   }, [bubbles.length, sections.length, isFocused, panelRef]);
 
   return (
-    <div
-      ref={panelRef}
-      aria-label="Agent chat preview"
-      aria-hidden={!isFocused}
-      className={cn(
-        "absolute inset-0 w-full text-left transition-[filter,opacity] duration-300 ease-out",
-        isFocused
-          ? "pointer-events-auto z-20 overflow-y-auto px-4 pb-[calc(50vh+9rem)] pt-6 opacity-100 [scrollbar-gutter:stable] md:px-8"
-          : "pointer-events-none z-0 overflow-hidden px-4 pb-24 pt-[calc(50vh+8rem)] opacity-35 blur-[1px] md:px-8",
-      )}
-    >
+    <>
       <div
-        aria-hidden="true"
+        ref={panelRef}
+        aria-label="Agent chat preview"
+        aria-hidden={!isFocused}
+        onScroll={handleScroll}
         className={cn(
-          "pointer-events-none absolute left-1/2 top-1/2 z-0 h-[min(34rem,72vw)] w-[min(34rem,72vw)] -translate-x-1/2 -translate-y-1/2 rounded-full bg-background/10 opacity-0 backdrop-blur-0 transition-[backdrop-filter,opacity] duration-300",
-          isFocused && "opacity-100 backdrop-blur-md",
-        )}
-      />
-      <div
-        className={cn(
-          "relative z-10 flex min-h-full w-full flex-col gap-3 transition-transform duration-300 ease-out",
-          isFocused ? "justify-end" : "justify-start translate-y-8",
+          "absolute inset-0 w-full overflow-y-auto px-4 pb-[calc(50vh+9rem)] pt-6 text-left [scrollbar-gutter:stable] transition-[filter,opacity] duration-300 ease-out md:px-8",
+          isFocused
+            ? "pointer-events-auto z-20 opacity-100"
+            : "pointer-events-none z-0 opacity-35 blur-[1px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         )}
       >
-        {sections.length > 0 ? (
-          sections.map((section) => (
-            <AgentChatTimelineSectionItem
-              key={section.id}
-              section={section}
-              isFocused={isFocused}
-            />
-          ))
-        ) : (
-          <p className="mx-auto max-w-[min(32rem,calc(100vw-3rem))] px-4 py-3 text-center text-xs text-muted-foreground/70">
-            聚焦底部输入框后，消息流会在整个屏幕上围绕 agent 浮动。
-          </p>
-        )}
+        <div
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none fixed left-1/2 top-1/2 z-0 h-[min(34rem,72vw)] w-[min(34rem,72vw)] -translate-x-1/2 -translate-y-1/2 rounded-full bg-background/10 opacity-0 backdrop-blur-0 transition-[backdrop-filter,opacity] duration-300",
+            isFocused && "opacity-100 backdrop-blur-md",
+          )}
+        />
+        <div className="relative z-10 flex min-h-full w-full flex-col justify-end gap-3">
+          {sections.length > 0 ? (
+            sections.map((section) => (
+              <AgentChatTimelineSectionItem
+                key={section.id}
+                section={section}
+                isFocused={isFocused}
+              />
+            ))
+          ) : (
+            <p className="mx-auto max-w-[min(32rem,calc(100vw-3rem))] px-4 py-3 text-center text-xs text-muted-foreground/70">
+              聚焦底部输入框后，消息流会在整个屏幕上围绕 agent 浮动。
+            </p>
+          )}
+        </div>
       </div>
-    </div>
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        aria-label="Scroll agent chat to bottom"
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
+        onClick={handleScrollToBottomClick}
+        className={cn(
+          "fixed bottom-[calc(max(1.25rem,env(safe-area-inset-bottom))+6rem)] left-1/2 z-40 -translate-x-1/2 rounded-full border border-border/70 bg-background/90 px-3 shadow-lg shadow-background/30 backdrop-blur-xl transition-all duration-200",
+          showScrollToBottom
+            ? "pointer-events-auto translate-y-0 opacity-100"
+            : "pointer-events-none translate-y-2 opacity-0",
+        )}
+      >
+        <ArrowDownIcon className="size-3.5" />
+        回到底部
+      </Button>
+    </>
   );
 }
 
