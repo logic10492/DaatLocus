@@ -395,6 +395,7 @@ type AgentChatTimelineSection = {
   title: string;
   status: AgentChatPlanStepStatus;
   current: boolean;
+  showTitle: boolean;
   bubbles: AgentChatBubble[];
 };
 
@@ -613,19 +614,16 @@ function AgentChatTimelineSectionItem({
         ) : null}
       </div>
       <div className="space-y-2 pb-2">
-        <div
-          className={cn(
-            "flex flex-wrap items-center gap-2 text-sm font-semibold leading-6 text-foreground",
-            !isFocused && "text-xs leading-5 text-foreground/80",
-          )}
-        >
-          <span>{section.title}</span>
-          {section.current ? (
-            <span className="rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-[0.14em] text-primary">
-              进行中
-            </span>
-          ) : null}
-        </div>
+        {section.showTitle ? (
+          <div
+            className={cn(
+              "text-sm font-semibold leading-6 text-foreground",
+              !isFocused && "text-xs leading-5 text-foreground/80",
+            )}
+          >
+            {section.title}
+          </div>
+        ) : null}
         <div
           className={cn(
             "space-y-2 rounded-[1.75rem] border border-border/60 bg-card/20 px-3 py-3 shadow-sm backdrop-blur-sm",
@@ -1077,12 +1075,17 @@ function agentChatTimelineSectionsFromSnapshot(
   const sections: AgentChatTimelineSection[] = [];
   let activeSection: AgentChatTimelineSection | null = null;
 
-  function openSection(step: AgentChatPlanStep, current = false) {
+  function openSection(
+    step: AgentChatPlanStep,
+    current = false,
+    showTitle = true,
+  ) {
     const title = step.text.trim() || "Agent activity";
 
     if (activeSection?.title === title) {
       activeSection.status = step.status;
       activeSection.current ||= current;
+      activeSection.showTitle ||= showTitle;
       return activeSection;
     }
 
@@ -1091,6 +1094,7 @@ function agentChatTimelineSectionsFromSnapshot(
       title,
       status: step.status,
       current,
+      showTitle,
       bubbles: [],
     };
     sections.push(section);
@@ -1110,7 +1114,7 @@ function agentChatTimelineSectionsFromSnapshot(
       );
     }
 
-    return openSection({ status: "unknown", text: "之前的活动" }, false);
+    return openSection({ status: "unknown", text: "Agent activity" }, false, false);
   }
 
   for (const bubble of bubbles) {
@@ -1138,6 +1142,7 @@ function agentChatTimelineSectionsFromSnapshot(
       title: currentPlanStep || "Agent activity",
       status: currentStatus,
       current: Boolean(currentPlanStep),
+      showTitle: Boolean(currentPlanStep),
       bubbles: [],
     });
   }
@@ -1312,13 +1317,20 @@ function agentChatActivePlanStepFromBubble(
   bubble: AgentChatBubble,
 ): AgentChatPlanStep | null {
   const steps = agentChatPlanStepsFromBubble(bubble);
+  const inProgressStep = steps.find((step) => step.status === "in_progress");
 
-  return (
-    steps.find((step) => step.status === "in_progress") ??
-    steps.findLast((step) => step.status === "completed") ??
-    steps[steps.length - 1] ??
-    null
-  );
+  if (inProgressStep) {
+    return inProgressStep;
+  }
+
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index];
+    if (step?.status === "completed") {
+      return step;
+    }
+  }
+
+  return steps[steps.length - 1] ?? null;
 }
 
 function agentChatPlanStepsFromMetadata(value: unknown): AgentChatPlanStep[] {
