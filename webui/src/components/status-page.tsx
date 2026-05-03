@@ -410,7 +410,6 @@ type AgentChatActivityCellRender =
       title: string;
       bodyLines: string[];
       bodyLimit?: number;
-      bodyPrefix?: "none" | "branch";
       tone?: "default" | "error" | "muted";
     }
   | {
@@ -943,7 +942,6 @@ function AgentChatActivityCellView({
         title={render.title}
         bodyLines={render.bodyLines}
         bodyLimit={render.bodyLimit}
-        bodyPrefix={render.bodyPrefix}
         tone={render.tone}
       />
     );
@@ -1048,7 +1046,6 @@ function AgentChatActivityTextCell({
   title,
   bodyLines,
   bodyLimit,
-  bodyPrefix = "none",
   tone = "default",
 }: {
   id: string;
@@ -1056,7 +1053,6 @@ function AgentChatActivityTextCell({
   title: string;
   bodyLines: string[];
   bodyLimit?: number;
-  bodyPrefix?: "none" | "branch";
   tone?: "default" | "error" | "muted";
 }) {
   const visibleLines = typeof bodyLimit === "number"
@@ -1105,20 +1101,14 @@ function AgentChatActivityTextCell({
           {visibleLines.map((line, index) => (
             <p
               key={`${id}-activity-line-${index}`}
-              className="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)] gap-2 break-words"
+              className="min-w-0 break-words"
             >
-              <span className="select-none text-right font-mono text-muted-foreground/70">
-                {bodyPrefix === "branch" ? "└" : ""}
-              </span>
-              <span className="min-w-0 break-words">
-                <AgentChatMarkdownInline text={line} />
-              </span>
+              <AgentChatMarkdownInline text={line} />
             </p>
           ))}
           {hiddenLineCount > 0 ? (
-            <p className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-2 text-xs text-muted-foreground">
-              <span aria-hidden="true" />
-              <span>… {hiddenLineCount} more line(s)</span>
+            <p className="text-xs text-muted-foreground">
+              … {hiddenLineCount} more line(s)
             </p>
           ) : null}
         </div>
@@ -1472,18 +1462,14 @@ function AgentChatMessageActivityLine({
           {visibleMessageLines.map((line, index) => (
             <p
               key={`${id}-message-${index}`}
-              className="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)] gap-2 break-words"
+              className="min-w-0 break-words"
             >
-              <span className="select-none text-right font-mono text-muted-foreground/70">
-                {index === 0 ? "└" : ""}
-              </span>
-              <span className="min-w-0 break-words"><AgentChatMarkdownInline text={line} /></span>
+              <AgentChatMarkdownInline text={line} />
             </p>
           ))}
           {hiddenMessageCount > 0 ? (
-            <p className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-2 text-xs text-muted-foreground">
-              <span />
-              <span>… {hiddenMessageCount} more line(s)</span>
+            <p className="text-xs text-muted-foreground">
+              … {hiddenMessageCount} more line(s)
             </p>
           ) : null}
         </div>
@@ -1538,14 +1524,9 @@ function AgentChatReplyActivityLine({
           {messageLines.map((line, index) => (
             <p
               key={`${id}-reply-${index}`}
-              className="grid min-w-0 grid-cols-[1ch_minmax(0,1fr)] gap-2 break-words"
+              className="min-w-0 break-words"
             >
-              <span className="select-none font-mono text-muted-foreground/70">
-                {index === 0 ? "└" : ""}
-              </span>
-              <span className="min-w-0 break-words">
-                <AgentChatMarkdownInline text={line} />
-              </span>
+              <AgentChatMarkdownInline text={line} />
             </p>
           ))}
         </div>
@@ -2405,7 +2386,6 @@ function agentChatActivityCellRenderForBubble(
       title: stringValue(terminalWait.title, "Terminal wait"),
       bodyLines: stringArrayValue(terminalWait.body_lines),
       bodyLimit: AGENT_CHAT_TERMINAL_WAIT_LINE_LIMIT,
-      bodyPrefix: "branch",
     };
   }
 
