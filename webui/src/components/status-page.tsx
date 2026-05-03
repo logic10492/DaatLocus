@@ -963,13 +963,13 @@ function AgentChatActivityCellView({
   }
 
   if (render.kind === "plan") {
-    return (
+    return render.steps.length > 0 ? (
       <AgentChatPlanActivityPanel
         marker={render.marker}
         title={render.title}
         steps={render.steps}
       />
-    );
+    ) : null;
   }
 
   if (render.kind === "workflow") {
@@ -1175,11 +1175,11 @@ function AgentChatPlanActivityPanel({
 
   return (
     <div className="space-y-1.5 text-sm">
-      <div className="flex items-center gap-2 px-3">
-        <span aria-hidden="true" className="font-mono font-semibold text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-2 px-3">
+        <span aria-hidden="true" className="shrink-0 font-mono font-semibold text-muted-foreground">
           {marker}
         </span>
-        <p className="font-semibold text-foreground">{title}</p>
+        <p className="min-w-0 break-words font-semibold text-foreground">{title}</p>
       </div>
       {visibleSteps.length > 0 ? (
         <div role="table" aria-label="Plan" className="space-y-1">
@@ -1513,11 +1513,11 @@ function AgentChatReplyActivityLine({
         disposition === "dismissed" && "text-muted-foreground",
       )}
     >
-      <div className="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)] items-baseline gap-2 px-3">
+      <div className="flex min-w-0 items-center gap-2 px-3">
         <span
           aria-hidden="true"
           className={cn(
-            "shrink-0 text-right font-mono font-semibold text-muted-foreground",
+            "shrink-0 font-mono font-semibold text-muted-foreground",
             disposition === "failed" && "text-destructive",
           )}
         >
@@ -1538,9 +1538,9 @@ function AgentChatReplyActivityLine({
           {messageLines.map((line, index) => (
             <p
               key={`${id}-reply-${index}`}
-              className="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)] gap-2 break-words"
+              className="grid min-w-0 grid-cols-[1ch_minmax(0,1fr)] gap-2 break-words"
             >
-              <span className="select-none text-right font-mono text-muted-foreground/70">
+              <span className="select-none font-mono text-muted-foreground/70">
                 {index === 0 ? "└" : ""}
               </span>
               <span className="min-w-0 break-words">

@@ -197,6 +197,7 @@ pub fn activity_cell_from_tool_ui_event(ui_event: ToolUiEvent) -> Option<Activit
             AppAttentionUiAction::Focus => Some(ActivityCell::AppAttention(event.into())),
             AppAttentionUiAction::PutAway => None,
         },
+        ToolUiEvent::Plan(event) if event.steps.is_empty() => None,
         ToolUiEvent::Plan(event) => Some(ActivityCell::PlanResult(event.into())),
         ToolUiEvent::CreateWorkflow(event) => {
             Some(ActivityCell::CreateWorkflowResult(event.into()))
@@ -384,6 +385,7 @@ fn current_time_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_ui::{PlanUiData, ToolUiEvent};
 
     #[test]
     fn activity_feed_hides_runtime_context_messages_before_limit() {
@@ -404,5 +406,13 @@ mod tests {
             ActivityCell::User(cell) => assert_eq!(cell.title, "real user message"),
             _ => panic!("expected user activity cell"),
         }
+    }
+
+    #[test]
+    fn empty_plan_ui_event_does_not_create_activity_cell() {
+        let cell =
+            activity_cell_from_tool_ui_event(ToolUiEvent::Plan(PlanUiData { steps: Vec::new() }));
+
+        assert!(cell.is_none());
     }
 }
