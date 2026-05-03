@@ -1265,7 +1265,7 @@ function AgentChatCommandExecutionPanel({
             {marker}
           </span>
         )}
-        <p className="min-w-0 flex-1 break-words font-semibold text-foreground">
+        <p className="min-w-0 flex-1 truncate font-semibold text-foreground" title={`${verb} ${title}`}>
           {verb}{" "}
           <span className="font-mono font-medium text-foreground/90">{title}</span>
         </p>
