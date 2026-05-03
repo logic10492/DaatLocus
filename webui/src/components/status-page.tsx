@@ -410,15 +410,6 @@ type AgentChatPlanStep = {
   text: string;
 };
 
-type AgentChatTimelineSection = {
-  id: string;
-  title: string;
-  status: AgentChatPlanStepStatus;
-  current: boolean;
-  showTitle: boolean;
-  bubbles: AgentChatBubble[];
-};
-
 type AgentChatActivityCellRender =
   | {
       kind: "text";
@@ -643,10 +634,6 @@ function AgentChatBubbles({
   panelRef: RefObject<HTMLDivElement | null>;
 }) {
   const bubbles = useMemo(() => agentChatBubblesFromSnapshot(snapshot), [snapshot]);
-  const sections = useMemo(
-    () => agentChatTimelineSectionsFromSnapshot(snapshot, bubbles),
-    [snapshot, bubbles],
-  );
   const lastFocusedScrollTopRef = useRef(0);
   const hasFocusedScrollPositionRef = useRef(false);
   const shouldRestoreFocusScrollRef = useRef(false);
@@ -766,7 +753,7 @@ function AgentChatBubbles({
         distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX,
       );
     }
-  }, [bubbles.length, sections.length, isFocused, panelRef]);
+  }, [bubbles.length, isFocused, panelRef]);
 
   return (
     <>
@@ -789,15 +776,22 @@ function AgentChatBubbles({
             isFocused && "opacity-100 backdrop-blur-md",
           )}
         />
-        <div className="relative z-10 flex min-h-full w-full flex-col justify-end gap-3">
-          {sections.length > 0 ? (
-            sections.map((section) => (
-              <AgentChatTimelineSectionItem
-                key={section.id}
-                section={section}
-                isFocused={isFocused}
-              />
-            ))
+        <div className="relative z-10 flex min-h-full w-full flex-col justify-end">
+          {bubbles.length > 0 ? (
+            <div
+              className={cn(
+                "mx-auto w-full max-w-[min(48rem,94%)] space-y-3 py-1.5",
+                !isFocused && "max-w-[min(42rem,88%)] space-y-2",
+              )}
+            >
+              {bubbles.map((bubble) => (
+                <AgentChatBubbleItem
+                  key={bubble.id}
+                  bubble={bubble}
+                  isFocused={isFocused}
+                />
+              ))}
+            </div>
           ) : (
             <p className="mx-auto max-w-[min(32rem,calc(100vw-3rem))] px-4 py-3 text-center text-xs text-muted-foreground/70">
               聚焦底部输入框后，消息流会在整个屏幕上围绕 agent 浮动。
@@ -825,81 +819,6 @@ function AgentChatBubbles({
         回到底部
       </Button>
     </>
-  );
-}
-
-function AgentChatTimelineSectionItem({
-  section,
-  isFocused,
-}: {
-  section: AgentChatTimelineSection;
-  isFocused: boolean;
-}) {
-  return (
-    <section
-      className={cn(
-        "relative w-full max-w-[min(48rem,94%)] pl-9",
-        !isFocused && "max-w-[min(42rem,88%)] pl-6",
-      )}
-    >
-      <div
-        aria-hidden="true"
-        className={cn(
-          "absolute bottom-1 left-[0.68rem] top-7 w-px bg-gradient-to-b from-border/80 via-border/45 to-transparent",
-          section.current && "from-primary/65 via-primary/35",
-          !isFocused && "left-[0.48rem] top-6",
-        )}
-      />
-      <div
-        aria-hidden="true"
-        className={cn(
-          "absolute left-0 top-3 grid size-6 place-items-center rounded-full border bg-background shadow-[0_0_0_6px_hsl(var(--background)/0.82)]",
-          agentChatTimelineDotClass(section.status, section.current),
-          !isFocused && "top-3.5 size-4 shadow-[0_0_0_4px_hsl(var(--background)/0.75)]",
-        )}
-      >
-        {section.current ? (
-          <span className="size-2 rounded-full bg-current" />
-        ) : null}
-      </div>
-      <div className="space-y-2 pb-3">
-        {section.showTitle ? (
-          <div
-            className={cn(
-              "inline-flex max-w-full items-center gap-2 rounded-full border border-border/45 bg-background/72 px-3 py-1 text-sm font-semibold leading-6 text-foreground shadow-sm backdrop-blur",
-              !isFocused && "text-xs leading-5 text-foreground/80",
-            )}
-          >
-            <span className="min-w-0 truncate">{section.title}</span>
-            {section.current ? (
-              <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[0.62rem] leading-none text-primary">
-                当前
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-        <div
-          className={cn(
-            "space-y-3 py-1.5",
-            !isFocused && "space-y-2",
-          )}
-        >
-          {section.bubbles.length > 0 ? (
-            section.bubbles.map((bubble) => (
-              <AgentChatBubbleItem
-                key={bubble.id}
-                bubble={bubble}
-                isFocused={isFocused}
-              />
-            ))
-          ) : (
-            <p className="px-1 py-1 text-sm text-muted-foreground/70">
-              等待这个步骤的新活动…
-            </p>
-          )}
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -2336,115 +2255,6 @@ function agentChatBubblesFromSnapshot(
   return [...committed, ...live].slice(-AGENT_CHAT_MAX_VISIBLE_BUBBLES);
 }
 
-function agentChatTimelineSectionsFromSnapshot(
-  snapshot: DashboardSnapshot | null,
-  bubbles: AgentChatBubble[],
-): AgentChatTimelineSection[] {
-  if (bubbles.length === 0) {
-    return [];
-  }
-
-  const currentPlanStep = snapshot?.current_plan_step?.step?.trim() ?? "";
-  const currentStatus =
-    normalizeAgentChatPlanStepStatus(snapshot?.current_plan_step?.status) ??
-    "in_progress";
-  const visiblePlanBubbles = bubbles.filter((bubble) => bubble.kind === "plan");
-  const latestPlanBubble = visiblePlanBubbles[visiblePlanBubbles.length - 1];
-  const latestPlanSteps = agentChatPlanStepsFromBubble(latestPlanBubble);
-  const sections: AgentChatTimelineSection[] = [];
-  let activeSection: AgentChatTimelineSection | null = null;
-
-  function openSection(
-    step: AgentChatPlanStep,
-    current = false,
-    showTitle = true,
-  ) {
-    const title = step.text.trim() || "Agent activity";
-
-    if (activeSection?.title === title) {
-      activeSection.status = step.status;
-      activeSection.current ||= current;
-      activeSection.showTitle ||= showTitle;
-      return activeSection;
-    }
-
-    const section: AgentChatTimelineSection = {
-      id: `section-${sections.length}-${slugifyAgentChatSectionId(title)}`,
-      title,
-      status: step.status,
-      current,
-      showTitle,
-      bubbles: [],
-    };
-    sections.push(section);
-    activeSection = section;
-    return section;
-  }
-
-  function fallbackSection() {
-    if (activeSection) {
-      return activeSection;
-    }
-
-    if (currentPlanStep && visiblePlanBubbles.length === 0) {
-      return openSection(
-        { status: currentStatus, text: currentPlanStep },
-        true,
-      );
-    }
-
-    return openSection({ status: "unknown", text: "Agent activity" }, false, false);
-  }
-
-  for (const bubble of bubbles) {
-    if (bubble.kind === "plan") {
-      const activeStep =
-        agentChatActivePlanStepFromBubble(bubble) ??
-        (currentPlanStep
-          ? ({ status: currentStatus, text: currentPlanStep } satisfies AgentChatPlanStep)
-          : null);
-
-      if (activeStep) {
-        openSection(activeStep, activeStep.text === currentPlanStep);
-      }
-      continue;
-    }
-
-    fallbackSection().bubbles.push(bubble);
-  }
-
-  if (sections.length === 0) {
-    sections.push({
-      id: currentPlanStep
-        ? `section-current-${slugifyAgentChatSectionId(currentPlanStep)}`
-        : "section-activity",
-      title: currentPlanStep || "Agent activity",
-      status: currentStatus,
-      current: Boolean(currentPlanStep),
-      showTitle: Boolean(currentPlanStep),
-      bubbles: [],
-    });
-  }
-
-  return sections
-    .map((section, index) => {
-      const latestStep = latestPlanSteps.find((step) => step.text === section.title);
-      const isCurrent = currentPlanStep
-        ? section.title === currentPlanStep
-        : visiblePlanBubbles.length > 0 && index === sections.length - 1;
-      return {
-        ...section,
-        status: isCurrent
-          ? currentStatus
-          : latestStep?.status === "unknown"
-            ? section.status
-            : latestStep?.status ?? section.status,
-        current: isCurrent,
-      } satisfies AgentChatTimelineSection;
-    })
-    .filter((section) => section.bubbles.length > 0 || section.current);
-}
-
 function agentChatBubbleFromWebActivityItem(
   item: WebActivityItem | unknown,
   fallbackId: string,
@@ -2532,25 +2342,6 @@ function agentChatFallbackTitle(actor: string, kind: string) {
   }
 
   return "Activity";
-}
-
-function agentChatTimelineDotClass(
-  status: AgentChatPlanStepStatus,
-  current: boolean,
-) {
-  if (current || status === "in_progress") {
-    return "border-primary/65 bg-primary/10 text-primary shadow-primary/10";
-  }
-
-  if (status === "completed") {
-    return "border-emerald-400/55 bg-emerald-400/10 text-emerald-400";
-  }
-
-  if (status === "pending") {
-    return "border-muted-foreground/35 bg-muted/35 text-muted-foreground";
-  }
-
-  return "border-border bg-muted/20 text-muted-foreground";
 }
 
 function agentChatActivityGlyph(bubble: AgentChatBubble) {
@@ -3357,54 +3148,6 @@ function nullableStringEntry(
   return null;
 }
 
-function agentChatPlanStepsFromBubble(
-  bubble: AgentChatBubble | undefined,
-): AgentChatPlanStep[] {
-  if (!bubble) {
-    return [];
-  }
-
-  if (bubble.planSteps.length > 0) {
-    return bubble.planSteps;
-  }
-
-  const canonicalSteps = agentChatPlanStepsFromActivityCell(bubble.cell);
-
-  if (canonicalSteps.length > 0) {
-    return canonicalSteps;
-  }
-
-  return bubble.blocks
-    .flatMap((block) => {
-      const record = asRecord(block);
-      if (!record || record.type !== "list") {
-        return [];
-      }
-      return stringArrayValue(record.items).map(agentChatPlanStepFromLine);
-    })
-    .filter((step): step is AgentChatPlanStep => Boolean(step?.text));
-}
-
-function agentChatActivePlanStepFromBubble(
-  bubble: AgentChatBubble,
-): AgentChatPlanStep | null {
-  const steps = agentChatPlanStepsFromBubble(bubble);
-  const inProgressStep = steps.find((step) => step.status === "in_progress");
-
-  if (inProgressStep) {
-    return inProgressStep;
-  }
-
-  for (let index = steps.length - 1; index >= 0; index -= 1) {
-    const step = steps[index];
-    if (step?.status === "completed") {
-      return step;
-    }
-  }
-
-  return steps[steps.length - 1] ?? null;
-}
-
 function agentChatPlanStepsFromMetadata(value: unknown): AgentChatPlanStep[] {
   const metadata = asRecord(value);
   const steps = Array.isArray(metadata?.steps) ? metadata.steps : [];
@@ -3427,28 +3170,6 @@ function agentChatPlanStepsFromMetadata(value: unknown): AgentChatPlanStep[] {
     .filter((step): step is AgentChatPlanStep => Boolean(step));
 }
 
-function agentChatPlanStepFromLine(line: string): AgentChatPlanStep | null {
-  const match = line.match(/^([✓→○●•-])\s*(.+)$/u);
-  const marker = match?.[1] ?? "";
-  const text = (match?.[2] ?? line).trim();
-
-  if (!text) {
-    return null;
-  }
-
-  return {
-    status:
-      marker === "✓"
-        ? "completed"
-        : marker === "→"
-          ? "in_progress"
-          : marker === "○"
-            ? "pending"
-            : "unknown",
-    text,
-  };
-}
-
 function normalizeAgentChatPlanStepStatus(
   value: unknown,
 ): AgentChatPlanStepStatus | null {
@@ -3458,16 +3179,6 @@ function normalizeAgentChatPlanStepStatus(
     value === "unknown"
     ? value
     : null;
-}
-
-function slugifyAgentChatSectionId(value: string) {
-  const slug = value
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
-
-  return slug || "plan";
 }
 
 function agentChatSplitMarkdownCodeFences(block: WebActivityBlock): WebActivityBlock[] {
