@@ -452,6 +452,7 @@ export function AgentPage() {
         </span>
       </div>
       <AgentChatComposer
+        agentName={snapshot?.agent_name}
         isFocused={isChatFocused}
         onFocusChange={setIsChatFocused}
         chatPanelRef={chatPanelRef}
@@ -594,18 +595,21 @@ type AgentChatMarkdownInlineToken = {
 };
 
 function AgentChatComposer({
+  agentName,
   isFocused,
   onFocusChange,
   chatPanelRef,
   onHeightChange,
   onSendResult,
 }: {
+  agentName?: string;
   isFocused: boolean;
   onFocusChange: (isFocused: boolean) => void;
   chatPanelRef: RefObject<HTMLDivElement | null>;
   onHeightChange: (height: number) => void;
   onSendResult: (resultText: string) => void;
 }) {
+  const chatPlaceholder = `Chat with ${agentName?.trim() || "Agent"}`;
   const formRef = useRef<HTMLFormElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState("");
@@ -881,7 +885,7 @@ function AgentChatComposer({
         <textarea
           value={message}
           rows={1}
-          placeholder="和 agent 说点什么，或粘贴/拖入图片…"
+          placeholder={chatPlaceholder}
           aria-label="Message"
           onChange={(event) => {
             setMessage(event.target.value);

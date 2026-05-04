@@ -395,6 +395,7 @@ export type DashboardActivityHistoryPage = {
 };
 
 export type DashboardSnapshot = {
+  agent_name: string;
   focused_app: string | null;
   status_output: string;
   sleep_status_output: string;

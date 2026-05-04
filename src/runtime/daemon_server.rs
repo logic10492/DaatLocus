@@ -18,7 +18,7 @@ use crate::{
     },
     dashboard::{
         DashboardActivityHistoryStore, DashboardControlCommand, DashboardState,
-        sync_web_activity_state,
+        dashboard_agent_name, sync_web_activity_state,
     },
     events::EventStore,
     hindsight::managed::HindsightManagedServer,
@@ -65,6 +65,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     let dashboard_history = DashboardActivityHistoryStore::new().await?;
     let initial_activity_history = dashboard_history.load_initial_window();
     let (tx, _rx) = tokio::sync::watch::channel(DashboardState {
+        agent_name: dashboard_agent_name(),
         runtime_status: Some("Daemon initializing".to_string()),
         footer_context: "Daemon is initializing; runtime commands are disabled until ready."
             .to_string(),
@@ -232,6 +233,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     let app_renders = context.apps.state_renders();
     tx.send_modify(|state| {
         *state = DashboardState {
+            agent_name: dashboard_agent_name(),
             focused_app: context.apps.focused(),
             status_output: render_status_command_output_for_dashboard(&context, &app_renders),
             sleep_status_output: render_sleep_status_output_for_dashboard(&context, &sleep_status),

@@ -131,6 +131,8 @@ pub struct DashboardContextCompositionSnapshot {
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct DashboardState {
+    #[serde(default = "default_agent_name")]
+    pub agent_name: String,
     pub focused_app: Option<AppId>,
     pub status_output: String,
     pub sleep_status_output: String,
@@ -164,6 +166,19 @@ pub struct DashboardState {
     pub context_composition: Option<DashboardContextCompositionSnapshot>,
     pub footer_context: String,
     pub footer_estimated_input_tokens: Option<usize>,
+}
+
+fn default_agent_name() -> String {
+    dashboard_agent_name()
+}
+
+pub fn dashboard_agent_name() -> String {
+    let name = load_prompt_persona_spec_sync().name.trim().to_string();
+    if name.is_empty() {
+        "Agent".to_string()
+    } else {
+        name
+    }
 }
 
 #[derive(Clone, Debug)]
