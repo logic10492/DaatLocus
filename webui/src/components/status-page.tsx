@@ -701,13 +701,13 @@ function AgentChatComposer({
 
       if (rejectedForCount > 0) {
         setSendError(
-          `最多只能附加 ${AGENT_CHAT_MAX_IMAGE_ATTACHMENTS} 张图片。`,
+          `You can attach up to ${AGENT_CHAT_MAX_IMAGE_ATTACHMENTS} images.`,
         );
       } else if (oversized) {
         setSendError(
-          `${oversized.name} 太大了，单张图片上限是 ${formatFileSize(
+          `${oversized.name} is too large. Each image must be ${formatFileSize(
             AGENT_CHAT_MAX_IMAGE_ATTACHMENT_BYTES,
-          )}。`,
+          )} or smaller.`,
         );
       } else if (valid.length > 0) {
         setSendError(null);
@@ -866,7 +866,7 @@ function AgentChatComposer({
                   className="flex h-full w-full flex-col items-center justify-center gap-1 p-1 text-center text-[10px] leading-tight text-muted-foreground"
                 >
                   <ImagePlusIcon className="size-4 shrink-0" aria-hidden="true" />
-                  <span className="max-w-full truncate">已选择图片</span>
+                  <span className="max-w-full truncate">Image selected</span>
                 </div>
               )}
               <button
@@ -1004,11 +1004,11 @@ function readFileAsDataUrl(file: File) {
       if (typeof reader.result === "string") {
         resolve(reader.result);
       } else {
-        reject(new Error("读取图片失败。"));
+        reject(new Error("Failed to read image."));
       }
     });
     reader.addEventListener("error", () => {
-      reject(reader.error ?? new Error("读取图片失败。"));
+      reject(reader.error ?? new Error("Failed to read image."));
     });
     reader.readAsDataURL(file);
   });
@@ -1307,7 +1307,7 @@ function AgentChatBubbles({
                       }}
                       className="rounded-full border border-border/70 bg-background/80 px-3 text-xs text-muted-foreground shadow-sm backdrop-blur-xl"
                     >
-                      {isLoadingHistory ? "加载中…" : "加载更早记录"}
+                      {isLoadingHistory ? "Loading…" : "Load older messages"}
                     </Button>
                   ) : null}
                   {historyError ? (
@@ -1327,7 +1327,8 @@ function AgentChatBubbles({
             </div>
           ) : (
             <p className="mx-auto max-w-[min(32rem,calc(100vw-3rem))] px-4 py-3 text-center text-xs text-muted-foreground/70">
-              聚焦底部输入框后，消息流会在整个屏幕上围绕 agent 浮动。
+              Focus the bottom composer to float the message stream around the
+              agent across the screen.
             </p>
           )}
         </div>
@@ -1349,7 +1350,7 @@ function AgentChatBubbles({
         )}
       >
         <ArrowDownIcon className="size-3.5" />
-        回到底部
+        Back to bottom
       </Button>
     </>
   );
@@ -2813,15 +2814,15 @@ function agentChatActivityIconClass(bubble: AgentChatBubble) {
 
 function agentChatActivityStatusText(status: string, live?: boolean) {
   if (live || status === "running") {
-    return "进行中";
+    return "Running";
   }
 
   if (status === "failed") {
-    return "失败";
+    return "Failed";
   }
 
   if (status === "dismissed") {
-    return "已忽略";
+    return "Dismissed";
   }
 
   return status || "activity";
@@ -3769,7 +3770,7 @@ function safeJsonPreview(value: unknown) {
 
 function agentChatSendResultText(output: string) {
   return /^queued terminal message as event\b/.test(output)
-    ? "已发送给 agent"
+    ? "Sent to agent"
     : output;
 }
 
@@ -5483,7 +5484,10 @@ function formatDateLabel(date: string) {
     return date;
   }
 
-  return `${Number(month)}月${Number(day)}日`;
+  return new Intl.DateTimeFormat("en", {
+    day: "numeric",
+    month: "short",
+  }).format(new Date(2000, Number(month) - 1, Number(day)));
 }
 
 function formatPercentAxisTick(value: number) {
@@ -5566,9 +5570,9 @@ function derivePlanSummaryText(snapshot: DashboardSnapshot | null) {
     return "";
   }
 
-  const prefix = planStep.status === "pending" ? "下一步" : "正在";
+  const prefix = planStep.status === "pending" ? "Next" : "Now";
 
-  return `${prefix}：${planStep.step.trim()}`;
+  return `${prefix}: ${planStep.step.trim()}`;
 }
 
 function deriveAgentStatus({
@@ -5581,15 +5585,15 @@ function deriveAgentStatus({
   snapshot: DashboardSnapshot | null;
 }): AgentStatusView {
   if (isLoading && !snapshot) {
-    return { animationStatus: "waiting", label: "加载中" };
+    return { animationStatus: "waiting", label: "Loading" };
   }
 
   if (hasLoadError && !snapshot) {
-    return { animationStatus: "waiting", label: "状态不可用" };
+    return { animationStatus: "waiting", label: "Status unavailable" };
   }
 
   if (!snapshot) {
-    return { animationStatus: "idle", label: "空闲" };
+    return { animationStatus: "idle", label: "Idle" };
   }
 
   const runtimeStatus = snapshot.runtime_status?.toLowerCase() ?? "";
@@ -5599,27 +5603,27 @@ function deriveAgentStatus({
   const hasRunningTurn = /\bruntime turn:\s*running\b/.test(dashboardText);
 
   if (!runtimeStatus && !hasRunningTurn) {
-    return { animationStatus: "idle", label: "空闲" };
+    return { animationStatus: "idle", label: "Idle" };
   }
 
   if (/\b(error|failed|failure|panic)\b/.test(dashboardText)) {
-    return { animationStatus: "error", label: "异常" };
+    return { animationStatus: "error", label: "Error" };
   }
 
   if (/\b(waiting|backlog|pending|sleep)\b/.test(runtimeStatus)) {
-    return { animationStatus: "waiting", label: "等待中" };
+    return { animationStatus: "waiting", label: "Waiting" };
   }
 
   if (
     snapshot.focused_app &&
     /\b(action|app|browser|terminal|tool)\b/.test(dashboardText)
   ) {
-    return { animationStatus: "tooling", label: "调用工具" };
+    return { animationStatus: "tooling", label: "Using tools" };
   }
 
   if (/\b(compacting|context|model|reason|thinking|working)\b/.test(dashboardText)) {
-    return { animationStatus: "thinking", label: "思考中" };
+    return { animationStatus: "thinking", label: "Thinking" };
   }
 
-  return { animationStatus: "running", label: "执行中" };
+  return { animationStatus: "running", label: "Running" };
 }
