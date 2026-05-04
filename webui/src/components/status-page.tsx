@@ -1316,8 +1316,8 @@ function AgentChatBubbles({
           {visibleBubbles.length > 0 ? (
             <div
               className={cn(
-                "me-auto w-full max-w-[min(48rem,94%)] space-y-3 py-1.5",
-                !isFocused && "max-w-[min(42rem,88%)] space-y-2",
+                "w-full space-y-3 px-6 py-1.5",
+                !isFocused && "space-y-2",
               )}
             >
               {isFocused && (hasMoreBefore || isLoadingHistory || historyError) ? (
