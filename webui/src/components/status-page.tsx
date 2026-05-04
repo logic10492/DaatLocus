@@ -611,6 +611,7 @@ function AgentChatComposer({
 }) {
   const chatPlaceholder = `Chat with ${agentName?.trim() || "Agent"}`;
   const formRef = useRef<HTMLFormElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState("");
   const [imageAttachments, setImageAttachments] = useState<
@@ -656,6 +657,29 @@ function AgentChatComposer({
 
     return () => resizeObserver.disconnect();
   }, [onHeightChange]);
+
+  const updateMessageTextareaHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || typeof window === "undefined") {
+      return;
+    }
+
+    const maxHeight = window.innerHeight * 0.3;
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY =
+      textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => {
+    updateMessageTextareaHeight();
+  }, [isFocused, message, updateMessageTextareaHeight]);
+
+  useEffect(() => {
+    window.addEventListener("resize", updateMessageTextareaHeight);
+    return () => window.removeEventListener("resize", updateMessageTextareaHeight);
+  }, [updateMessageTextareaHeight]);
 
   function handleFocus() {
     onFocusChange(true);
@@ -883,6 +907,7 @@ function AgentChatComposer({
       ) : null}
       <div className="flex items-center gap-2">
         <textarea
+          ref={textareaRef}
           value={message}
           rows={1}
           placeholder={chatPlaceholder}
@@ -890,6 +915,7 @@ function AgentChatComposer({
           onChange={(event) => {
             setMessage(event.target.value);
             setSendError(null);
+            updateMessageTextareaHeight();
           }}
           onPaste={handlePaste}
           onKeyDown={(event) => {
@@ -898,7 +924,7 @@ function AgentChatComposer({
               event.currentTarget.form?.requestSubmit();
             }
           }}
-          className="max-h-32 min-h-11 flex-1 resize-none bg-transparent px-4 py-3 text-sm leading-5 outline-none placeholder:text-muted-foreground/70"
+          className="max-h-[30vh] min-h-11 flex-1 resize-none overflow-y-hidden bg-transparent px-4 py-3 text-sm leading-5 outline-none placeholder:text-muted-foreground/70"
         />
         {isFocused ? (
           <Button
