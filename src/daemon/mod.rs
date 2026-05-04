@@ -784,7 +784,7 @@ fn extension_for_dashboard_image(file_name: &str, media_type: &str) -> &'static 
 }
 
 fn decode_dashboard_attachment_path(encoded_path: &str) -> Option<PathBuf> {
-    if encoded_path.is_empty() || encoded_path.len() % 2 != 0 {
+    if encoded_path.is_empty() || !encoded_path.len().is_multiple_of(2) {
         return None;
     }
 
