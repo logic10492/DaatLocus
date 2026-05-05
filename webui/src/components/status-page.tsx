@@ -2372,6 +2372,13 @@ function FragmentPair({ left, right }: { left: string; right: string }) {
 }
 
 
+function limitMarkdownInput(text: string, limit: number): string {
+  if (limit >= Number.MAX_SAFE_INTEGER) return text;
+  const chunks = text.split(/\n{2,}/);
+  if (chunks.length <= limit) return chunks.join("\n\n");
+  return chunks.slice(0, limit).join("\n\n");
+}
+
 function AgentChatMarkdownText({
   id,
   text,
@@ -2383,10 +2390,9 @@ function AgentChatMarkdownText({
   limit: number;
   tone?: "default" | "error";
 }) {
-  const blocks = parseAgentChatMarkdownBlocks(text);
-  const visibleBlocks = blocks.slice(0, limit);
+  const limitedText = limitMarkdownInput(text, limit);
 
-  if (blocks.length === 0) {
+  if (!limitedText.trim()) {
     return null;
   }
 
@@ -2397,95 +2403,159 @@ function AgentChatMarkdownText({
         tone === "error" && "text-destructive",
       )}
     >
-      {visibleBlocks.map((block, index) => (
-        <AgentChatMarkdownBlock
-          key={`${id}-markdown-${index}`}
-          block={block}
-          blockId={`${id}-markdown-${index}`}
-        />
-      ))}
-      {blocks.length > visibleBlocks.length ? (
-        <p className="text-xs text-muted-foreground">
-          … +{blocks.length - visibleBlocks.length} more block(s)
-        </p>
-      ) : null}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          h1: ({ children, ..._ }: any) => (
+            <h3 className="mt-3 break-words text-base font-semibold leading-7 text-foreground first:mt-0">
+              {children}
+            </h3>
+          ),
+          h2: ({ children, ..._ }: any) => (
+            <h4 className="mt-3 break-words text-base font-semibold leading-7 text-foreground first:mt-0">
+              {children}
+            </h4>
+          ),
+          h3: ({ children, ..._ }: any) => (
+            <h5 className="mt-3 break-words text-base font-semibold leading-7 text-foreground first:mt-0">
+              {children}
+            </h5>
+          ),
+          h4: ({ children, ..._ }: any) => (
+            <h5 className="mt-3 break-words text-base font-semibold leading-7 text-foreground first:mt-0">
+              {children}
+            </h5>
+          ),
+          h5: ({ children, ..._ }: any) => (
+            <h5 className="mt-3 break-words text-base font-semibold leading-7 text-foreground first:mt-0">
+              {children}
+            </h5>
+          ),
+          h6: ({ children, ..._ }: any) => (
+            <h5 className="mt-3 break-words text-base font-semibold leading-7 text-foreground first:mt-0">
+              {children}
+            </h5>
+          ),
+          ul: ({ children, ..._ }: any) => (
+            <ul className="list-disc space-y-1 pl-5 text-foreground/90">
+              {children}
+            </ul>
+          ),
+          ol: ({ children, ..._ }: any) => (
+            <ol className="list-decimal space-y-1 pl-5 text-foreground/90">
+              {children}
+            </ol>
+          ),
+          li: ({ children, ..._ }: any) => (
+            <li className="break-words pl-1">{children}</li>
+          ),
+          blockquote: ({ children, ..._ }: any) => (
+            <blockquote className="border-l-2 border-border/70 pl-3 text-muted-foreground">
+              {children}
+            </blockquote>
+          ),
+          hr: (_: any) => <hr className="border-border/70" />,
+          p: ({ children, ..._ }: any) => (
+            <p className="break-words">{children}</p>
+          ),
+          code: (props: any) => {
+            const { inline, className, children } = props;
+            if (!inline && className) {
+              const language = String(className).replace(/^language-/, "");
+              return (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 px-3">
+                    <span className="font-mono text-[0.7rem] leading-none text-muted-foreground">
+                      &lt;/&gt;
+                    </span>
+                    <span className="truncate text-sm font-semibold text-foreground/90">
+                      {language || "Code"}
+                    </span>
+                  </div>
+                  <pre className="max-h-72 overflow-auto whitespace-pre px-3 font-mono text-[0.82rem] leading-6 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]">
+                    <code className={className}>{children}</code>
+                  </pre>
+                </div>
+              );
+            }
+
+            return (
+              <code className="font-mono text-[0.85em] text-foreground">
+                {children}
+              </code>
+            );
+          },
+          a: (props: any) => {
+            const { children, href } = props;
+            return (
+              <a
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+                className="break-all text-sky-300 underline-offset-4 hover:underline"
+              >
+                {children}
+              </a>
+            );
+          },
+          strong: ({ children, ..._ }: any) => (
+            <strong className="font-semibold text-foreground">{children}</strong>
+          ),
+          em: ({ children, ..._ }: any) => (
+            <em className="italic">{children}</em>
+          ),
+        }}
+      >
+        {limitedText}
+      </ReactMarkdown>
     </div>
   );
 }
-
-function AgentChatMarkdownBlock({
-  block,
-  blockId,
-}: {
-  block: AgentChatMarkdownBlockData;
-  blockId: string;
-}) {
-  if (block.type === "heading") {
-    const content = <AgentChatMarkdownInline text={block.text} />;
-    const className = "mt-3 break-words text-base font-semibold leading-7 text-foreground first:mt-0";
-
-    if (block.level <= 1) {
-      return <h3 className={className}>{content}</h3>;
-    }
-
-    if (block.level === 2) {
-      return <h4 className={className}>{content}</h4>;
-    }
-
-    return <h5 className={className}>{content}</h5>;
-  }
-
-  if (block.type === "list") {
-    return block.ordered ? (
-      <ol
-        className="list-decimal space-y-1 pl-5 text-foreground/90"
-      >
-        {block.items.map((item, index) => (
-          <li key={`${blockId}-item-${index}`} className="break-words pl-1">
-            <AgentChatMarkdownInline text={item} />
-          </li>
-        ))}
-      </ol>
-    ) : (
-      <ul
-        className="list-disc space-y-1 pl-5 text-foreground/90"
-      >
-        {block.items.map((item, index) => (
-          <li key={`${blockId}-item-${index}`} className="break-words pl-1">
-            <AgentChatMarkdownInline text={item} />
-          </li>
-        ))}
-      </ul>
-    );
-  }
-
-  if (block.type === "blockquote") {
-    return (
-      <blockquote className="border-l-2 border-border/70 pl-3 text-muted-foreground">
-        {block.lines.map((line, index) => (
-          <p key={`${blockId}-quote-${index}`} className="break-words">
-            <AgentChatMarkdownInline text={line} />
-          </p>
-        ))}
-      </blockquote>
-    );
-  }
-
-  if (block.type === "rule") {
-    return <hr className="border-border/70" />;
+function AgentChatMarkdownInline({ text }: { text: string }) {
+  if (!text) {
+    return null;
   }
 
   return (
-    <p className="break-words">
-      <AgentChatMarkdownInline text={block.text} />
-    </p>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      disallowedElements={[
+        "p", "h1", "h2", "h3", "h4", "h5", "h6",
+        "ul", "ol", "li", "blockquote", "pre", "hr",
+        "table", "thead", "tbody", "tr", "th", "td",
+      ]}
+      unwrapDisallowed
+      components={{
+        code: ({ children, ..._ }: any) => (
+          <code className="font-mono text-[0.85em] text-foreground">
+            {children}
+          </code>
+        ),
+        a: (props: any) => {
+          const { children, href } = props;
+          return (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="break-all text-sky-300 underline-offset-4 hover:underline"
+            >
+              {children}
+            </a>
+          );
+        },
+        strong: ({ children, ..._ }: any) => (
+          <strong className="font-semibold text-foreground">{children}</strong>
+        ),
+        em: ({ children, ..._ }: any) => (
+          <em className="italic">{children}</em>
+        ),
+      }}
+    >
+      {text}
+    </ReactMarkdown>
   );
 }
-
-function AgentChatMarkdownInline({ text }: { text: string }) {
-  return <>{parseAgentChatMarkdownInline(text).map(renderAgentChatMarkdownInlineNode)}</>;
-}
-
 function AgentChatListItems({
   blockId,
   items,
@@ -2997,7 +3067,7 @@ function agentChatDisplayBlocksForBubble(
     return blocks;
   }
 
-  return blocks.flatMap((block) => agentChatSplitMarkdownCodeFences(block));
+  return blocks;
 }
 
 
@@ -3423,317 +3493,6 @@ function normalizeAgentChatPlanStepStatus(
     value === "unknown"
     ? value
     : null;
-}
-
-function agentChatSplitMarkdownCodeFences(block: WebActivityBlock): WebActivityBlock[] {
-  const record = asRecord(block);
-
-  if (!record || record.type !== "text") {
-    return [block];
-  }
-
-  const text = stringValue(record.text, "");
-
-  if (!text.includes("```")) {
-    return [block];
-  }
-
-  const blocks: WebActivityBlock[] = [];
-  const lines = text.split(/\r?\n/);
-  let textLines: string[] = [];
-  let codeLines: string[] | null = null;
-  let codeLanguage = "";
-
-  function flushText() {
-    const content = textLines.join("\n").trim();
-    textLines = [];
-
-    if (content) {
-      blocks.push({ type: "text", text: content });
-    }
-  }
-
-  function flushCode() {
-    if (!codeLines) {
-      return;
-    }
-
-    blocks.push({
-      type: "code",
-      code: codeLines.join("\n"),
-      language: codeLanguage || undefined,
-    });
-    codeLines = null;
-    codeLanguage = "";
-  }
-
-  for (const line of lines) {
-    const fenceMatch = line.match(/^\s*```\s*([A-Za-z0-9_+.-]*)\s*$/);
-
-    if (fenceMatch) {
-      if (codeLines) {
-        flushCode();
-      } else {
-        flushText();
-        codeLines = [];
-        codeLanguage = fenceMatch[1] ?? "";
-      }
-      continue;
-    }
-
-    if (codeLines) {
-      codeLines.push(line);
-    } else {
-      textLines.push(line);
-    }
-  }
-
-  if (codeLines) {
-    flushCode();
-  }
-  flushText();
-
-  return blocks.length > 0 ? blocks : [block];
-}
-
-function parseAgentChatMarkdownBlocks(text: string): AgentChatMarkdownBlockData[] {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const blocks: AgentChatMarkdownBlockData[] = [];
-  let paragraphLines: string[] = [];
-
-  function flushParagraph() {
-    const content = paragraphLines.join(" ").replace(/\s+/g, " ").trim();
-    paragraphLines = [];
-
-    if (content) {
-      blocks.push({ type: "paragraph", text: content });
-    }
-  }
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    const trimmed = line.trim();
-
-    if (!trimmed) {
-      flushParagraph();
-      continue;
-    }
-
-    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
-    if (headingMatch) {
-      flushParagraph();
-      blocks.push({
-        type: "heading",
-        level: headingMatch[1]?.length ?? 1,
-        text: headingMatch[2]?.trim() ?? "",
-      });
-      continue;
-    }
-
-    if (/^([-*_]\s*){3,}$/.test(trimmed)) {
-      flushParagraph();
-      blocks.push({ type: "rule" });
-      continue;
-    }
-
-    const unorderedMatch = trimmed.match(/^[-*+]\s+(.+)$/);
-    const orderedMatch = trimmed.match(/^\d+[.)]\s+(.+)$/);
-    if (unorderedMatch || orderedMatch) {
-      const ordered = Boolean(orderedMatch);
-      const items: string[] = [];
-      let cursor = index;
-
-      while (cursor < lines.length) {
-        const candidate = (lines[cursor] ?? "").trim();
-        const candidateUnorderedMatch = candidate.match(/^[-*+]\s+(.+)$/);
-        const candidateOrderedMatch = candidate.match(/^\d+[.)]\s+(.+)$/);
-        const candidateIsOrdered = Boolean(candidateOrderedMatch);
-
-        if (
-          !candidate ||
-          (ordered ? !candidateOrderedMatch : !candidateUnorderedMatch) ||
-          candidateIsOrdered !== ordered
-        ) {
-          break;
-        }
-
-        items.push((candidateOrderedMatch?.[1] ?? candidateUnorderedMatch?.[1] ?? "").trim());
-        cursor += 1;
-      }
-
-      flushParagraph();
-      blocks.push({ type: "list", ordered, items });
-      index = cursor - 1;
-      continue;
-    }
-
-    const quoteMatch = trimmed.match(/^>\s?(.*)$/);
-    if (quoteMatch) {
-      const quoteLines: string[] = [];
-      let cursor = index;
-
-      while (cursor < lines.length) {
-        const candidate = (lines[cursor] ?? "").trim();
-        const candidateMatch = candidate.match(/^>\s?(.*)$/);
-        if (!candidateMatch) {
-          break;
-        }
-        quoteLines.push(candidateMatch[1]?.trim() ?? "");
-        cursor += 1;
-      }
-
-      flushParagraph();
-      blocks.push({
-        type: "blockquote",
-        lines: quoteLines.filter(Boolean),
-      });
-      index = cursor - 1;
-      continue;
-    }
-
-    paragraphLines.push(trimmed);
-  }
-
-  flushParagraph();
-
-  return blocks;
-}
-
-function parseAgentChatMarkdownInline(text: string): AgentChatMarkdownInlineNode[] {
-  const tokenPatterns: Array<{
-    pattern: RegExp;
-    toNode: (match: RegExpExecArray) => AgentChatMarkdownInlineNode | null;
-  }> = [
-    {
-      pattern: /`([^`]+)`/g,
-      toNode: (match) => ({ type: "code", text: match[1] ?? "" }),
-    },
-    {
-      pattern: /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-      toNode: (match) => ({
-        type: "link",
-        label: match[1] ?? "",
-        href: match[2] ?? "",
-      }),
-    },
-    {
-      pattern: /\*\*([^*]+)\*\*/g,
-      toNode: (match) => ({ type: "strong", text: match[1] ?? "" }),
-    },
-    {
-      pattern: /__([^_]+)__/g,
-      toNode: (match) => ({ type: "strong", text: match[1] ?? "" }),
-    },
-    {
-      pattern: /(?<!\*)\*([^*\s][^*]*?)\*(?!\*)/g,
-      toNode: (match) => ({ type: "em", text: match[1] ?? "" }),
-    },
-    {
-      pattern: /(?<!_)_([^_\s][^_]*?)_(?!_)/g,
-      toNode: (match) => ({ type: "em", text: match[1] ?? "" }),
-    },
-  ];
-  const tokens: AgentChatMarkdownInlineToken[] = [];
-
-  for (const { pattern, toNode } of tokenPatterns) {
-    pattern.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const node = toNode(match);
-      if (!node) {
-        continue;
-      }
-      tokens.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        node,
-      });
-    }
-  }
-
-  const acceptedTokens = tokens
-    .sort((left, right) =>
-      left.start === right.start
-        ? right.end - right.start - (left.end - left.start)
-        : left.start - right.start,
-    )
-    .reduce<AgentChatMarkdownInlineToken[]>((accepted, token) => {
-      if (token.start < (accepted[accepted.length - 1]?.end ?? 0)) {
-        return accepted;
-      }
-      accepted.push(token);
-      return accepted;
-    }, []);
-
-  const nodes: AgentChatMarkdownInlineNode[] = [];
-  let cursor = 0;
-
-  for (const token of acceptedTokens) {
-    if (token.start > cursor) {
-      nodes.push({ type: "text", text: text.slice(cursor, token.start) });
-    }
-    nodes.push(token.node);
-    cursor = token.end;
-  }
-
-  if (cursor < text.length) {
-    nodes.push({ type: "text", text: text.slice(cursor) });
-  }
-
-  return nodes.filter((node) => {
-    if (node.type === "link") {
-      return Boolean(node.href && node.label);
-    }
-    return Boolean(node.text);
-  });
-}
-
-function renderAgentChatMarkdownInlineNode(
-  node: AgentChatMarkdownInlineNode,
-  index: number,
-) {
-  if (node.type === "code") {
-    return (
-      <code
-        key={`inline-code-${index}`}
-        className="font-mono text-[0.85em] text-foreground"
-      >
-        {node.text}
-      </code>
-    );
-  }
-
-  if (node.type === "strong") {
-    return (
-      <strong key={`inline-strong-${index}`} className="font-semibold text-foreground">
-        {node.text}
-      </strong>
-    );
-  }
-
-  if (node.type === "em") {
-    return (
-      <em key={`inline-em-${index}`} className="italic">
-        {node.text}
-      </em>
-    );
-  }
-
-  if (node.type === "link") {
-    return (
-      <a
-        key={`inline-link-${index}`}
-        href={node.href}
-        target="_blank"
-        rel="noreferrer"
-        className="break-all text-sky-300 underline-offset-4 hover:underline"
-      >
-        {node.label}
-      </a>
-    );
-  }
-
-  return node.text;
 }
 
 type AgentChatDiffFile = {
