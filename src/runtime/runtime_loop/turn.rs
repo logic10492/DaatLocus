@@ -1,5 +1,6 @@
 use super::model_driver::run_agent_turn_with_retry;
 use super::*;
+use crate::reasoning::prompt_parts::compact_horizontal_whitespace;
 
 fn enter_runtime_phase(
     context: &mut Context,
@@ -1188,7 +1189,7 @@ fn runtime_error_user_request_summary(inputs: &[ClaimedRuntimeInput]) -> Option<
 }
 
 fn compact_runtime_error_text(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = compact_horizontal_whitespace(text);
     let mut chars = compact.chars();
     let mut value = chars.by_ref().take(max_chars).collect::<String>();
     if chars.next().is_some() {

@@ -550,7 +550,7 @@ fn render_afterclaim_events(events: &[EventView]) -> String {
                     payload.chat_title,
                     payload.chat_id,
                     attachment_summary,
-                    summarize_context_text(&payload.incoming_text, 240)
+                    compact_horizontal_whitespace(&payload.incoming_text)
                 ));
             }
             EventPayload::TerminalIncoming(payload) => {
@@ -566,7 +566,7 @@ fn render_afterclaim_events(events: &[EventView]) -> String {
                     event.arrived_at_ms,
                     payload.origin,
                     attachment_summary,
-                    summarize_context_text(&payload.incoming_text, 240)
+                    compact_horizontal_whitespace(&payload.incoming_text)
                 ));
             }
         }
@@ -581,13 +581,34 @@ fn render_afterclaim_events(events: &[EventView]) -> String {
 }
 
 fn summarize_context_text(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Collapse runs of horizontal whitespace (spaces, tabs) into a single
+    // space per run, but preserve newlines so that multi-line input
+    // structure is not lost.  Only truncate when the result exceeds the
+    // character budget.
+    let compact = compact_horizontal_whitespace(text);
     let char_count = compact.chars().count();
     if char_count <= max_chars {
         return compact;
     }
     let head = compact.chars().take(max_chars).collect::<String>();
     format!("{head}...")
+}
+
+pub(crate) fn compact_horizontal_whitespace(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut in_space_run = false;
+    for ch in text.chars() {
+        if ch == ' ' || ch == '\t' {
+            if !in_space_run {
+                result.push(' ');
+                in_space_run = true;
+            }
+        } else {
+            in_space_run = false;
+            result.push(ch);
+        }
+    }
+    result
 }
 
 fn render_prompt_memory_facts(facts: &[PromptMemoryFact]) -> Vec<PromptBlock> {

@@ -167,7 +167,14 @@ impl DaemonLifecycleHandle {
     }
 
     pub fn mark_ready(&self) {
-        self.set(DaemonLifecycleState::Ready);
+        // Only transition from Initializing -> Ready.
+        // If already Stopping (e.g. restart requested during init), don't overwrite.
+        let _ = self.state.compare_exchange(
+            DaemonLifecycleState::Initializing.as_u8(),
+            DaemonLifecycleState::Ready.as_u8(),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
     }
 
     pub fn mark_stopping(&self) {
@@ -1576,10 +1583,31 @@ pub async fn wait_for_daemon_ready() -> Result<StatusResponse> {
 
 pub async fn wait_for_daemon_shutdown(port: u16) -> Result<()> {
     let client = DaemonClient::new(port);
-    let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+    let mut deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+    let mut saw_stopping = false;
     while Instant::now() < deadline {
-        if client.status().await.is_err() {
-            return Ok(());
+        match client.status().await {
+            Ok(status) if status.state == DaemonLifecycleState::Stopping => {
+                // Daemon acknowledged the shutdown/restart request.
+                if !saw_stopping {
+                    saw_stopping = true;
+                }
+                deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+            }
+            Ok(_) => {
+                // Still running normally.
+            }
+            Err(_) => {
+                // Connection refused — daemon has released the port.
+                return Ok(());
+            }
+        }
+        // Once we've seen the daemon enter Stopping state, extend the
+        // effective deadline by resetting it from now.  This prevents
+        // the CLI from timing out while the daemon finishes expensive
+        // init work before it can process the control command.
+        if saw_stopping {
+            deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         }
         tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
     }

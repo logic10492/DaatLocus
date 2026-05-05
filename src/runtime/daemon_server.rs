@@ -5,8 +5,8 @@ use crate::{
     context::Context,
     daemon::{
         DAEMON_HOST_DISPLAY, DaemonControlCommand as RuntimeDaemonControlCommand,
-        DaemonLifecycleHandle, DaemonLifecycleState, DaemonLock, DaemonServerStartParams,
-        spawn_detached_daemon_process, start_server,
+        DaemonLifecycleHandle, DaemonLifecycleState, DaemonLock, DaemonServerHandle,
+        DaemonServerStartParams, spawn_detached_daemon_process, start_server,
     },
     dashboard::render::{
         current_plan_step_for_dashboard, render_activity_for_dashboard,
@@ -136,9 +136,43 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     // Auto-install the browser runtime when it is missing.
     maybe_setup_browser_runtime().await;
 
+    // Check for restart/shutdown requested during browser setup.
+    if daemon_lifecycle.get() != DaemonLifecycleState::Initializing {
+        tracing::info!("daemon restart/shutdown requested during init, aborting startup");
+        return shutdown_early(
+            lock,
+            daemon_lifecycle,
+            shutdown_notify,
+            tx,
+            server_shutdown_tx,
+            daemon_server,
+            &mut daemon_control_rx,
+            None,
+        )
+        .await;
+    }
     // Run expensive initialization after the server is already listening.
     let hindsight = connect_bootstrapped_hindsight(&config, true).await?;
     let hindsight_retain = hindsight.spawn_retain_worker();
+    let hindsight_config_for_early_shutdown = config.hindsight.clone();
+
+    // Check for restart/shutdown after hindsight connection.
+    if daemon_lifecycle.get() != DaemonLifecycleState::Initializing {
+        tracing::info!(
+            "daemon restart/shutdown requested during init (after hindsight), aborting startup"
+        );
+        return shutdown_early(
+            lock,
+            daemon_lifecycle,
+            shutdown_notify,
+            tx,
+            server_shutdown_tx,
+            daemon_server,
+            &mut daemon_control_rx,
+            Some(hindsight_config_for_early_shutdown),
+        )
+        .await;
+    }
 
     emit_startup_progress("[prompt-compile] loading compiled prompts before daemon startup...");
     let compiled_prompts = match load_compiled_prompts_only(&config).await {
@@ -148,6 +182,24 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
             return Err(err);
         }
     };
+
+    // Check for restart/shutdown after prompt compilation.
+    if daemon_lifecycle.get() != DaemonLifecycleState::Initializing {
+        tracing::info!(
+            "daemon restart/shutdown requested during init (after prompt compile), aborting startup"
+        );
+        return shutdown_early(
+            lock,
+            daemon_lifecycle,
+            shutdown_notify,
+            tx,
+            server_shutdown_tx,
+            daemon_server,
+            &mut daemon_control_rx,
+            Some(hindsight_config_for_early_shutdown),
+        )
+        .await;
+    }
 
     let memory = Memory::new().await;
     let plan = Plan::new().await;
@@ -230,6 +282,25 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
 
     // Replace the placeholder dashboard state with real state after context is built.
     let startup_preturn_state = PreTurnState::new(&mut context).await;
+
+    // Check for restart/shutdown after PreTurnState (can be slow).
+    if daemon_lifecycle.get() != DaemonLifecycleState::Initializing {
+        tracing::info!(
+            "daemon restart/shutdown requested during init (after PreTurnState), aborting startup"
+        );
+        return shutdown_early(
+            lock,
+            daemon_lifecycle,
+            shutdown_notify,
+            tx,
+            server_shutdown_tx,
+            daemon_server,
+            &mut daemon_control_rx,
+            Some(hindsight_config_for_early_shutdown),
+        )
+        .await;
+    }
+
     let startup_preturn_context_output =
         build_preturn_context_text(&context, &startup_preturn_state);
     let app_renders = context.apps.state_renders();
@@ -415,6 +486,55 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     // indefinitely. If connections don't drain within 15 seconds,
     // proceed anyway — the process is about to exit.
     let _ = tokio::time::timeout(Duration::from_secs(15), daemon_server.shutdown()).await;
+    if restart_requested {
+        spawn_detached_daemon_process().await?;
+    }
+    Ok(())
+}
+
+/// Early shutdown path used when a restart/shutdown is requested during daemon
+/// initialization, before the main loop starts.  Skips cleanup steps that
+/// require a fully-built Context or active Hindsight connection.
+#[allow(clippy::too_many_arguments)]
+async fn shutdown_early(
+    mut lock: DaemonLock,
+    daemon_lifecycle: DaemonLifecycleHandle,
+    shutdown_notify: Arc<tokio::sync::Notify>,
+    tx: tokio::sync::watch::Sender<DashboardState>,
+    server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    daemon_server: DaemonServerHandle,
+    daemon_control_rx: &mut tokio::sync::mpsc::UnboundedReceiver<RuntimeDaemonControlCommand>,
+    hindsight_config: Option<crate::config::HindsightConfig>,
+) -> Result<()> {
+    let mut restart_requested = false;
+    while let Ok(command) = daemon_control_rx.try_recv() {
+        if matches!(command, RuntimeDaemonControlCommand::RestartRequested) {
+            restart_requested = true;
+        }
+    }
+
+    daemon_lifecycle.mark_stopping();
+
+    // If hindsight was already connected, try to stop it gracefully.
+    if let Some(hs_config) = hindsight_config {
+        let managed = HindsightManagedServer::new(hs_config, Vec::new());
+        match tokio::time::timeout(Duration::from_secs(10), managed.stop()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                tracing::warn!("[hindsight] stop failed during early shutdown: {err}");
+            }
+            Err(_) => {
+                tracing::warn!("[hindsight] stop timed out during early shutdown");
+            }
+        }
+    }
+
+    lock.release();
+    shutdown_notify.notify_waiters();
+    drop(tx);
+    let _ = server_shutdown_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(15), daemon_server.shutdown()).await;
+
     if restart_requested {
         spawn_detached_daemon_process().await?;
     }

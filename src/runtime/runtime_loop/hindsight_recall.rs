@@ -1,4 +1,5 @@
 use super::*;
+use crate::reasoning::prompt_parts::compact_horizontal_whitespace;
 
 const HINDSIGHT_PREFLIGHT_RECALL_TIMEOUT_SECS: u64 = 8;
 
@@ -302,7 +303,7 @@ fn truncate_hindsight_query_preserving_latest_input(
 }
 
 fn summarize_hindsight_query_value(value: &str, max_chars: usize) -> String {
-    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = compact_horizontal_whitespace(value);
     let char_count = compact.chars().count();
     if char_count <= max_chars {
         return compact;
