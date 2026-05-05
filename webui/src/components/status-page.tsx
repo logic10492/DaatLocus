@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/chart";
 import {
   fetchDashboardActivityHistory,
+  fetchSettingsSummary,
   getDashboardAttachmentUrl,
   runDashboardCommand,
   subscribeDashboardSnapshots,
@@ -336,6 +337,24 @@ export function AgentPage() {
   const chatPreviewNoticeFrameRef = useRef<number | undefined>(undefined);
   const chatPreviewNoticeHideTimeoutRef = useRef<number | undefined>(undefined);
   const chatPreviewNoticeClearTimeoutRef = useRef<number | undefined>(undefined);
+  const [supportsVision, setSupportsVision] = useState(true);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const summary = await fetchSettingsSummary({ signal: controller.signal });
+        const mainModel = summary.models.find((m) => m.is_main);
+        if (mainModel) {
+          setSupportsVision(mainModel.supports_vision);
+        }
+      } catch {
+        // If settings fetch fails, keep default (true) so image button stays visible.
+      }
+    })();
+    return () => controller.abort();
+  }, []);
+
   const agentStatus = deriveAgentStatus({
     hasLoadError: Boolean(loadError),
     isLoading,
@@ -453,6 +472,7 @@ export function AgentPage() {
       </div>
       <AgentChatComposer
         agentName={snapshot?.agent_name}
+        supportsVision={supportsVision}
         isFocused={isChatFocused}
         onFocusChange={setIsChatFocused}
         chatPanelRef={chatPanelRef}
@@ -596,6 +616,7 @@ type AgentChatMarkdownInlineToken = {
 
 function AgentChatComposer({
   agentName,
+  supportsVision = true,
   isFocused,
   onFocusChange,
   chatPanelRef,
@@ -603,6 +624,7 @@ function AgentChatComposer({
   onSendResult,
 }: {
   agentName?: string;
+  supportsVision?: boolean;
   isFocused: boolean;
   onFocusChange: (isFocused: boolean) => void;
   chatPanelRef: RefObject<HTMLDivElement | null>;
@@ -805,6 +827,9 @@ function AgentChatComposer({
   }
 
   function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!supportsVision) {
+      return;
+    }
     const files = Array.from(event.clipboardData.files).filter((file) =>
       file.type.startsWith("image/"),
     );
@@ -814,6 +839,9 @@ function AgentChatComposer({
   }
 
   function handleDrop(event: DragEvent<HTMLFormElement>) {
+    if (!supportsVision) {
+      return;
+    }
     const files = Array.from(event.dataTransfer.files).filter((file) =>
       file.type.startsWith("image/"),
     );
@@ -832,12 +860,18 @@ function AgentChatComposer({
       onSubmit={handleSubmit}
       onFocus={handleFocus}
       onDragEnter={(event) => {
+        if (!supportsVision) {
+          return;
+        }
         if (hasImageDragItems(event.dataTransfer)) {
           event.preventDefault();
           setIsDraggingImage(true);
         }
       }}
       onDragOver={(event) => {
+        if (!supportsVision) {
+          return;
+        }
         if (hasImageDragItems(event.dataTransfer)) {
           event.preventDefault();
           event.dataTransfer.dropEffect = "copy";
@@ -858,6 +892,7 @@ function AgentChatComposer({
           : "border-border/70 hover:border-primary/30",
       )}
     >
+      {supportsVision ? (
       <input
         ref={fileInputRef}
         type="file"
@@ -870,6 +905,7 @@ function AgentChatComposer({
           event.currentTarget.value = "";
         }}
       />
+      ) : null}
       {imageAttachments.length > 0 ? (
         <div className="flex gap-2 overflow-x-auto px-2 pb-2">
           {imageAttachments.map((attachment) => (
@@ -946,6 +982,7 @@ function AgentChatComposer({
           onClick={() => fileInputRef.current?.click()}
           className="rounded-full text-muted-foreground hover:text-foreground"
           disabled={
+            !supportsVision ||
             isSending ||
             imageAttachments.length >= AGENT_CHAT_MAX_IMAGE_ATTACHMENTS
           }

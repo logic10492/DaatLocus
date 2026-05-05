@@ -50,6 +50,7 @@ use crate::{
         execute_remote_message,
     },
     events::EventStore,
+    model_catalog::catalog_model_capacity,
     pending_work::PendingWorkQueue,
     sandbox::StrongFilesystemSandboxMode,
     telegram_acl::TelegramAclHandle,
@@ -266,6 +267,8 @@ pub struct SettingsModelSummary {
     pub auto_compact_token_limit: usize,
     pub max_completion_tokens: usize,
     pub tool_output_max_tokens: usize,
+    /// Whether the model accepts image/vision input in messages (resolved).
+    pub supports_vision: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1188,6 +1191,17 @@ fn settings_model_summary(
         auto_compact_token_limit: model.auto_compact_token_limit(),
         max_completion_tokens: model.max_completion_tokens(),
         tool_output_max_tokens: model.tool_output_max_tokens,
+        supports_vision: resolve_supports_vision(model),
+    }
+}
+
+/// Resolve vision support: explicit config wins, then catalog, then default to `true`.
+fn resolve_supports_vision(model: &ModelConfig) -> bool {
+    match model.supports_vision {
+        Some(v) => v,
+        None => catalog_model_capacity(&model.model_id)
+            .map(|c| c.supports_vision)
+            .unwrap_or(true),
     }
 }
 

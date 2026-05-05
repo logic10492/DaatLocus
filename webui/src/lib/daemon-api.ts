@@ -487,6 +487,8 @@ export type SettingsModelSummary = {
   auto_compact_token_limit: number;
   max_completion_tokens: number;
   tool_output_max_tokens: number;
+  /** Whether the model accepts image/vision input in messages (resolved). */
+  supports_vision: boolean;
 };
 
 export type SettingsSummary = {
