@@ -385,6 +385,9 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         handle.abort();
     }
     let hindsight_config = context.config.hindsight.clone();
+    // Clear the dashboard watch sender clone in context so it doesn't
+    // keep the channel alive during shutdown.
+    context.dashboard_tx = None;
     context.shutdown().await;
     let managed = HindsightManagedServer::new(hindsight_config, Vec::new());
     match tokio::time::timeout(Duration::from_secs(10), managed.stop()).await {
@@ -400,6 +403,11 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     if let Some(completion_tx) = shutdown_completion_tx.take() {
         let _ = completion_tx.send(());
     }
+    // Drop the dashboard watch sender so that any active WebSocket
+    // connections (dashboard_ws) see a closed channel and exit their
+    // rx.changed() loops promptly, allowing the axum graceful shutdown
+    // to complete without hanging.
+    drop(tx);
     let _ = server_shutdown_tx.send(());
     daemon_server.shutdown().await;
     if restart_requested {
