@@ -59,6 +59,7 @@ impl RuntimeTurnPhase {
 pub struct Context {
     pub llm: Box<dyn Llm + Send + Sync>,
     pub judge_llm: Box<dyn Llm + Send + Sync>,
+    pub compaction_llm: Box<dyn Llm + Send + Sync>,
     pub config: Config,
     pub hindsight: HindsightClient,
     pub hindsight_retain: HindsightRetainHandle,

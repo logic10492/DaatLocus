@@ -215,6 +215,13 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         .unwrap_or(&config.main_model)
         .to_string();
     let judge_client = build_llm(&judge_model_key, &config)?;
+    let compaction_model_key = config
+        .hindsight
+        .model
+        .as_deref()
+        .unwrap_or(&config.main_model)
+        .to_string();
+    let compaction_client = build_llm(&compaction_model_key, &config)?;
     let execution_cwd = resolve_runtime_workspace_dir()?;
     tokio::fs::create_dir_all(&execution_cwd)
         .await
@@ -238,6 +245,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     let mut context = Context {
         llm: client,
         judge_llm: judge_client,
+        compaction_llm: compaction_client,
         config,
         hindsight,
         hindsight_retain,

@@ -357,7 +357,7 @@ async fn execute_runtime_compaction(
             );
         }
         let request = build_history_compaction_request(trimmed.messages.clone())?;
-        match context.judge_llm.run_json(context, request).await {
+        match context.compaction_llm.run_json(context, request).await {
             Ok(value) => match serde_json::from_value::<HistoryCompactionOutput>(value) {
                 Ok(output) if !output.summary.trim().is_empty() => truncate_text_to_token_budget(
                     &format!(

@@ -226,6 +226,14 @@ pub(crate) async fn build_eval_context_with_compiled(
         .to_string();
     let judge_client = build_llm(&judge_model_key, &config)
         .unwrap_or_else(|err| panic!("failed to construct judge LLM client: {err:?}"));
+    let compaction_model_key = config
+        .hindsight
+        .model
+        .as_deref()
+        .unwrap_or(&config.main_model)
+        .to_string();
+    let compaction_client = build_llm(&compaction_model_key, &config)
+        .unwrap_or_else(|err| panic!("failed to construct compaction LLM client: {err:?}"));
     let hindsight = connect_bootstrapped_hindsight(&config, false)
         .await
         .unwrap_or_else(|err| panic!("failed to construct hindsight client: {err:?}"));
@@ -235,6 +243,7 @@ pub(crate) async fn build_eval_context_with_compiled(
     Context {
         llm: client,
         judge_llm: judge_client,
+        compaction_llm: compaction_client,
         config,
         hindsight,
         hindsight_retain,
