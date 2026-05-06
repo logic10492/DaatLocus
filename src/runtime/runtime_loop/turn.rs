@@ -382,13 +382,37 @@ pub(crate) async fn execute_agent_loop_step(
             "runtime preflight stage started: {}",
             RuntimeTurnPhase::PreflightCompaction.label()
         );
-        let summary = match tokio::time::timeout(
-            preflight_timeout,
-            execute_pre_turn_runtime_compaction(context, &plan),
-        )
-        .await
-        {
-            Ok(summary) => {
+        // Backoff retry: 3min → 6min → 10min
+        const COMPACTION_BACKOFF_TIMEOUTS_SECS: [u64; 3] = [180, 360, 600];
+        let mut summary = None;
+        let mut last_timeout_secs =
+            COMPACTION_BACKOFF_TIMEOUTS_SECS[COMPACTION_BACKOFF_TIMEOUTS_SECS.len() - 1];
+        for (attempt, timeout_secs) in COMPACTION_BACKOFF_TIMEOUTS_SECS.iter().enumerate() {
+            last_timeout_secs = *timeout_secs;
+            match tokio::time::timeout(
+                Duration::from_secs(*timeout_secs),
+                execute_pre_turn_runtime_compaction(context, &plan),
+            )
+            .await
+            {
+                Ok(s) => {
+                    summary = Some(s);
+                    break;
+                }
+                Err(_) => {
+                    if attempt + 1 < COMPACTION_BACKOFF_TIMEOUTS_SECS.len() {
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            timeout_secs = *timeout_secs,
+                            next_timeout_secs = COMPACTION_BACKOFF_TIMEOUTS_SECS[attempt + 1],
+                            "runtime preflight compaction timed out, retrying with longer timeout..."
+                        );
+                    }
+                }
+            }
+        }
+        let summary = match summary {
+            Some(summary) => {
                 tracing::info!(
                     elapsed_ms = compaction_started_at.elapsed().as_millis(),
                     "runtime preflight stage completed: {}",
@@ -396,11 +420,11 @@ pub(crate) async fn execute_agent_loop_step(
                 );
                 summary
             }
-            Err(_) => {
+            None => {
                 let err = miette!(
-                    "runtime preflight stage `{}` timed out after {}s",
+                    "runtime preflight stage `{}` timed out after {}s (all retries exhausted)",
                     RuntimeTurnPhase::PreflightCompaction.label(),
-                    preflight_timeout.as_secs()
+                    last_timeout_secs
                 );
                 set_runtime_status(
                     tx,
@@ -412,7 +436,7 @@ pub(crate) async fn execute_agent_loop_step(
                 );
                 tracing::error!(
                     elapsed_ms = compaction_started_at.elapsed().as_millis(),
-                    timeout_secs = preflight_timeout.as_secs(),
+                    timeout_secs = last_timeout_secs,
                     "runtime preflight stage timed out: {}",
                     RuntimeTurnPhase::PreflightCompaction.label()
                 );
