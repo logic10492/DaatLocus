@@ -11,6 +11,7 @@ pub mod glyph {
     pub const REPLY: &str = "✣";
     pub const TELEGRAM: &str = "◦";
     pub const WORKFLOW: &str = "⌘";
+    pub const THINKING: &str = "\u{2699}\u{fe0e}";
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

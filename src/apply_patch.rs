@@ -366,10 +366,9 @@ fn parse_envelope_update_hunks(
                 "envelope update patch for `{path}` has change lines before an `@@` hunk header"
             ));
         };
-        let Some(prefix) = line.chars().next() else {
-            return Err(miette!(
-                "envelope update patch for `{path}` contains an empty change line"
-            ));
+        // Treat empty lines inside hunks as blank context lines.
+        let prefix = if line.is_empty() { ' ' } else {
+            line.chars().next().unwrap()
         };
         let text = line[prefix.len_utf8()..].to_string();
         let kind = match prefix {
