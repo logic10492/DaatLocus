@@ -107,7 +107,9 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Ve
         Span::raw(" "),
         Span::styled(
             cell.title.clone(),
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     if cell.full_body.is_some() {

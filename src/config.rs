@@ -324,7 +324,11 @@ impl Config {
 
     /// Return the hindsight model config, falling back through efficient model then to main model.
     pub fn hindsight_model_config(&self) -> &ModelConfig {
-        let key = self.hindsight.model.as_deref().unwrap_or(&self.efficient_model);
+        let key = self
+            .hindsight
+            .model
+            .as_deref()
+            .unwrap_or(&self.efficient_model);
         self.models
             .get(key)
             .unwrap_or_else(|| panic!("hindsight model '{}' not found in models", key))
@@ -332,9 +336,12 @@ impl Config {
 
     /// Return the efficient model config. Missing keys panic because startup validation should catch them.
     pub fn efficient_model_config(&self) -> &ModelConfig {
-        self.models
-            .get(&self.efficient_model)
-            .unwrap_or_else(|| panic!("efficient_model '{}' not found in models", self.efficient_model))
+        self.models.get(&self.efficient_model).unwrap_or_else(|| {
+            panic!(
+                "efficient_model '{}' not found in models",
+                self.efficient_model
+            )
+        })
     }
 
     /// Return the provider config used by hindsight.
@@ -414,15 +421,12 @@ impl Config {
             })?;
         }
 
-        let efficient = self
-            .models
-            .get(&self.efficient_model)
-            .ok_or_else(|| {
-                format!(
-                    "efficient_model '{}' not found in [models]",
-                    self.efficient_model
-                )
-            })?;
+        let efficient = self.models.get(&self.efficient_model).ok_or_else(|| {
+            format!(
+                "efficient_model '{}' not found in [models]",
+                self.efficient_model
+            )
+        })?;
         self.providers.get(&efficient.provider).ok_or_else(|| {
             format!(
                 "efficient_model '{}' references unknown provider '{}'",

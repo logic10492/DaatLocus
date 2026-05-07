@@ -367,7 +367,9 @@ fn parse_envelope_update_hunks(
             ));
         };
         // Treat empty lines inside hunks as blank context lines.
-        let prefix = if line.is_empty() { ' ' } else {
+        let prefix = if line.is_empty() {
+            ' '
+        } else {
             line.chars().next().unwrap()
         };
         let text = line[prefix.len_utf8()..].to_string();

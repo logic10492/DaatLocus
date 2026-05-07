@@ -305,7 +305,7 @@ impl OllamaClient {
         request_context: &[String],
     ) -> Result<(Value, Option<TokenUsage>)> {
         const MAX_429_RETRIES: usize = 4;
-        const MAX_5XX_RETRIES: usize = 3;
+        const MAX_5XX_RETRIES: usize = 4;
 
         let url = self.chat_url();
         let mut rate_limit_attempt = 0usize;
@@ -464,6 +464,7 @@ impl OllamaClient {
         payload: &Value,
         request_context: &[String],
     ) -> Result<reqwest::Response> {
+        self.wait_for_request_slot(request_context).await;
         let url = self.chat_url();
         let mut req = self.client.post(&url).json(payload);
         if let Some(auth) = self.auth_header() {
@@ -491,14 +492,68 @@ impl OllamaClient {
             request.tools.iter().map(|t| t.name.clone()).collect();
 
         let mut current_payload = payload.clone();
-        let mut attempt = 0usize;
-        const MAX_STREAM_RETRIES: usize = 2;
+        let mut adaptive_attempt = 0usize;
+        let mut rate_limit_attempt = 0usize;
+        let mut transient_attempt = 0usize;
+
+        const MAX_ADAPTIVE_RETRIES: usize = 2;
+        const MAX_429_RETRIES: usize = 4;
+        const MAX_5XX_RETRIES: usize = 4;
 
         loop {
             let response = self
                 .send_ollama_stream(&current_payload, &request_context)
                 .await?;
             let status = response.status();
+
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(parse_retry_after_seconds);
+                let body = response.text().await.unwrap_or_default();
+                if rate_limit_attempt >= MAX_429_RETRIES {
+                    return Err(miette!(
+                        "ollama stream: api returned HTTP 429 after {MAX_429_RETRIES} retries: {}",
+                        truncate_for_error(&body)
+                    ));
+                }
+                let delay = retry_after
+                    .map(Duration::from_secs)
+                    .unwrap_or_else(|| default_rate_limit_backoff(rate_limit_attempt));
+                warn!(
+                    "ollama stream: api returned HTTP 429; retrying in {} ms (attempt {}/{})\n{}",
+                    delay.as_millis(),
+                    rate_limit_attempt + 1,
+                    MAX_429_RETRIES,
+                    request_context.join("\n")
+                );
+                tokio::time::sleep(delay).await;
+                rate_limit_attempt += 1;
+                continue;
+            }
+
+            if status.is_server_error() {
+                let body = response.text().await.unwrap_or_default();
+                if transient_attempt >= MAX_5XX_RETRIES {
+                    return Err(miette!(
+                        "ollama stream: api returned HTTP {status} after {MAX_5XX_RETRIES} retries: {}",
+                        truncate_for_error(&body)
+                    ));
+                }
+                let delay = Duration::from_millis(400 * (1u64 << transient_attempt));
+                warn!(
+                    "ollama stream: api returned HTTP {status}; retrying in {} ms (attempt {}/{})\n{}",
+                    delay.as_millis(),
+                    transient_attempt + 1,
+                    MAX_5XX_RETRIES,
+                    request_context.join("\n")
+                );
+                tokio::time::sleep(delay).await;
+                transient_attempt += 1;
+                continue;
+            }
 
             if !status.is_success() {
                 let body = response.text().await.unwrap_or_default();
@@ -516,7 +571,7 @@ impl OllamaClient {
                     .into());
                 }
 
-                if attempt >= MAX_STREAM_RETRIES {
+                if adaptive_attempt >= MAX_ADAPTIVE_RETRIES {
                     return Err(miette!(
                         "ollama api returned HTTP {status}: {}",
                         truncate_for_error(&body)
@@ -531,11 +586,11 @@ impl OllamaClient {
                     if let Some(obj) = current_payload.as_object_mut() {
                         obj.remove("think");
                     }
-                    attempt += 1;
+                    adaptive_attempt += 1;
                     warn!(
                         "ollama stream: provider rejected think parameter; retrying without it (attempt {}/{})\n{}",
-                        attempt,
-                        MAX_STREAM_RETRIES + 1,
+                        adaptive_attempt,
+                        MAX_ADAPTIVE_RETRIES,
                         request_context.join("\n")
                     );
                     continue;
@@ -543,13 +598,13 @@ impl OllamaClient {
 
                 if !self.vision_disabled() && looks_like_vision_unsupported_error(&body) {
                     self.mark_vision_disabled();
-                    attempt += 1;
+                    adaptive_attempt += 1;
                     let messages = agent_turn_request_to_ollama_messages_stripped(request);
                     current_payload["messages"] = json!(messages);
                     warn!(
                         "ollama stream: provider rejected image input; retrying without images (attempt {}/{})\n{}",
-                        attempt,
-                        MAX_STREAM_RETRIES + 1,
+                        adaptive_attempt,
+                        MAX_ADAPTIVE_RETRIES,
                         request_context.join("\n")
                     );
                     continue;

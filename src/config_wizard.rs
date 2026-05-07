@@ -2471,7 +2471,11 @@ fn render_config_summary_lines(config: &Config, locale: Locale) -> Vec<String> {
     lines.push(String::new());
     lines.push(crate::tr!(locale, "config.judge_heading"));
     lines.push("─────".to_string());
-    let judge_model = config.judge.model.as_deref().unwrap_or(&config.efficient_model);
+    let judge_model = config
+        .judge
+        .model
+        .as_deref()
+        .unwrap_or(&config.efficient_model);
     lines.push(format!(
         "  enabled={}  model={}  candidates={}  cases={}",
         config.judge.enabled,
