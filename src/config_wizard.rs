@@ -2452,13 +2452,15 @@ fn render_config_summary_lines(config: &Config, locale: Locale) -> Vec<String> {
     lines.push(crate::tr!(locale, "config.models_heading"));
     lines.push("──────".to_string());
     for (name, model) in &config.models {
-        let main_mark = if name == &config.main_model {
-            " ← main"
-        } else {
-            ""
-        };
+        let mut marks = String::new();
+        if name == &config.main_model {
+            marks.push_str(" ← main");
+        }
+        if name == &config.efficient_model && name != &config.main_model {
+            marks.push_str(" ← efficient");
+        }
         lines.push(format!(
-            "  [{name}]{main_mark}  provider={}  model_id={}  ctx={}  max_out={}",
+            "  [{name}]{marks}  provider={}  model_id={}  ctx={}  max_out={}",
             model.provider,
             model.model_id,
             model.context_window_tokens,
@@ -2469,7 +2471,7 @@ fn render_config_summary_lines(config: &Config, locale: Locale) -> Vec<String> {
     lines.push(String::new());
     lines.push(crate::tr!(locale, "config.judge_heading"));
     lines.push("─────".to_string());
-    let judge_model = config.judge.model.as_deref().unwrap_or(&config.main_model);
+    let judge_model = config.judge.model.as_deref().unwrap_or(&config.efficient_model);
     lines.push(format!(
         "  enabled={}  model={}  candidates={}  cases={}",
         config.judge.enabled,
@@ -2485,7 +2487,7 @@ fn render_config_summary_lines(config: &Config, locale: Locale) -> Vec<String> {
         .hindsight
         .model
         .as_deref()
-        .unwrap_or(&config.main_model);
+        .unwrap_or(&config.efficient_model);
     let fallback_mark = if config.hindsight.model.is_none() {
         crate::tr!(locale, "config.fallback_to_main")
     } else {
@@ -2556,6 +2558,7 @@ pub async fn run_config_menu() -> Result<()> {
             crate::tr!(locale, "config.add_model"),
             crate::tr!(locale, "config.change_main_model"),
             crate::tr!(locale, "config.change_hindsight_model"),
+            crate::tr!(locale, "config.change_efficient_model"),
             crate::tr!(locale, "config.configure_telegram"),
             crate::tr!(locale, "config.exit"),
         ];
@@ -2702,6 +2705,30 @@ pub async fn run_config_menu() -> Result<()> {
                         crate::tr!(locale, "common.config_load_failed", error = e)
                     )
                 })?;
+                let model_names: Vec<String> = config.models.keys().cloned().collect();
+                if model_names.is_empty() {
+                    ui.suspend();
+                    return Err(miette!("{}", crate::tr!(locale, "common.no_models")));
+                }
+                let current_idx = model_names
+                    .iter()
+                    .position(|n| n == &config.efficient_model)
+                    .unwrap_or(0);
+                let idx = ui.select(
+                    &crate::tr!(locale, "config.select_efficient_model"),
+                    &model_names,
+                    current_idx,
+                )?;
+                config.efficient_model = model_names[idx].clone();
+                write_config(&config).await?;
+            }
+            6 => {
+                let mut config = crate::config::load_config().await.map_err(|e| {
+                    miette!(
+                        "{}",
+                        crate::tr!(locale, "common.config_load_failed", error = e)
+                    )
+                })?;
                 config.telegram = prompt_telegram_config(&mut ui, Some(&config.telegram))?;
                 write_config(&config).await?;
             }
@@ -2839,6 +2866,46 @@ pub async fn run_set_hindsight_model() -> Result<()> {
             locale,
             "config.hindsight_model_set",
             name = display
+        )],
+    )?;
+    Ok(())
+}
+
+/// `config set-efficient-model` subcommand.
+pub async fn run_set_efficient_model() -> Result<()> {
+    let mut config = crate::config::load_config().await.map_err(|e| {
+        miette!(
+            "{}",
+            crate::tr!(Locale::default(), "common.config_load_failed", error = e)
+        )
+    })?;
+    let locale = config.locale;
+    let mut ui = PromptUi::new(locale)?;
+
+    let model_names: Vec<String> = config.models.keys().cloned().collect();
+    if model_names.is_empty() {
+        return Err(miette!("{}", crate::tr!(locale, "common.no_models")));
+    }
+
+    let current_idx = model_names
+        .iter()
+        .position(|n| n == &config.efficient_model)
+        .unwrap_or(0);
+
+    let idx = ui.select(
+        &crate::tr!(locale, "config.select_efficient_model"),
+        &model_names,
+        current_idx,
+    )?;
+
+    config.efficient_model = model_names[idx].clone();
+    write_config(&config).await?;
+    ui.detail(
+        &crate::tr!(locale, "config.select_efficient_model"),
+        &[crate::tr!(
+            locale,
+            "config.efficient_model_set",
+            name = config.efficient_model.clone()
         )],
     )?;
     Ok(())

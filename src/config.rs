@@ -266,6 +266,10 @@ pub struct Config {
     pub models: HashMap<String, ModelConfig>,
     /// Main model name; key reference into models.
     pub main_model: String,
+    /// Efficient model name; key reference into models.
+    /// Default for all non-main-loop operations (judge, hindsight, compaction).
+    /// When not set explicitly, defaults to the same value as main_model for backward compatibility.
+    pub efficient_model: String,
     pub daemon: DaemonConfig,
     pub judge: JudgeConfig,
     pub sandbox: SandboxConfig,
@@ -292,6 +296,7 @@ impl Default for Config {
             models,
             locale: Locale::default(),
             main_model: "default".to_string(),
+            efficient_model: "default".to_string(),
             daemon: DaemonConfig::default(),
             judge: JudgeConfig::default(),
             sandbox: SandboxConfig::default(),
@@ -309,20 +314,27 @@ impl Config {
             .unwrap_or_else(|| panic!("main_model '{}' not found in models", self.main_model))
     }
 
-    /// Return the judge model config, falling back to the main model when unspecified.
+    /// Return the judge model config, falling back through efficient model then to main model.
     pub fn judge_model_config(&self) -> &ModelConfig {
-        let key = self.judge.model.as_deref().unwrap_or(&self.main_model);
+        let key = self.judge.model.as_deref().unwrap_or(&self.efficient_model);
         self.models
             .get(key)
             .unwrap_or_else(|| panic!("judge model '{}' not found in models", key))
     }
 
-    /// Return the hindsight model config, falling back to the main model when unspecified.
+    /// Return the hindsight model config, falling back through efficient model then to main model.
     pub fn hindsight_model_config(&self) -> &ModelConfig {
-        let key = self.hindsight.model.as_deref().unwrap_or(&self.main_model);
+        let key = self.hindsight.model.as_deref().unwrap_or(&self.efficient_model);
         self.models
             .get(key)
             .unwrap_or_else(|| panic!("hindsight model '{}' not found in models", key))
+    }
+
+    /// Return the efficient model config. Missing keys panic because startup validation should catch them.
+    pub fn efficient_model_config(&self) -> &ModelConfig {
+        self.models
+            .get(&self.efficient_model)
+            .unwrap_or_else(|| panic!("efficient_model '{}' not found in models", self.efficient_model))
     }
 
     /// Return the provider config used by hindsight.
@@ -401,6 +413,22 @@ impl Config {
                 )
             })?;
         }
+
+        let efficient = self
+            .models
+            .get(&self.efficient_model)
+            .ok_or_else(|| {
+                format!(
+                    "efficient_model '{}' not found in [models]",
+                    self.efficient_model
+                )
+            })?;
+        self.providers.get(&efficient.provider).ok_or_else(|| {
+            format!(
+                "efficient_model '{}' references unknown provider '{}'",
+                self.efficient_model, efficient.provider
+            )
+        })?;
 
         Ok(())
     }

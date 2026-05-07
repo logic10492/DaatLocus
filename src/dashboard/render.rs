@@ -96,6 +96,7 @@ pub fn token_usage_snapshot_for_dashboard(context: &Context) -> DashboardTokenUs
             .judge_llm
             .model_name()
             .or_else(|| Some(context.config.judge_model_config().model_id.clone())),
+        efficient_model: Some(context.config.efficient_model_config().model_id.clone()),
     }
 }
 

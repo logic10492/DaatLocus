@@ -52,6 +52,8 @@ pub struct DashboardTokenUsageSnapshot {
     pub judge: Option<TokenUsageInfo>,
     #[serde(default)]
     pub judge_model: Option<String>,
+    #[serde(default)]
+    pub efficient_model: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]

@@ -85,6 +85,9 @@ enum ConfigTarget {
     /// Change the model used by hindsight.
     #[command(name = "set-hindsight-model")]
     SetHindsightModel,
+    /// Change the efficient model.
+    #[command(name = "set-efficient-model")]
+    SetEfficientModel,
     /// Configure Telegram transport.
     #[command(name = "set-telegram")]
     SetTelegram,
@@ -287,6 +290,7 @@ async fn run_config_command(target: Option<&ConfigTarget>) -> Result<()> {
         Some(ConfigTarget::AddModel) => config_wizard::run_add_model().await,
         Some(ConfigTarget::SetMainModel) => config_wizard::run_set_main_model().await,
         Some(ConfigTarget::SetHindsightModel) => config_wizard::run_set_hindsight_model().await,
+        Some(ConfigTarget::SetEfficientModel) => config_wizard::run_set_efficient_model().await,
         Some(ConfigTarget::SetTelegram) => config_wizard::run_set_telegram().await,
     }
 }
