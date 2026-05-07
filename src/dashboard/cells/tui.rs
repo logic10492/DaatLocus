@@ -97,14 +97,36 @@ fn render_assistant_cell_lines(cell: &AssistantActivityCell) -> Vec<Line<'static
 }
 
 fn render_thinking_cell_lines(cell: &ThinkingActivityCell) -> Vec<Line<'static>> {
-    render_text_activity_lines(
-         glyph::THINKING,
-        Color::Magenta,
-        &cell.title,
-        &cell.body_lines,
-        3,
-        None,
-    )
+    let bar = Span::styled("│", Style::default().fg(Color::DarkGray));
+    let mut lines = Vec::new();
+
+    // First line: │ Thinking [Expand]
+    let mut title_spans = vec![
+        bar.clone(),
+        Span::raw(" "),
+        Span::styled(
+            cell.title.clone(),
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if cell.full_body.is_some() {
+        title_spans.push(Span::raw("  "));
+        title_spans.push(Span::styled(
+            "[Expand]",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    lines.push(Line::from(title_spans));
+
+    // Body lines: │ content
+    for body_line in cell.body_lines.iter().take(5) {
+        lines.push(Line::from(vec![
+            bar.clone(),
+            Span::raw(" "),
+            Span::styled(body_line.clone(), Style::default().fg(Color::Gray)),
+        ]));
+    }
+    lines
 }
 
 fn render_user_cell_lines(cell: &UserActivityCell) -> Vec<Line<'static>> {
