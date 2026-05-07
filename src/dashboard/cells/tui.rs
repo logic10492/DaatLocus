@@ -34,11 +34,12 @@ pub fn render_activity_feed(
             Style::default().fg(Color::DarkGray),
         )])]
     } else {
+        let inner_width = area.width.saturating_sub(2);
         let mut visible_cells = cells.to_vec();
         visible_cells.extend(live_cells.iter().map(|cell| cell.cell.clone()));
         let mut lines = Vec::new();
         for (idx, cell) in visible_cells.iter().enumerate() {
-            lines.extend(render_activity_cell_lines(cell));
+            lines.extend(render_activity_cell_lines(cell, inner_width));
             if idx + 1 < visible_cells.len() {
                 lines.push(Line::from(""));
             }
@@ -69,7 +70,7 @@ pub fn render_activity_feed(
     f.render_widget(widget, inner);
 }
 
-fn render_activity_cell_lines(cell: &ActivityCell) -> Vec<Line<'static>> {
+fn render_activity_cell_lines(cell: &ActivityCell, max_width: u16) -> Vec<Line<'static>> {
     match cell {
         ActivityCell::Assistant(cell) => render_assistant_cell_lines(cell),
         ActivityCell::User(cell) => render_user_cell_lines(cell),
@@ -88,7 +89,7 @@ fn render_activity_cell_lines(cell: &ActivityCell) -> Vec<Line<'static>> {
         ActivityCell::Reply(cell) => render_reply_cell_lines(cell),
         ActivityCell::TerminalWait(cell) => render_terminal_wait_cell_lines(cell),
         ActivityCell::Error(cell) => render_error_cell_lines(cell),
-        ActivityCell::Thinking(cell) => render_thinking_cell_lines(cell),
+        ActivityCell::Thinking(cell) => render_thinking_cell_lines(cell, max_width),
     }
 }
 
@@ -96,7 +97,7 @@ fn render_assistant_cell_lines(cell: &AssistantActivityCell) -> Vec<Line<'static
     render_text_activity_lines("›", Color::Cyan, &cell.title, &cell.body_lines, 8, None)
 }
 
-fn render_thinking_cell_lines(cell: &ThinkingActivityCell) -> Vec<Line<'static>> {
+fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Vec<Line<'static>> {
     let bar = Span::styled("│", Style::default().fg(Color::DarkGray));
     let mut lines = Vec::new();
 
@@ -119,12 +120,16 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell) -> Vec<Line<'static>>
     lines.push(Line::from(title_spans));
 
     // Body lines: │ content
+    let content_width = (max_width.saturating_sub(2)).max(20) as usize;
     for body_line in cell.body_lines.iter().take(5) {
-        lines.push(Line::from(vec![
-            bar.clone(),
-            Span::raw(" "),
-            Span::styled(body_line.clone(), Style::default().fg(Color::Gray)),
-        ]));
+        let wrapped = textwrap::wrap(body_line, content_width);
+        for sub_line in &wrapped {
+            lines.push(Line::from(vec![
+                bar.clone(),
+                Span::raw(" "),
+                Span::styled(sub_line.to_string(), Style::default().fg(Color::Gray)),
+            ]));
+        }
     }
     lines
 }

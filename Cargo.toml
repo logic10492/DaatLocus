@@ -73,6 +73,7 @@ serde_yaml = "0.9.34"
 sha2 = "0.10.9"
 syntect = "5"
 sysinfo = "0.38.4"
+textwrap = "0.16"
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full"] }
 tokio-tungstenite = "0.28.0"
