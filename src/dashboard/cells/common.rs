@@ -9,15 +9,17 @@ pub struct AssistantActivityCell {
 }
 
 /// Thinking / reasoning content produced by the model.
-/// Rendered truncated in TUI and collapsible in WebUI.
+/// Rendered truncated by default; press Enter to expand.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThinkingActivityCell {
     pub title: String,
     pub body_lines: Vec<String>,
-    /// Full reasoning text (may be very long for DeepSeek-style thinking).
-    /// Kept for WebUI expand-to-view; TUI uses body_lines (truncated).
+    /// Full reasoning text. Rendered when `expanded` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_body: Option<String>,
+    /// Whether the cell is expanded (toggle via Enter key).
+    #[serde(default)]
+    pub expanded: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -106,6 +108,7 @@ pub fn thinking_cell(
         title: title.into(),
         body_lines,
         full_body,
+        expanded: false,
     }
 }
 

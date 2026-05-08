@@ -200,7 +200,7 @@ pub fn thinking_activity_cell(reasoning_content: &str) -> Option<ActivityCell> {
     let full_body = if lines.len() > 3 {
         let full = trimmed.to_string();
         lines.truncate(2);
-        lines.push("... (truncated in TUI, expand in WebUI)");
+        lines.push("...");
         Some(full)
     } else {
         None

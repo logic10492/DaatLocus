@@ -29,6 +29,7 @@ pub struct CachedActivityLines {
     pub lines: Vec<Line<'static>>,
     width: u16,
     total_cells: usize,
+    expanded_count: usize,
 }
 
 impl CachedActivityLines {
@@ -37,11 +38,12 @@ impl CachedActivityLines {
             lines: Vec::new(),
             width: 0,
             total_cells: 0,
+            expanded_count: 0,
         }
     }
 
-    fn needs_rebuild(&self, inner_width: u16, total_cells: usize) -> bool {
-        self.width != inner_width || self.total_cells != total_cells
+    fn needs_rebuild(&self, inner_width: u16, total_cells: usize, expanded_count: usize) -> bool {
+        self.width != inner_width || self.total_cells != total_cells || self.expanded_count != expanded_count
     }
 }
 
@@ -54,12 +56,13 @@ pub fn render_activity_feed_cached(
     live_cells: &[LiveActivityCell],
     scroll_offset: u16,
     cache: &mut CachedActivityLines,
+    expanded_count: usize,
 ) -> u16 {
     let inner_width = area.width.saturating_sub(2);
     let total_cells = cells.len() + live_cells.len();
 
-    // Only rebuild lines when cells change or terminal is resized
-    if cache.needs_rebuild(inner_width, total_cells) {
+    // Only rebuild lines when cells change, terminal resized, or expanded state changes
+    if cache.needs_rebuild(inner_width, total_cells, expanded_count) {
         cache.lines = if total_cells == 0 {
             vec![Line::from(vec![Span::styled(
                 "No activity yet",
@@ -79,6 +82,7 @@ pub fn render_activity_feed_cached(
         };
         cache.width = inner_width;
         cache.total_cells = total_cells;
+        cache.expanded_count = expanded_count;
     }
 
     let text = if cache.lines.is_empty() {
@@ -138,7 +142,7 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Ve
     let bar = Span::styled("│", Style::default().fg(Color::DarkGray));
     let mut lines = Vec::new();
 
-    // First line: │ Thinking [Expand]
+    // First line: │ Thinking [Enter ↕]
     let mut title_spans = vec![
         bar.clone(),
         Span::raw(" "),
@@ -152,7 +156,7 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Ve
     if cell.full_body.is_some() {
         title_spans.push(Span::raw("  "));
         title_spans.push(Span::styled(
-            "[Expand]",
+            if cell.expanded { "[Enter ↑]" } else { "[Enter ↕]" },
             Style::default().fg(Color::DarkGray),
         ));
     }
@@ -160,14 +164,31 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Ve
 
     // Body lines: │ content
     let content_width = (max_width.saturating_sub(2)).max(20) as usize;
-    for body_line in cell.body_lines.iter().take(5) {
-        let wrapped = textwrap::wrap(body_line, content_width);
-        for sub_line in &wrapped {
-            lines.push(Line::from(vec![
-                bar.clone(),
-                Span::raw(" "),
-                Span::styled(sub_line.to_string(), Style::default().fg(Color::Gray)),
-            ]));
+    if cell.expanded {
+        // Expanded: show full reasoning content
+        if let Some(ref full) = cell.full_body {
+            for body_line in full.lines() {
+                let wrapped = textwrap::wrap(body_line, content_width);
+                for sub_line in &wrapped {
+                    lines.push(Line::from(vec![
+                        bar.clone(),
+                        Span::raw(" "),
+                        Span::styled(sub_line.to_string(), Style::default().fg(Color::Gray)),
+                    ]));
+                }
+            }
+        }
+    } else {
+        // Collapsed: show truncated preview (first 5 lines)
+        for body_line in cell.body_lines.iter().take(5) {
+            let wrapped = textwrap::wrap(body_line, content_width);
+            for sub_line in &wrapped {
+                lines.push(Line::from(vec![
+                    bar.clone(),
+                    Span::raw(" "),
+                    Span::styled(sub_line.to_string(), Style::default().fg(Color::Gray)),
+                ]));
+            }
         }
     }
     lines

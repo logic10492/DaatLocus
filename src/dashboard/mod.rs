@@ -15,6 +15,7 @@ pub use cells::{
 pub use history::{DashboardActivityHistoryPage, DashboardActivityHistoryStore, DashboardActivityHistoryWindow};
 
 use std::{
+    collections::HashSet,
     sync::Arc,
     time::Duration,
 };
@@ -1119,6 +1120,7 @@ pub async fn run_tui_dashboard(
     let mut load_cooldown: u8 = 0;
     let mut history_load_rx: Option<tokio::sync::oneshot::Receiver<Result<DashboardActivityHistoryPage, String>>> = None;
     let mut cached_activity_lines = CachedActivityLines::new();
+    let mut expanded_thinking: HashSet<usize> = HashSet::new();
 
     loop {
         let pending_requests = rx.borrow().pending_access_requests.clone();
@@ -1306,6 +1308,27 @@ pub async fn run_tui_dashboard(
                     KeyCode::End => {
                         auto_scroll = true;
                         scroll_offset = 0;
+                    }
+                    KeyCode::Enter => {
+                        // Toggle all thinking cell expansion
+                        let state = rx.borrow();
+                        let mut any_thinking = false;
+                        let offset = extra_history_cells.len();
+                        for (i, cell) in state.activity_cells.iter().enumerate() {
+                            if matches!(cell, ActivityCell::Thinking(_)) {
+                                let idx = offset + i;
+                                if expanded_thinking.contains(&idx) {
+                                    expanded_thinking.remove(&idx);
+                                } else {
+                                    expanded_thinking.insert(idx);
+                                }
+                                any_thinking = true;
+                            }
+                        }
+                        if any_thinking {
+                            cached_activity_lines = CachedActivityLines::new();
+                        }
+                        continue;
                     }
                     _ => {
                         scrolled = false;
@@ -1520,6 +1543,13 @@ pub async fn run_tui_dashboard(
         let mut combined_cells: Vec<ActivityCell> = extra_history_cells.clone();
         combined_cells.extend(state.activity_cells.clone());
 
+        // Sync expanded state onto thinking cells
+        for (i, cell) in combined_cells.iter_mut().enumerate() {
+            if let ActivityCell::Thinking(t) = cell {
+                t.expanded = expanded_thinking.contains(&i);
+            }
+        }
+
         // Resolve auto-scroll before rendering
         let display_scroll = if auto_scroll { u16::MAX } else { scroll_offset };
 
@@ -1536,6 +1566,7 @@ pub async fn run_tui_dashboard(
                 &state.live_activity_cells,
                 display_scroll,
                 &mut cached_activity_lines,
+                expanded_thinking.len(),
             );
             // Update page height for PageUp/PageDown
             page_height = root[0].height.saturating_sub(1);
