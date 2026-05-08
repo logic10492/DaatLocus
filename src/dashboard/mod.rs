@@ -1110,6 +1110,7 @@ pub async fn run_tui_dashboard(
     let mut scroll_offset: u16 = 0;
     let mut auto_scroll: bool = true;
     let mut max_scroll_storage: u16 = 0;
+    let mut page_height: u16 = 20; // updated each frame from area height
     let mut last_cursor_pos: Option<(u16, u16)> = None;
     let mut extra_history_cells: Vec<ActivityCell> = Vec::new();
     let mut oldest_cursor: Option<i64> = None;
@@ -1131,14 +1132,14 @@ pub async fn run_tui_dashboard(
                     MouseEventKind::ScrollUp => {
                         if auto_scroll {
                             auto_scroll = false;
-                            scroll_offset = max_scroll_storage.saturating_sub(3);
+                            scroll_offset = max_scroll_storage.saturating_sub(1);
                         } else {
-                            scroll_offset = scroll_offset.saturating_sub(3);
+                            scroll_offset = scroll_offset.saturating_sub(1);
                         }
                         continue;
                     }
                     MouseEventKind::ScrollDown => {
-                        scroll_offset = scroll_offset.saturating_add(3);
+                        scroll_offset = scroll_offset.saturating_add(1);
                         if scroll_offset >= max_scroll_storage {
                             auto_scroll = true;
                         }
@@ -1286,13 +1287,13 @@ pub async fn run_tui_dashboard(
                     KeyCode::PageUp => {
                         if auto_scroll {
                             auto_scroll = false;
-                            scroll_offset = max_scroll_storage.saturating_sub(10);
+                            scroll_offset = max_scroll_storage.saturating_sub(page_height);
                         } else {
-                            scroll_offset = scroll_offset.saturating_sub(10);
+                            scroll_offset = scroll_offset.saturating_sub(page_height);
                         }
                     }
                     KeyCode::PageDown => {
-                        scroll_offset = scroll_offset.saturating_add(10);
+                        scroll_offset = scroll_offset.saturating_add(page_height);
                         if scroll_offset >= max_scroll_storage {
                             auto_scroll = true;
                         }
@@ -1541,6 +1542,8 @@ pub async fn run_tui_dashboard(
             )
             .saturating_sub(root[0].height.saturating_sub(1) as usize)
             as u16;
+            // Update page height for PageUp/PageDown
+            page_height = root[0].height.saturating_sub(1);
 
             if let Some(overlay) = command_overlay.as_ref() {
                 render_command_overlay(f, root[0], overlay);
