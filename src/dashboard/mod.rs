@@ -19,7 +19,7 @@ pub use history::{
 use std::{
     collections::HashSet,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -1128,10 +1128,21 @@ pub async fn run_tui_dashboard(
     // (scroll keys, picker nav, etc.) that set it to true and then
     // `continue` still trigger a render on the next pass.
     let mut needs_render = true;
+    // Minimum interval for animation-only renders (spinner, etc.).
+    // Independent of data-driven renders: even when the feed is idle,
+    // time-dependent visuals get a refresh at ~10 fps without busy-looping.
+    const ANIMATION_INTERVAL: Duration = Duration::from_millis(100);
+    let mut next_animation_deadline = Instant::now() + ANIMATION_INTERVAL;
 
     loop {
         // If dashboard state changed, flag a render.
         if rx.has_changed().unwrap_or(true) {
+            needs_render = true;
+        }
+
+        // Periodically wake for time-driven visuals (spinner, etc.)
+        // when no data change is pending.
+        if Instant::now() >= next_animation_deadline {
             needs_render = true;
         }
 
@@ -1466,6 +1477,7 @@ pub async fn run_tui_dashboard(
             continue;
         }
         needs_render = false;
+        next_animation_deadline = Instant::now() + ANIMATION_INTERVAL;
 
         let state = rx.borrow_and_update();
         let pending_requests = state.pending_access_requests.clone();
