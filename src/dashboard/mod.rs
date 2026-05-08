@@ -1,8 +1,11 @@
 //! Dashboard: activity feed + command console.
 
 pub mod cells;
+pub mod frame_rate_limiter;
+pub mod frame_requester;
 pub mod history;
 pub mod renderable;
+pub mod tui_event;
 pub mod render;
 
 pub use cells::{
@@ -20,12 +23,12 @@ pub use history::{
 use std::{
     collections::HashSet,
     sync::Arc,
-    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::cursor::SetCursorStyle;
+use futures_util::StreamExt;
 use ratatui::{
     prelude::*,
     style::{Color, Modifier, Style},
@@ -1130,46 +1133,30 @@ pub async fn run_tui_dashboard(
     let mut cached_activity_lines = CachedActivityLines::new();
     let mut expanded_thinking: HashSet<usize> = HashSet::new();
 
-    // needs_render persists across loop iterations so that input events
-    // (scroll keys, picker nav, etc.) that set it to true and then
-    // `continue` still trigger a render on the next pass.
+    // Async event loop: TuiEvent from crossterm stream, watch channel, frame requester.
     let mut needs_render = true;
-    // Minimum interval for animation-only renders (spinner, etc.).
-    // Independent of data-driven renders: even when the feed is idle,
-    // time-dependent visuals get a refresh at ~10 fps without busy-looping.
-    const ANIMATION_INTERVAL: Duration = Duration::from_millis(100);
-    let mut next_animation_deadline = Instant::now() + ANIMATION_INTERVAL;
+    let mut event_stream = crossterm::event::EventStream::new();
+    let (draw_tx, mut draw_rx) = tokio::sync::broadcast::channel::<()>(16);
+    // FrameRequester spawns FrameScheduler; keep alive so the task isn't cancelled.
+    let _frame_requester = frame_requester::FrameRequester::new(draw_tx.clone());
 
     loop {
-        // If dashboard state changed, flag a render.
-        if rx.has_changed().unwrap_or(true) {
-            needs_render = true;
-        }
-
-        // Periodically wake for time-driven visuals (spinner, etc.)
-        // when no data change is pending.
-        if Instant::now() >= next_animation_deadline {
-            needs_render = true;
-        }
-
-        // Longer poll when idle to avoid busy-looping the cursor.
-        let poll_timeout = if needs_render {
-            Duration::from_millis(5)
-        } else {
-            Duration::from_millis(250)
-        };
-
-        if crossterm::event::poll(poll_timeout)? {
-            needs_render = true;
-            let event = crossterm::event::read()?;
-            let pending_requests = rx.borrow_and_update().pending_access_requests.clone();
-
-            let Event::Key(key) = event else {
-                continue;
-            };
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
+        tokio::select! {
+            event = event_stream.next() => {
+                let event = match event {
+                    Some(Ok(e)) => e,
+                    _ => continue,
+                };
+                let Some(tui_event) = tui_event::TuiEvent::from_crossterm(event) else {
+                    continue;
+                };
+                match tui_event {
+                    tui_event::TuiEvent::Key(key) => {
+                        needs_render = true;
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        let pending_requests = rx.borrow_and_update().pending_access_requests.clone();
             if telegram_access_picker.is_some() {
                 let mut command_to_run: Option<String> = None;
                 let mut close_picker = false;
@@ -1476,14 +1463,32 @@ pub async fn run_tui_dashboard(
                 }
                 _ => {}
             }
+            }
+            tui_event::TuiEvent::Resize => {
+                needs_render = true;
+            }
+            tui_event::TuiEvent::Paste(_) | tui_event::TuiEvent::Draw => {
+                needs_render = true;
+            }
         }
+    }
+    result = rx.changed() => {
+        if result.is_ok() {
+            needs_render = true;
+        }
+    }
+    result = draw_rx.recv() => {
+        if result.is_ok() {
+            needs_render = true;
+        }
+    }
+}
 
         // If nothing changed and no input arrived, keep sleeping.
         if !needs_render {
             continue;
         }
         needs_render = false;
-        next_animation_deadline = Instant::now() + ANIMATION_INTERVAL;
 
         let state = rx.borrow_and_update();
         let pending_requests = state.pending_access_requests.clone();

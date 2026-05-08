@@ -170,12 +170,12 @@ This file tracks hardening work for making Daat Locus a reliable long-running lo
   - [x] 通过 crossterm::execute! 调用 SetCursorStyle::SteadyBar 恢复可见光标，退出时重置为 DefaultUserShape。
   - [x] 确认 crossterm 层面无 EnableMouseCapture 残留（已在 69d57f1 移除）。
 
-- [ ] TUI：重构事件循环为 async stream 模式
-  - [ ] 引入 TuiEvent 枚举（Key / Paste / Resize / Draw）替代裸 crossterm Event。
-  - [ ] 用 tokio::select! 同时监听 tui_events、app_events、app_server_events。
-  - [ ] 引入 FrameRequester + FrameScheduler 机制让组件按需请求重绘。
-  - [ ] 加入 FrameRateLimiter (120fps cap) 防止过度绘制。
-  - [ ] 移除手动的 needs_render / poll_timeout / next_animation_deadline 轮询逻辑。
+- [x] TUI：重构事件循环为 async stream 模式
+  - [x] 引入 TuiEvent 枚举（Key / Paste / Resize / Draw）替代裸 crossterm Event。
+  - [x] 用 tokio::select! 同时监听 tui_events、app_events、app_server_events。
+  - [x] 引入 FrameRequester + FrameScheduler 机制让组件按需请求重绘。
+  - [x] 加入 FrameRateLimiter (120fps cap) 防止过度绘制。
+  - [x] 移除手动的 needs_render / poll_timeout / next_animation_deadline 轮询逻辑。
 
 - [ ] TUI：实现 history_cell 级 markdown 增量渲染
   - [ ] 参考 codex history_cell.rs 的 display_lines(width) 模式。
