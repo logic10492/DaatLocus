@@ -477,7 +477,7 @@ impl AfterClaimContextPart for AfterClaimWorkflowRoutingPart {
         let mut blocks = Vec::new();
         if ctx.bound_workflow_id.is_none() {
             blocks.push(PromptBlock::Paragraph(
-                "Before executing claimed work, call `activate_workflow` to choose the best candidate workflow, or call `create_workflow` if none fits. Only workflow binding tools are available until a workflow is bound."
+                "Before executing claimed work, call `activate_workflow` to choose the best candidate workflow, or call `create_workflow` if none fits. Binding a workflow early gives the runtime structured execution tracking and recovery paths; consider binding now before proceeding with other tools."
                     .to_string(),
             ));
         } else if let Some(workflow_id) = ctx.bound_workflow_id.as_deref() {

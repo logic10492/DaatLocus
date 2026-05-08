@@ -481,42 +481,6 @@ pub fn build_runtime_tool_specs(context: &Context) -> Vec<AgentToolSpec> {
     tools.into_iter().map(|tool| tool.spec()).collect()
 }
 
-fn is_workflow_binding_tool(name: &str) -> bool {
-    matches!(name, "activate_workflow" | "create_workflow")
-}
-
-fn tool_allowed_for_workflow_phase(bound_workflow_id: Option<&str>, tool_name: &str) -> bool {
-    if bound_workflow_id.is_none() {
-        is_workflow_binding_tool(tool_name)
-    } else {
-        !is_workflow_binding_tool(tool_name)
-    }
-}
-
-fn workflow_phase_denial(
-    bound_workflow_id: Option<&str>,
-    tool_name: &str,
-) -> Option<(String, String)> {
-    if tool_allowed_for_workflow_phase(bound_workflow_id, tool_name) {
-        return None;
-    }
-
-    if bound_workflow_id.is_none() {
-        return Some((
-            "No workflow is bound. Runtime policy requires binding a workflow before using non-workflow tools.".to_string(),
-            "Call activate_workflow with the best routed workflow_id, or call create_workflow if no routed workflow fits.".to_string(),
-        ));
-    }
-
-    Some((
-        format!(
-            "Workflow `{}` is already bound. Workflow binding tools are only available before a workflow is bound.",
-            bound_workflow_id.unwrap_or("<unknown>")
-        ),
-        "Continue under the currently bound workflow instead of calling activate_workflow/create_workflow again.".to_string(),
-    ))
-}
-
 fn runtime_availability_denial(
     context: &Context,
     tool: &dyn RuntimeTool,
@@ -790,11 +754,6 @@ pub async fn execute_agent_tool_call(
 ) -> Result<ToolExecutionResult> {
     let tools = build_runtime_tools(context);
     let tool = find_runtime_tool(&tools, &call.name)?;
-    if let Some((reason, allowed_next_action)) =
-        workflow_phase_denial(context.bound_workflow_id.as_deref(), tool.name())
-    {
-        return Ok(unavailable_tool_result(call, reason, allowed_next_action));
-    }
     if let Some((reason, allowed_next_action)) = runtime_availability_denial(context, tool) {
         return Ok(unavailable_tool_result(call, reason, allowed_next_action));
     }
@@ -827,34 +786,6 @@ mod tests {
             }
             AgentToolInputSpec::JsonSchema { .. } => panic!("expected freeform grammar"),
         }
-    }
-
-    #[test]
-    fn workflow_selection_phase_allows_only_binding_tools() {
-        assert!(tool_allowed_for_workflow_phase(None, "activate_workflow"));
-        assert!(tool_allowed_for_workflow_phase(None, "create_workflow"));
-        assert!(!tool_allowed_for_workflow_phase(None, "finish_and_send"));
-        assert!(!tool_allowed_for_workflow_phase(None, "terminal_exec"));
-    }
-
-    #[test]
-    fn bound_workflow_phase_rejects_binding_tools() {
-        assert!(!tool_allowed_for_workflow_phase(
-            Some("repo-analysis-summary"),
-            "activate_workflow"
-        ));
-        assert!(!tool_allowed_for_workflow_phase(
-            Some("repo-analysis-summary"),
-            "create_workflow"
-        ));
-        assert!(tool_allowed_for_workflow_phase(
-            Some("repo-analysis-summary"),
-            "finish_and_send"
-        ));
-        assert!(tool_allowed_for_workflow_phase(
-            Some("repo-analysis-summary"),
-            "terminal_exec"
-        ));
     }
 
     fn tool_result(tool_name: &str, payload: Value, ui_event: ToolUiEvent) -> ToolExecutionResult {
