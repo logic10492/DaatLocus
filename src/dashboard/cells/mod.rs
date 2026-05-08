@@ -23,8 +23,8 @@ use common::ThinkingActivityCell;
 use common::thinking_cell;
 use common::{
     AssistantActivityCell, ErrorActivityCell, GenericAppActivityCell, MessageImageAttachment,
-    TerminalWaitActivityCell, UserActivityCell, error_cell, terminal_wait_cell,
-    user_cell, assistant_cell_with_body,
+    TerminalWaitActivityCell, UserActivityCell, assistant_cell_with_body, error_cell,
+    terminal_wait_cell, user_cell,
 };
 use exec::{ExecResultActivityCell, LiveExecActivityCell, live_exec_cell};
 use messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell};

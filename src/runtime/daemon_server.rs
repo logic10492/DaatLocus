@@ -17,9 +17,8 @@ use crate::{
         workflow_optimization_snapshot_for_dashboard,
     },
     dashboard::{
-        DashboardActivityHistoryStore, DashboardControlCommand, DashboardState,
+        DashboardActivityHistoryStore, DashboardControlCommand, DashboardState, ReducedMotion,
         activity_cells_from_history_items, dashboard_agent_name, sync_web_activity_state,
-        ReducedMotion,
     },
     events::EventStore,
     hindsight::managed::HindsightManagedServer,

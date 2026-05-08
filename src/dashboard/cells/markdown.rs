@@ -104,11 +104,8 @@ pub fn render_markdown(input: &str, base_color: Color) -> Vec<Line<'static>> {
 /// paragraphs at `max_width` columns.
 ///
 /// When `max_width` is 0 or very small, falls back to unwrapped rendering.
-pub fn render_markdown_width(
-    input: &str,
-    base_color: Color,
-    max_width: u16,
-) -> Vec<Line<'static>> {
+#[allow(dead_code)]
+pub fn render_markdown_width(input: &str, base_color: Color, max_width: u16) -> Vec<Line<'static>> {
     if max_width < 20 {
         return render_markdown(input, base_color);
     }
@@ -116,7 +113,12 @@ pub fn render_markdown_width(
     wrap_lines(raw_lines, base_color, max_width as usize)
 }
 
-fn wrap_lines(lines: Vec<Line<'static>>, base_color: Color, max_width: usize) -> Vec<Line<'static>> {
+#[allow(dead_code)]
+fn wrap_lines(
+    lines: Vec<Line<'static>>,
+    base_color: Color,
+    max_width: usize,
+) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for line in lines {
         let line_w = line.width();
@@ -150,6 +152,7 @@ fn wrap_lines(lines: Vec<Line<'static>>, base_color: Color, max_width: usize) ->
     out
 }
 
+#[allow(dead_code)]
 fn find_wrap_boundary(text: &str, start: usize, max_width: usize) -> usize {
     let remaining = &text[start..];
     if remaining.len() <= max_width {
@@ -158,14 +161,15 @@ fn find_wrap_boundary(text: &str, start: usize, max_width: usize) -> usize {
     // Try to break at a word boundary
     let candidate = start + max_width;
     let slice = &text[start..candidate.min(text.len())];
-    if let Some(pos) = slice.rfind(' ') {
-        if pos > max_width / 2 {
-            return start + pos;
-        }
+    if let Some(pos) = slice.rfind(' ')
+        && pos > max_width / 2
+    {
+        return start + pos;
     }
     candidate.min(text.len())
 }
 
+#[allow(dead_code)]
 fn truncate_line(line: &Line<'static>, max_chars: usize) -> Line<'static> {
     let mut spans = Vec::new();
     let mut remaining = max_chars;

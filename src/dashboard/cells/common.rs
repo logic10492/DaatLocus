@@ -28,19 +28,14 @@ fn default_rich_mode() -> bool {
 impl AssistantActivityCell {
     /// Render this cell into styled lines using width-aware markdown when in rich mode,
     /// or plain text wrapping when in raw mode.
+    #[allow(dead_code)]
     pub fn display_lines(&self, max_width: u16) -> Vec<Line<'static>> {
-        let body = self
-            .full_body
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let body = self.full_body.as_deref().unwrap_or("").trim().to_string();
         if body.is_empty() {
             return Vec::new();
         }
         if self.rich_mode {
-            let md_lines =
-                render_markdown_width(&body, Color::Gray, max_width.saturating_sub(3));
+            let md_lines = render_markdown_width(&body, Color::Gray, max_width.saturating_sub(3));
             let mut out = Vec::new();
             for md_line in md_lines {
                 let mut spans = vec![Span::raw("   ")];
@@ -92,6 +87,7 @@ pub struct ThinkingActivityCell {
 
 impl ThinkingActivityCell {
     /// Render thinking content into styled lines with width-aware wrapping.
+    #[allow(dead_code)]
     pub fn display_lines(&self, max_width: u16, bar: &str) -> Vec<Line<'static>> {
         let bar_span = Span::styled(bar.to_string(), Style::default().fg(Color::DarkGray));
         let content_width = (max_width.saturating_sub(2)).max(20) as usize;

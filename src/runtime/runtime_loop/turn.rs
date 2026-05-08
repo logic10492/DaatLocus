@@ -919,6 +919,13 @@ pub(crate) async fn execute_agent_loop_step(
                 )
                 .await;
             }
+            if content.trim().is_empty()
+                && let Some(reasoning) = response.last_reasoning_content.as_deref()
+                && !reasoning.trim().is_empty()
+            {
+                runtime_step
+                    .push_agent_message(AgentMessage::assistant(format!("[thinking] {reasoning}")));
+            }
             runtime_step.push_agent_message(AgentMessage::system(reason.message().to_string()));
             continue 'agent_loop;
         }

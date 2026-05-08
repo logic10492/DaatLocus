@@ -50,7 +50,7 @@ impl Renderable for ActivityCellRenderable<'_> {
 pub fn desired_height(cell: &ActivityCell, width: u16) -> u16 {
     match cell {
         ActivityCell::Assistant(c) => {
-            1 + c.display_lines(width).len() as u16 + 1
+            1 + count_wrapped_lines(&c.body_lines, width.saturating_sub(5), 8) + 1
         }
         ActivityCell::User(c) => {
             1 + count_wrapped_lines(&c.body_lines, width.saturating_sub(5), 6) + 1
@@ -128,7 +128,14 @@ pub fn desired_height(cell: &ActivityCell, width: u16) -> u16 {
             1 + count_wrapped_lines(&c.body_lines, width.saturating_sub(5), 8) + 1
         }
         ActivityCell::Thinking(c) => {
-            1 + c.display_lines(width, "│").len() as u16 + 1
+            if c.expanded && c.full_body.is_some() {
+                let full = c.full_body.as_deref().unwrap_or("");
+                let cw = (width.saturating_sub(2)).max(20) as usize;
+                let wrapped = textwrap::wrap(full, cw);
+                1 + wrapped.len() as u16 + 1
+            } else {
+                1 + count_wrapped_lines(&c.body_lines, width.saturating_sub(2), 5) + 1
+            }
         }
     }
 }
@@ -269,7 +276,7 @@ pub fn render_activity_feed_cached(
 
 fn render_activity_cell_lines(cell: &ActivityCell, max_width: u16) -> Vec<Line<'static>> {
     match cell {
-        ActivityCell::Assistant(cell) => render_assistant_cell_lines(cell, max_width),
+        ActivityCell::Assistant(cell) => render_assistant_cell_lines(cell),
         ActivityCell::User(cell) => render_user_cell_lines(cell),
         ActivityCell::AppAttention(cell) => render_app_attention_cell_lines(cell),
         ActivityCell::Browser(cell) => render_browser_cell_lines(cell),
@@ -290,25 +297,25 @@ fn render_activity_cell_lines(cell: &ActivityCell, max_width: u16) -> Vec<Line<'
     }
 }
 
-fn render_assistant_cell_lines(
-    cell: &AssistantActivityCell,
-    max_width: u16,
-) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(vec![
-        Span::styled("›".to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
-        Span::styled(cell.title.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    ])];
-    lines.append(&mut cell.display_lines(max_width));
-    lines
+fn render_assistant_cell_lines(cell: &AssistantActivityCell) -> Vec<Line<'static>> {
+    render_text_activity_lines(
+        "›",
+        Color::Cyan,
+        &cell.title,
+        &cell.body_lines,
+        8,
+        None,
+        true,
+    )
 }
 
 fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Vec<Line<'static>> {
+    let bar = Span::styled("│", Style::default().fg(Color::DarkGray));
     let mut lines = Vec::new();
 
     // First line: │ Thinking [Ctrl+T]
     let mut title_spans = vec![
-        Span::styled("│".to_string(), Style::default().fg(Color::DarkGray)),
+        bar.clone(),
         Span::raw(" "),
         Span::styled(
             cell.title.clone(),
@@ -326,8 +333,35 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Ve
     }
     lines.push(Line::from(title_spans));
 
-    // Body lines: delegate to cell.display_lines
-    lines.append(&mut cell.display_lines(max_width, "│"));
+    // Body lines: │ content
+    let content_width = (max_width.saturating_sub(2)).max(20) as usize;
+    if cell.expanded {
+        // Expanded: show full reasoning content
+        if let Some(ref full) = cell.full_body {
+            for body_line in full.lines() {
+                let wrapped = textwrap::wrap(body_line, content_width);
+                for sub_line in &wrapped {
+                    lines.push(Line::from(vec![
+                        bar.clone(),
+                        Span::raw(" "),
+                        Span::styled(sub_line.to_string(), Style::default().fg(Color::Gray)),
+                    ]));
+                }
+            }
+        }
+    } else {
+        // Collapsed: show truncated preview (first 5 lines)
+        for body_line in cell.body_lines.iter().take(5) {
+            let wrapped = textwrap::wrap(body_line, content_width);
+            for sub_line in &wrapped {
+                lines.push(Line::from(vec![
+                    bar.clone(),
+                    Span::raw(" "),
+                    Span::styled(sub_line.to_string(), Style::default().fg(Color::Gray)),
+                ]));
+            }
+        }
+    }
     lines
 }
 
