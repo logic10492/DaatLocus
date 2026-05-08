@@ -8,6 +8,7 @@ pub use cells::{
     ActivityCell, DashboardActivityEvent, LiveActivityCell, LiveWebActivityItem, WebActivityItem,
     activity_cell_from_tool_ui_event, activity_cells_from_history_items, apply_activity_event,
     assistant_activity_cell, default_web_activity_version, render_activity_feed,
+    count_activity_lines,
     render_activity_from_messages, sync_web_activity_state, thinking_activity_cell,
     user_activity_cell_from_event, web_activity_item_from_cell,
 };
@@ -1106,7 +1107,10 @@ pub async fn run_tui_dashboard(
     let mut command_overlay: Option<CommandOverlay> = None;
     let mut telegram_access_picker: Option<TelegramAccessPicker> = None;
     // Scroll and lazy-load state
-    let mut scroll_offset: u16 = u16::MAX;
+    let mut scroll_offset: u16 = 0;
+    let mut auto_scroll: bool = true;
+    let mut max_scroll_storage: u16 = 0;
+    let mut last_cursor_pos: Option<(u16, u16)> = None;
     let mut extra_history_cells: Vec<ActivityCell> = Vec::new();
     let mut oldest_cursor: Option<i64> = None;
     let mut has_more_before: bool = false;
@@ -1125,11 +1129,19 @@ pub async fn run_tui_dashboard(
             if let Event::Mouse(mouse) = &event {
                 match mouse.kind {
                     MouseEventKind::ScrollUp => {
-                        scroll_offset = scroll_offset.saturating_sub(3);
+                        if auto_scroll {
+                            auto_scroll = false;
+                            scroll_offset = max_scroll_storage.saturating_sub(3);
+                        } else {
+                            scroll_offset = scroll_offset.saturating_sub(3);
+                        }
                         continue;
                     }
                     MouseEventKind::ScrollDown => {
                         scroll_offset = scroll_offset.saturating_add(3);
+                        if scroll_offset >= max_scroll_storage {
+                            auto_scroll = true;
+                        }
                         continue;
                     }
                     _ => {}
@@ -1258,22 +1270,40 @@ pub async fn run_tui_dashboard(
                 let mut scrolled = true;
                 match key.code {
                     KeyCode::Up => {
-                        scroll_offset = scroll_offset.saturating_sub(1);
+                        if auto_scroll {
+                            auto_scroll = false;
+                            scroll_offset = max_scroll_storage.saturating_sub(1);
+                        } else {
+                            scroll_offset = scroll_offset.saturating_sub(1);
+                        }
                     }
                     KeyCode::Down => {
                         scroll_offset = scroll_offset.saturating_add(1);
+                        if scroll_offset >= max_scroll_storage {
+                            auto_scroll = true;
+                        }
                     }
                     KeyCode::PageUp => {
-                        scroll_offset = scroll_offset.saturating_sub(10);
+                        if auto_scroll {
+                            auto_scroll = false;
+                            scroll_offset = max_scroll_storage.saturating_sub(10);
+                        } else {
+                            scroll_offset = scroll_offset.saturating_sub(10);
+                        }
                     }
                     KeyCode::PageDown => {
                         scroll_offset = scroll_offset.saturating_add(10);
+                        if scroll_offset >= max_scroll_storage {
+                            auto_scroll = true;
+                        }
                     }
                     KeyCode::Home => {
+                        auto_scroll = false;
                         scroll_offset = 0;
                     }
                     KeyCode::End => {
-                        scroll_offset = u16::MAX;
+                        auto_scroll = true;
+                        scroll_offset = 0;
                     }
                     _ => {
                         scrolled = false;
@@ -1281,6 +1311,9 @@ pub async fn run_tui_dashboard(
                 }
                 if scrolled {
                     // Reset End→MAX; keep cursor at bottom for new activity
+                    if scroll_offset >= max_scroll_storage {
+                        auto_scroll = true;
+                    }
                     continue;
                 }
             }
@@ -1422,11 +1455,12 @@ pub async fn run_tui_dashboard(
         load_cooldown = load_cooldown.saturating_sub(1);
 
         // Lazy-load more history when scrolled near the top
+        let effective_scroll = if auto_scroll { max_scroll_storage } else { scroll_offset };
         if history_loader.is_some()
             && !loading_history
             && load_cooldown == 0
             && has_more_before
-            && scroll_offset <= 3
+            && effective_scroll <= 3
         {
             loading_history = true;
             if let Some(loader) = history_loader.clone() {
@@ -1449,6 +1483,7 @@ pub async fn run_tui_dashboard(
                     merged.extend(extra_history_cells.clone());
                     extra_history_cells = merged;
                     // Reset to top to show newly loaded content
+                    auto_scroll = false;
                     scroll_offset = 0;
                     oldest_cursor = page.oldest_cursor;
                     has_more_before = page.has_more_before;
@@ -1483,6 +1518,9 @@ pub async fn run_tui_dashboard(
         let mut combined_cells: Vec<ActivityCell> = extra_history_cells.clone();
         combined_cells.extend(state.activity_cells.clone());
 
+        // Resolve auto-scroll before rendering
+        let display_scroll = if auto_scroll { u16::MAX } else { scroll_offset };
+
         terminal.draw(|f| {
             let root = Layout::default()
                 .direction(Direction::Vertical)
@@ -1493,8 +1531,17 @@ pub async fn run_tui_dashboard(
                 root[0],
                 &combined_cells,
                 &state.live_activity_cells,
-                scroll_offset,
+                display_scroll,
             );
+            // Compute max_scroll for next frame's key handling
+            max_scroll_storage = count_activity_lines(
+                &combined_cells,
+                &state.live_activity_cells,
+                root[0].width.saturating_sub(2),
+            )
+            .saturating_sub(root[0].height.saturating_sub(1) as usize)
+            as u16;
+
             if let Some(overlay) = command_overlay.as_ref() {
                 render_command_overlay(f, root[0], overlay);
             }
@@ -1516,6 +1563,7 @@ pub async fn run_tui_dashboard(
                     overlay_open: command_overlay.is_some() || telegram_access_picker.is_some(),
                     popup_selection: command_popup_selection,
                     popup_scroll: command_popup_scroll,
+                    last_cursor_pos: &mut last_cursor_pos,
                 },
             );
         })?;
@@ -1916,6 +1964,7 @@ struct CommandBarRenderState<'a> {
     overlay_open: bool,
     popup_selection: usize,
     popup_scroll: usize,
+    last_cursor_pos: &'a mut Option<(u16, u16)>,
 }
 
 fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_>) {
@@ -1927,6 +1976,7 @@ fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_
         overlay_open,
         popup_selection,
         popup_scroll,
+        last_cursor_pos,
     } = state;
 
     let completion = selected_command_completion(input, 0, context);
@@ -1995,10 +2045,12 @@ fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_
     ]);
     f.render_widget(Paragraph::new(prompt), rows[1]);
     // Show cursor after the prompt prefix and input text
-    f.set_cursor_position(Position {
-        x: rows[1].x + 2 + input.len() as u16,
-        y: rows[1].y,
-    });
+    let cursor_x = rows[1].x + 2 + input.len() as u16;
+    let cursor_y = rows[1].y;
+    if last_cursor_pos.map_or(true, |(px, py)| px != cursor_x || py != cursor_y) {
+        f.set_cursor_position(Position { x: cursor_x, y: cursor_y });
+        *last_cursor_pos = Some((cursor_x, cursor_y));
+    }
     let footer_row = if popup_rows > 0 {
         render_command_popup(f, rows[2], input, context, popup_selection, popup_scroll);
         rows[3]

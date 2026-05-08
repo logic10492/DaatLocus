@@ -72,6 +72,27 @@ pub fn render_activity_feed(
     f.render_widget(widget, inner);
 }
 
+/// Count total rendered lines (used by TUI to compute max_scroll for auto-scroll logic).
+pub fn count_activity_lines(
+    cells: &[ActivityCell],
+    live_cells: &[LiveActivityCell],
+    inner_width: u16,
+) -> usize {
+    if cells.is_empty() && live_cells.is_empty() {
+        return 1; // "No activity yet"
+    }
+    let mut visible_cells: Vec<ActivityCell> = cells.to_vec();
+    visible_cells.extend(live_cells.iter().map(|cell| cell.cell.clone()));
+    let mut count = 0;
+    for (idx, cell) in visible_cells.iter().enumerate() {
+        count += render_activity_cell_lines(cell, inner_width).len();
+        if idx + 1 < visible_cells.len() {
+            count += 1; // blank separator
+        }
+    }
+    count
+}
+
 fn render_activity_cell_lines(cell: &ActivityCell, max_width: u16) -> Vec<Line<'static>> {
     match cell {
         ActivityCell::Assistant(cell) => render_assistant_cell_lines(cell),
