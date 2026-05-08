@@ -23,7 +23,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use crossterm::event::MouseEventKind;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     prelude::*,
@@ -1100,7 +1099,6 @@ pub async fn run_tui_dashboard(
     crossterm::execute!(
         stdout,
         crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -1127,33 +1125,22 @@ pub async fn run_tui_dashboard(
     let mut expanded_thinking: HashSet<usize> = HashSet::new();
 
     loop {
-        let pending_requests = rx.borrow().pending_access_requests.clone();
+        // Check if dashboard state has changed since last render.
+        // Must be checked *before* any rx.borrow() call.
+        let state_changed = rx.has_changed().unwrap_or(true);
+        let mut needs_render = state_changed;
 
-        if crossterm::event::poll(Duration::from_millis(16))? {
+        // Longer poll when idle to avoid busy-looping the cursor.
+        let poll_timeout = if needs_render {
+            Duration::from_millis(5)
+        } else {
+            Duration::from_millis(250)
+        };
+
+        if crossterm::event::poll(poll_timeout)? {
+            needs_render = true;
             let event = crossterm::event::read()?;
-
-            // Mouse scroll wheel for activity feed (works regardless of input state)
-            if let Event::Mouse(mouse) = &event {
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        if auto_scroll {
-                            auto_scroll = false;
-                            scroll_offset = max_scroll_storage.saturating_sub(1);
-                        } else {
-                            scroll_offset = scroll_offset.saturating_sub(1);
-                        }
-                        continue;
-                    }
-                    MouseEventKind::ScrollDown => {
-                        scroll_offset = scroll_offset.saturating_add(1);
-                        if scroll_offset >= max_scroll_storage {
-                            auto_scroll = true;
-                        }
-                        continue;
-                    }
-                    _ => {}
-                }
-            }
+            let pending_requests = rx.borrow_and_update().pending_access_requests.clone();
 
             let Event::Key(key) = event else {
                 continue;
@@ -1469,7 +1456,12 @@ pub async fn run_tui_dashboard(
             }
         }
 
-        let state = rx.borrow();
+        if !needs_render {
+            continue;
+        }
+
+        let state = rx.borrow_and_update();
+        let pending_requests = state.pending_access_requests.clone();
         let popup_rows = if command_overlay.is_none() && telegram_access_picker.is_none() {
             let command_context = DashboardCommandContext {
                 requests: &pending_requests,
@@ -1541,7 +1533,6 @@ pub async fn run_tui_dashboard(
 
         // On first iteration, sync cursor from state
         if oldest_cursor.is_none() {
-            let state = rx.borrow();
             if !state.activity_history.items.is_empty() {
                 oldest_cursor = state.activity_history.oldest_cursor;
                 has_more_before = state.activity_history.has_more_before;
@@ -1611,7 +1602,6 @@ pub async fn run_tui_dashboard(
     crossterm::execute!(
         terminal.backend_mut(),
         crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
     )?;
     Ok(())
 }
