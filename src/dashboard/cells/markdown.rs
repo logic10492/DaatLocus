@@ -100,6 +100,87 @@ pub fn render_markdown(input: &str, base_color: Color) -> Vec<Line<'static>> {
     w.lines
 }
 
+/// Render a full markdown text into styled ratatui [`Line`]s, wrapping
+/// paragraphs at `max_width` columns.
+///
+/// When `max_width` is 0 or very small, falls back to unwrapped rendering.
+pub fn render_markdown_width(
+    input: &str,
+    base_color: Color,
+    max_width: u16,
+) -> Vec<Line<'static>> {
+    if max_width < 20 {
+        return render_markdown(input, base_color);
+    }
+    let raw_lines = render_markdown(input, base_color);
+    wrap_lines(raw_lines, base_color, max_width as usize)
+}
+
+fn wrap_lines(lines: Vec<Line<'static>>, base_color: Color, max_width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for line in lines {
+        let line_w = line.width();
+        if line_w <= max_width {
+            out.push(line);
+        } else {
+            let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            // Take the style from the first non-empty span, or fallback to base.
+            let base_style = line
+                .spans
+                .first()
+                .map(|s| s.style)
+                .unwrap_or(Style::default().fg(base_color));
+            let mut start = 0;
+            while start < full_text.len() {
+                let end = find_wrap_boundary(&full_text, start, max_width);
+                let chunk = &full_text[start..end];
+                if start == 0 {
+                    // First chunk: try to keep original spans but truncate
+                    out.push(truncate_line(&line, chunk.len()));
+                } else {
+                    out.push(Line::from(Span::styled(
+                        format!("   {}", chunk),
+                        base_style,
+                    )));
+                }
+                start = end;
+            }
+        }
+    }
+    out
+}
+
+fn find_wrap_boundary(text: &str, start: usize, max_width: usize) -> usize {
+    let remaining = &text[start..];
+    if remaining.len() <= max_width {
+        return text.len();
+    }
+    // Try to break at a word boundary
+    let candidate = start + max_width;
+    let slice = &text[start..candidate.min(text.len())];
+    if let Some(pos) = slice.rfind(' ') {
+        if pos > max_width / 2 {
+            return start + pos;
+        }
+    }
+    candidate.min(text.len())
+}
+
+fn truncate_line(line: &Line<'static>, max_chars: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut remaining = max_chars;
+    for span in &line.spans {
+        if remaining == 0 {
+            break;
+        }
+        let take = span.content.chars().count().min(remaining);
+        let content: String = span.content.chars().take(take).collect();
+        remaining = remaining.saturating_sub(take);
+        spans.push(Span::styled(content, span.style));
+    }
+    Line::from(spans)
+}
+
 // ── Writer ────────────────────────────────────────────────────────────────
 
 struct Writer<'a, I>

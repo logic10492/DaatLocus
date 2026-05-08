@@ -19,6 +19,7 @@ use crate::{
     dashboard::{
         DashboardActivityHistoryStore, DashboardControlCommand, DashboardState,
         activity_cells_from_history_items, dashboard_agent_name, sync_web_activity_state,
+        ReducedMotion,
     },
     events::EventStore,
     hindsight::managed::HindsightManagedServer,
@@ -333,6 +334,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
             runtime_optimization: runtime_optimization_snapshot_for_dashboard(&sleep_status),
             workflow_optimization: workflow_optimization_snapshot_for_dashboard(&sleep_status),
             context_composition: None,
+            reduced_motion: ReducedMotion::default(),
             footer_context: render_dashboard_footer_context(&context, None),
             footer_estimated_input_tokens: None,
         };

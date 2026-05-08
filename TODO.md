@@ -177,8 +177,8 @@ This file tracks hardening work for making Daat Locus a reliable long-running lo
   - [x] 加入 FrameRateLimiter (120fps cap) 防止过度绘制。
   - [x] 移除手动的 needs_render / poll_timeout / next_animation_deadline 轮询逻辑。
 
-- [ ] TUI：实现 history_cell 级 markdown 增量渲染
-  - [ ] 参考 codex history_cell.rs 的 display_lines(width) 模式。
-  - [ ] 将 render_markdown 输入改为按 cell 调用，而非拼接全部 body_lines。
-  - [ ] 为 Assistant 消息 cell 添加 Rich / Raw 双模式支持。
-  - [ ] 加入 ReducedMotionIndicator 控制动画行为。
+- [x] TUI：实现 history_cell 级 markdown 增量渲染
+  - [x] 参考 codex history_cell.rs 的 display_lines(width) 模式。
+  - [x] 将 render_markdown 输入改为按 cell 调用，而非拼接全部 body_lines。
+  - [x] 为 Assistant 消息 cell 添加 Rich / Raw 双模式支持。
+  - [x] 加入 ReducedMotionIndicator 控制动画行为。

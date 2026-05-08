@@ -23,8 +23,8 @@ use common::ThinkingActivityCell;
 use common::thinking_cell;
 use common::{
     AssistantActivityCell, ErrorActivityCell, GenericAppActivityCell, MessageImageAttachment,
-    TerminalWaitActivityCell, UserActivityCell, assistant_cell, error_cell, terminal_wait_cell,
-    user_cell,
+    TerminalWaitActivityCell, UserActivityCell, error_cell, terminal_wait_cell,
+    user_cell, assistant_cell_with_body,
 };
 use exec::{ExecResultActivityCell, LiveExecActivityCell, live_exec_cell};
 use messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell};
@@ -43,6 +43,8 @@ pub use web_activity::{
     LiveWebActivityItem, WebActivityItem, WebActivityKind, WebActivityStatus,
     default_web_activity_version, sync_web_activity_state, web_activity_item_from_cell,
 };
+
+pub use common::ReducedMotion;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ActivityCell {
@@ -177,18 +179,20 @@ pub fn apply_activity_event(state: &mut DashboardState, event: DashboardActivity
 }
 
 pub fn assistant_activity_cell(content: &str) -> Option<ActivityCell> {
-    if content.trim().is_empty() {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    if content.starts_with("tool invocation failed") || content.starts_with("tool loop failed") {
+    if trimmed.starts_with("tool invocation failed") || trimmed.starts_with("tool loop failed") {
         return Some(ActivityCell::Error(error_cell(
-            first_line_or_fallback(content, "tool invocation error"),
-            remaining_lines_with_limit(content, 24),
+            first_line_or_fallback(trimmed, "tool invocation error"),
+            remaining_lines_with_limit(trimmed, 24),
         )));
     }
-    Some(ActivityCell::Assistant(assistant_cell(
-        first_line_or_fallback(content, "assistant"),
-        remaining_lines_with_limit(content, 8),
+    Some(ActivityCell::Assistant(assistant_cell_with_body(
+        first_line_or_fallback(trimmed, "assistant"),
+        remaining_lines_with_limit(trimmed, 8),
+        Some(trimmed.to_string()),
     )))
 }
 
@@ -310,9 +314,10 @@ fn activity_cells_from_prompt_message(message: HistoryMessage) -> Vec<ActivityCe
             let is_tool_protocol_placeholder =
                 content.trim().starts_with("assistant tool-call protocol:");
             if !content.trim().is_empty() && !is_tool_protocol_placeholder {
-                cells.push(ActivityCell::Assistant(assistant_cell(
+                cells.push(ActivityCell::Assistant(assistant_cell_with_body(
                     first_line_or_fallback(content, "assistant"),
                     remaining_lines_with_limit(content, 8),
+                    Some(content.trim().to_string()),
                 )));
             }
             if content.starts_with("tool invocation failed")
