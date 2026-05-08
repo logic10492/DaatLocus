@@ -25,6 +25,7 @@ use std::{
 
 use async_trait::async_trait;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::cursor::SetCursorStyle;
 use ratatui::{
     prelude::*,
     style::{Color, Modifier, Style},
@@ -1103,6 +1104,10 @@ pub async fn run_tui_dashboard(
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        SetCursorStyle::SteadyBar,
+    )?;
     let mut command_input = String::new();
     let mut command_popup_selection: usize = 0;
     let mut command_popup_scroll: usize = 0;
@@ -1621,6 +1626,7 @@ pub async fn run_tui_dashboard(
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
+        SetCursorStyle::DefaultUserShape,
         crossterm::terminal::LeaveAlternateScreen,
     )?;
     Ok(())

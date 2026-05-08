@@ -164,11 +164,11 @@ This file tracks hardening work for making Daat Locus a reliable long-running lo
   - [x] 用 FlexRenderable 将活动列表、命令输入框、弹窗组合为布局树。
   - [x] 保留 CachedActivityLines 作为 cell 内 markdown 行缓存。
 
-- [ ] TUI：修复命令输入框光标位置
-  - [ ] 在 terminal.draw 闭包中调用 frame.set_cursor_position()。
-  - [ ] 光标位置从布局树递归定位到命令输入框底部（参考 codex cursor_pos）。
-  - [ ] 调用 frame.set_cursor_style(SetCursorStyle::SteadyBar) 恢复可见光标。
-  - [ ] 确认 crossterm 层面没有 EnableMouseCapture 残留影响光标行为。
+- [x] TUI：修复命令输入框光标位置
+  - [x] 在 terminal.draw 闭包中调用 frame.set_cursor_position()（已在 render_command_bar 实现）。
+  - [x] 命令输入框光标位置由 render_command_bar 直接计算（无需布局树递归）。
+  - [x] 通过 crossterm::execute! 调用 SetCursorStyle::SteadyBar 恢复可见光标，退出时重置为 DefaultUserShape。
+  - [x] 确认 crossterm 层面无 EnableMouseCapture 残留（已在 69d57f1 移除）。
 
 - [ ] TUI：重构事件循环为 async stream 模式
   - [ ] 引入 TuiEvent 枚举（Key / Paste / Resize / Draw）替代裸 crossterm Event。
