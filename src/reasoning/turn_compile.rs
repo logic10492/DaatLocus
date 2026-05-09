@@ -1,3 +1,8 @@
+//! Turn-compile evaluation pipeline infrastructure.
+//! Many items in this module exist for offline evaluation and training runs
+//! that are not linked into the main binary path.
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 
 use miette::{Result, miette};

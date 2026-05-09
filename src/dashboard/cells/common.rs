@@ -1,13 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use ratatui::{
-    style::{Color, Style},
-    text::{Line, Span},
-};
-
 use crate::tool_ui::ToolUiData;
-
-use super::markdown::render_markdown_width;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AssistantActivityCell {
@@ -25,41 +18,6 @@ fn default_rich_mode() -> bool {
     true
 }
 
-impl AssistantActivityCell {
-    /// Render this cell into styled lines using width-aware markdown when in rich mode,
-    /// or plain text wrapping when in raw mode.
-    #[allow(dead_code)]
-    pub fn display_lines(&self, max_width: u16) -> Vec<Line<'static>> {
-        let body = self.full_body.as_deref().unwrap_or("").trim().to_string();
-        if body.is_empty() {
-            return Vec::new();
-        }
-        if self.rich_mode {
-            let md_lines = render_markdown_width(&body, Color::Gray, max_width.saturating_sub(3));
-            let mut out = Vec::new();
-            for md_line in md_lines {
-                let mut spans = vec![Span::raw("   ")];
-                spans.extend(md_line.spans);
-                out.push(Line::from(spans));
-            }
-            out
-        } else {
-            // Raw mode: plain text with wrapping
-            let content_width = (max_width.saturating_sub(3)).max(20) as usize;
-            let mut out = Vec::new();
-            for raw_line in body.lines() {
-                let wrapped = textwrap::wrap(raw_line, content_width);
-                for sub in &wrapped {
-                    out.push(Line::from(vec![
-                        Span::raw("   "),
-                        Span::styled(sub.to_string(), Style::default().fg(Color::Gray)),
-                    ]));
-                }
-            }
-            out
-        }
-    }
-}
 
 /// Controls animation behaviour in the TUI dashboard.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -85,41 +43,6 @@ pub struct ThinkingActivityCell {
     pub expanded: bool,
 }
 
-impl ThinkingActivityCell {
-    /// Render thinking content into styled lines with width-aware wrapping.
-    #[allow(dead_code)]
-    pub fn display_lines(&self, max_width: u16, bar: &str) -> Vec<Line<'static>> {
-        let bar_span = Span::styled(bar.to_string(), Style::default().fg(Color::DarkGray));
-        let content_width = (max_width.saturating_sub(2)).max(20) as usize;
-        let mut out = Vec::new();
-        if self.expanded {
-            if let Some(ref full) = self.full_body {
-                for body_line in full.lines() {
-                    let wrapped = textwrap::wrap(body_line, content_width);
-                    for sub in &wrapped {
-                        out.push(Line::from(vec![
-                            bar_span.clone(),
-                            Span::raw(" "),
-                            Span::styled(sub.to_string(), Style::default().fg(Color::Gray)),
-                        ]));
-                    }
-                }
-            }
-        } else {
-            for body_line in self.body_lines.iter().take(5) {
-                let wrapped = textwrap::wrap(body_line, content_width);
-                for sub in &wrapped {
-                    out.push(Line::from(vec![
-                        bar_span.clone(),
-                        Span::raw(" "),
-                        Span::styled(sub.to_string(), Style::default().fg(Color::Gray)),
-                    ]));
-                }
-            }
-        }
-        out
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserActivityCell {

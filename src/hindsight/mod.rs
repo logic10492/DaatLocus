@@ -232,13 +232,14 @@ pub struct HindsightBankConfigEnvelope {
     pub overrides: Value,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct HindsightRetainResponse {
     #[serde(default)]
+    #[allow(dead_code)]
     pub success: bool,
     #[serde(default)]
     #[serde(alias = "items_count")]
+    #[allow(dead_code)]
     pub item_count: usize,
 }
 
@@ -248,7 +249,6 @@ pub struct HindsightRecallResponse {
     pub results: Vec<HindsightRecallResult>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct HindsightRecallResult {
     pub id: String,
@@ -263,16 +263,18 @@ pub struct HindsightRecallResult {
     pub tags: Vec<String>,
     #[serde(default)]
     pub context: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub occurred_start: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub occurred_end: Option<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HindsightReflectResponse {
     pub text: String,
+    #[allow(dead_code)]
     #[serde(default)]
     pub structured_output: Option<serde_json::Value>,
     #[serde(default)]

@@ -95,7 +95,26 @@ impl Renderable for CachedCellLines {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        self.0.len() as u16
+        if self.0.is_empty() {
+            return 0;
+        }
+        let width = _width as usize;
+        if width == 0 {
+            return 0;
+        }
+        let plain: String = self
+            .0
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let wrapped = textwrap::wrap(&plain, width);
+        wrapped.len() as u16
     }
 
     fn render_skip(&self, area: Rect, skip: u16, buf: &mut Buffer) {

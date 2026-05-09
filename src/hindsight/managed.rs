@@ -91,12 +91,6 @@ struct SidecarInstallMetadata {
 
 #[derive(Debug, Deserialize)]
 struct SidecarDownloadManifest {
-    #[allow(dead_code)]
-    schema_version: Option<u32>,
-    #[allow(dead_code)]
-    release: Option<String>,
-    #[allow(dead_code)]
-    hindsight_version: Option<String>,
     #[serde(default)]
     sidecar: Vec<SidecarDownloadEntry>,
 }
@@ -109,10 +103,6 @@ struct SidecarDownloadEntry {
     sha256: String,
     entry: String,
     url: String,
-    #[allow(dead_code)]
-    built_with: Option<String>,
-    #[allow(dead_code)]
-    hindsight_version: Option<String>,
 }
 
 struct HindsightSidecar {

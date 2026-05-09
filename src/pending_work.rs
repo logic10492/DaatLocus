@@ -76,18 +76,6 @@ impl PendingWorkQueue {
         }
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub fn empty() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(PendingWorkQueueInner {
-                path: crate::daat_locus_paths::daat_locus_paths_sync()
-                    .state_file(PENDING_WORK_FILE_NAME),
-                state: PersistedPendingWorkQueue::default(),
-            })),
-        }
-    }
-
     pub fn pending_count(&self) -> usize {
         self.inner
             .lock()

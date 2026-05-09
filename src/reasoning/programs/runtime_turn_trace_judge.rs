@@ -1,3 +1,6 @@
+//! Runtime turn-trace judge program used in offline evaluation.
+#![allow(dead_code)]
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

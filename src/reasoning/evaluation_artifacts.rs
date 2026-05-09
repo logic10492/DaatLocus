@@ -1,3 +1,7 @@
+//! Evaluation artifact types used across offline evaluation and training runs.
+//! Many items here exist for evaluation pipelines not linked into the main binary.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use miette::{Result, miette};
