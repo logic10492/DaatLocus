@@ -1413,6 +1413,12 @@ pub async fn run_tui_dashboard(
                             command_popup_scroll = 0;
                         }
                         KeyCode::Enter => {
+                            if key.modifiers.contains(KeyModifiers::ALT) {
+                                command_input.push('\n');
+                                command_popup_selection = 0;
+                                command_popup_scroll = 0;
+                                continue;
+                            }
                             let state = rx.borrow().clone();
                             let command_context = DashboardCommandContext {
                                 requests: &pending_requests,
@@ -1466,9 +1472,7 @@ pub async fn run_tui_dashboard(
                         needs_render = true;
                     }
                     tui_event::TuiEvent::Paste(text) => {
-                        // Replace newlines with spaces: the command bar is a single-line input,
-                        // and ratatui Line/Span treats \n as a literal character, not a line break.
-                        command_input.push_str(&text.replace('\n', " "));
+                        command_input.push_str(&text);
                         needs_render = true;
                     }
                     tui_event::TuiEvent::Draw => {
@@ -1509,6 +1513,9 @@ pub async fn run_tui_dashboard(
         } else {
             0
         };
+        let term_width = terminal.size().map(|s| s.width).unwrap_or(80);
+        let mut input_lines = wrapped_input_height(&command_input, term_width);
+        input_lines = input_lines.min(10);
 
         // Decrement load cooldown each tick
         load_cooldown = load_cooldown.saturating_sub(1);
@@ -1591,7 +1598,7 @@ pub async fn run_tui_dashboard(
         terminal.draw(|f| {
             let root = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(18), Constraint::Length(4 + popup_rows)])
+                .constraints([Constraint::Min(18), Constraint::Length(2 + input_lines + popup_rows)])
                 .split(f.area());
             // max_scroll now returned directly from render (no double traversal)
             max_scroll_storage = render_activity_feed_cached(
@@ -1628,6 +1635,7 @@ pub async fn run_tui_dashboard(
                     popup_selection: command_popup_selection,
                     popup_scroll: command_popup_scroll,
                     last_cursor_pos: &mut last_cursor_pos,
+                    input_lines,
                 },
             );
         })?;
@@ -2029,11 +2037,31 @@ struct CommandBarRenderState<'a> {
     popup_selection: usize,
     popup_scroll: usize,
     last_cursor_pos: &'a mut Option<(u16, u16)>,
+    input_lines: u16,
+}
+
+fn wrapped_input_height(text: &str, term_width: u16) -> u16 {
+    let available = term_width.saturating_sub(2).max(1) as usize;
+    if text.is_empty() {
+        return 1;
+    }
+    let mut total: u16 = 0;
+    for line in text.lines() {
+        if line.is_empty() {
+            total += 1;
+            continue;
+        }
+        let display_width: usize = line.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+        let lines = ((display_width + available - 1) / available).max(1);
+        total += lines as u16;
+    }
+    total.max(1)
 }
 
 fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_>) {
     let CommandBarRenderState {
         input,
+        input_lines,
         context,
         runtime_status,
         footer_context,
@@ -2052,19 +2080,16 @@ fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if popup_rows > 0 {
-            vec![
+        .constraints({
+            let mut c = vec![
                 Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Length(popup_rows),
-                Constraint::Length(1),
-            ]
-        } else {
-            vec![
-                Constraint::Length(1),
-                Constraint::Length(2),
-                Constraint::Length(1),
-            ]
+                Constraint::Length(input_lines),
+            ];
+            if popup_rows > 0 {
+                c.push(Constraint::Length(popup_rows));
+            }
+            c.push(Constraint::Length(1));
+            c
         })
         .split(area);
     let status_line = match runtime_status {
@@ -2076,41 +2101,40 @@ fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_
         _ => Line::from(""),
     };
     f.render_widget(Paragraph::new(status_line), rows[0]);
-    let prompt = Line::from(vec![
-        Span::styled("›", Style::default().fg(Color::Cyan)),
-        Span::raw(" "),
-        Span::styled(
-            if input.is_empty() {
-                "type a message, or /command".to_string()
-            } else {
-                input.to_string()
-            },
-            if input.is_empty() {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default().fg(Color::White)
-            },
-        ),
-        if input.is_empty() {
-            Span::raw("")
-        } else if let Some(completion) = completion
+    let available_width = area.width.saturating_sub(2).max(1) as usize;
+    // Build input text with prompt prefix, render as wrapping Paragraph
+    let display_text = if input.is_empty() {
+        "› type a message, or /command".to_string()
+    } else {
+        let mut s = String::with_capacity(input.len() + 2);
+        s.push_str("› ");
+        s.push_str(input);
+        if let Some(completion) = completion
             && completion != input
         {
-            Span::styled(
+            s.push_str(
                 completion
                     .strip_prefix(input)
-                    .unwrap_or_default()
-                    .to_string(),
-                Style::default().fg(Color::DarkGray),
-            )
-        } else {
-            Span::raw("")
-        },
-    ]);
-    f.render_widget(Paragraph::new(prompt), rows[1]);
-    // Show cursor after the prompt prefix and input text
-    let cursor_x = rows[1].x + 2 + input.len() as u16;
-    let cursor_y = rows[1].y;
+                    .unwrap_or_default(),
+            );
+        }
+        s
+    };
+    let input_style = if input.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let input_para = Paragraph::new(display_text)
+        .style(input_style)
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    f.render_widget(input_para, rows[1]);
+
+    // Cursor at end of input, accounting for multi-line wrapping
+    let cursor_y = rows[1].y + input_lines.saturating_sub(1);
+    let last_logical_line = input.rsplit('\n').next().unwrap_or("");
+    let last_line_width: usize = last_logical_line.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+    let cursor_x = rows[1].x + 2 + (last_line_width % available_width) as u16;
     f.set_cursor_position(Position {
         x: cursor_x,
         y: cursor_y,
