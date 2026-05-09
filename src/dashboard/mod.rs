@@ -1107,6 +1107,8 @@ pub async fn run_tui_dashboard(
     crossterm::execute!(terminal.backend_mut(), SetCursorStyle::SteadyBar,)?;
     crossterm::execute!(terminal.backend_mut(), crossterm::event::EnableBracketedPaste)?;
     let mut command_input = String::new();
+    // Large/multi-line pastes stored as (placeholder, full_text) pairs.
+    let mut pending_pastes: Vec<(String, String)> = Vec::new();
     let mut command_popup_selection: usize = 0;
     let mut command_popup_scroll: usize = 0;
     let mut command_overlay: Option<CommandOverlay> = None;
@@ -1419,6 +1421,14 @@ pub async fn run_tui_dashboard(
                                 command_popup_scroll = 0;
                                 continue;
                             }
+                            // Expand pending paste placeholders before submission.
+                            if !pending_pastes.is_empty() {
+                                command_input = expand_paste_placeholders(
+                                    &command_input,
+                                    &pending_pastes,
+                                );
+                                pending_pastes.clear();
+                            }
                             let state = rx.borrow().clone();
                             let command_context = DashboardCommandContext {
                                 requests: &pending_requests,
@@ -1472,7 +1482,11 @@ pub async fn run_tui_dashboard(
                         needs_render = true;
                     }
                     tui_event::TuiEvent::Paste(text) => {
-                        command_input.push_str(&text);
+                        handle_paste_placeholder(
+                            &text,
+                            &mut command_input,
+                            &mut pending_pastes,
+                        );
                         needs_render = true;
                     }
                     tui_event::TuiEvent::Draw => {
@@ -2056,6 +2070,61 @@ fn wrapped_input_height(text: &str, term_width: u16) -> u16 {
         total += lines as u16;
     }
     total.max(1)
+}
+
+/// Threshold above which pasted text gets a placeholder block instead of being inserted inline.
+const LARGE_PASTE_CHAR_THRESHOLD: usize = 500;
+
+/// Decide whether a paste should be collapsed into a placeholder block.
+///
+/// Rules (matching codex behaviour):
+/// - Pastes exceeding `LARGE_PASTE_CHAR_THRESHOLD` chars → placeholder
+/// - Pastes containing newlines and > 10 chars → placeholder
+/// - Otherwise → insert inline as normal text
+fn handle_paste_placeholder(
+    text: &str,
+    input: &mut String,
+    pending: &mut Vec<(String, String)>,
+) {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let char_count = normalized.chars().count();
+    let is_multi_line = normalized.contains('\n');
+
+    if char_count > LARGE_PASTE_CHAR_THRESHOLD || (char_count > 10 && is_multi_line) {
+        let base = format!("[Pasted Content {char_count} chars]");
+        let prefix = format!("{base} #");
+        let mut max_suffix: usize = 0;
+        for (ph, _) in pending.iter() {
+            if ph == &base {
+                max_suffix = max_suffix.max(1);
+            } else if let Some(suffix) = ph.strip_prefix(&prefix)
+                && let Ok(n) = suffix.parse::<usize>()
+            {
+                max_suffix = max_suffix.max(n);
+            }
+        }
+        let placeholder = if max_suffix == 0 {
+            base
+        } else {
+            format!("{base} #{max}", max = max_suffix + 1)
+        };
+        input.push_str(&placeholder);
+        pending.push((placeholder, normalized));
+    } else {
+        input.push_str(&normalized);
+    }
+}
+
+/// Replace all `[Pasted Content N chars]` placeholders in `text` with their stored full text.
+fn expand_paste_placeholders(
+    text: &str,
+    pending: &[(String, String)],
+) -> String {
+    let mut result = text.to_string();
+    for (placeholder, full_text) in pending {
+        result = result.replace(placeholder, full_text);
+    }
+    result
 }
 
 fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_>) {
