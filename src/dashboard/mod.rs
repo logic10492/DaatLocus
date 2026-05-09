@@ -1105,6 +1105,7 @@ pub async fn run_tui_dashboard(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     crossterm::execute!(terminal.backend_mut(), SetCursorStyle::SteadyBar,)?;
+    crossterm::execute!(terminal.backend_mut(), crossterm::event::EnableBracketedPaste)?;
     let mut command_input = String::new();
     let mut command_popup_selection: usize = 0;
     let mut command_popup_scroll: usize = 0;
@@ -1464,7 +1465,11 @@ pub async fn run_tui_dashboard(
                     tui_event::TuiEvent::Resize => {
                         needs_render = true;
                     }
-                    tui_event::TuiEvent::Paste(_) | tui_event::TuiEvent::Draw => {
+                    tui_event::TuiEvent::Paste(text) => {
+                        command_input.push_str(&text);
+                        needs_render = true;
+                    }
+                    tui_event::TuiEvent::Draw => {
                         needs_render = true;
                     }
                 }
