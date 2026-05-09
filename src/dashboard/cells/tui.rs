@@ -296,15 +296,43 @@ fn render_activity_cell_lines(cell: &ActivityCell, max_width: u16) -> Vec<Line<'
 }
 
 fn render_assistant_cell_lines(cell: &AssistantActivityCell) -> Vec<Line<'static>> {
-    render_text_activity_lines(
-        "›",
-        Color::Cyan,
-        &cell.title,
-        &cell.body_lines,
-        8,
-        None,
-        true,
-    )
+    // When rich (markdown) mode is on and full_body is available,
+    // render markdown from the complete text.  Using truncated
+    // body_lines breaks multi-line constructs (fenced code blocks,
+    // tables) because the closing fences / separators are cut off,
+    // causing tui-markdown to swallow subsequent content.
+    if cell.rich_mode {
+        if let Some(ref full) = cell.full_body {
+            let body_text = full
+                .lines()
+                .skip(1) // first line is the title, already rendered above
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut lines = vec![Line::from(vec![
+                Span::styled(
+                    "›",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    cell.title.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])];
+            let md_lines = render_markdown(&body_text, Color::White);
+            for md_line in md_lines {
+                let mut spans = vec![Span::raw("   ")];
+                spans.extend(md_line.spans);
+                lines.push(Line::from(spans));
+            }
+            return lines;
+        }
+    }
+    render_text_activity_lines("›", Color::Cyan, &cell.title, &cell.body_lines, 8, None, true)
 }
 
 fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Vec<Line<'static>> {
