@@ -37,6 +37,7 @@ pub struct CachedActivityLines {
 
 struct CacheEntry {
     width: u16,
+    cell: ActivityCell,
     lines: Vec<Line<'static>>,
 }
 
@@ -53,16 +54,18 @@ impl CachedActivityLines {
 
     /// Make room for at least `count` cells.
     fn ensure_capacity(&mut self, count: usize) {
-        if self.entries.len() < count {
+        if self.entries.len() != count {
+            self.entries.clear();
             self.entries.resize_with(count, || None);
         }
     }
 
-    /// Return cached lines for cell `index` at `width`, if available.
-    fn get(&self, index: usize, width: u16) -> Option<&Vec<Line<'static>>> {
+    /// Return cached lines for cell `index` at `width`, if the
+    /// cached cell matches the current one.
+    fn get(&self, index: usize, width: u16, cell: &ActivityCell) -> Option<&Vec<Line<'static>>> {
         self.entries.get(index).and_then(|e| {
             e.as_ref().and_then(|entry| {
-                if entry.width == width {
+                if entry.width == width && entry.cell == *cell {
                     Some(&entry.lines)
                 } else {
                     None
@@ -72,11 +75,11 @@ impl CachedActivityLines {
     }
 
     /// Store rendered lines for cell `index`.
-    fn set(&mut self, index: usize, width: u16, lines: Vec<Line<'static>>) {
+    fn set(&mut self, index: usize, width: u16, cell: ActivityCell, lines: Vec<Line<'static>>) {
         if index >= self.entries.len() {
             self.entries.resize_with(index + 1, || None);
         }
-        self.entries[index] = Some(CacheEntry { width, lines });
+        self.entries[index] = Some(CacheEntry { width, cell, lines });
     }
 }
 
@@ -173,11 +176,11 @@ pub fn render_activity_feed_cached(
 
     // Committed cells: use cache to skip markdown re-render.
     for (i, cell) in cells.iter().enumerate() {
-        let lines = if let Some(cached) = cache.get(i, inner.width) {
+        let lines = if let Some(cached) = cache.get(i, inner.width, cell) {
             cached.clone()
         } else {
             let lines = render_activity_cell_lines(cell, inner.width);
-            cache.set(i, inner.width, lines.clone());
+            cache.set(i, inner.width, cell.clone(), lines.clone());
             lines
         };
         column.push(CachedCellLines(lines));
@@ -192,12 +195,12 @@ pub fn render_activity_feed_cached(
         let idx = cells.len() + i;
         let lines = render_activity_cell_lines(&lc.cell, inner.width);
         // Still cache for consistency (the next frame may hit cache if cell stabilizes).
-        if let Some(cached) = cache.get(idx, inner.width) {
+        if let Some(cached) = cache.get(idx, inner.width, &lc.cell) {
             if cached.len() == lines.len() {
                 // Reuse cached if same structure; live cells rarely change shape.
             }
         }
-        cache.set(idx, inner.width, lines.clone());
+        cache.set(idx, inner.width, lc.cell.clone(), lines.clone());
         column.push(CachedCellLines(lines));
         // Blank line spacing between adjacent cells.
         if i + 1 < live_cells.len() {
