@@ -135,3 +135,76 @@ impl Analyzer for TreeSitterAnalyzer {
         None
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    fn write_temp_rust_file(dir: &Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    const RUST_CODE: &str = "// line 1\n                             // line 2\n                             const VERSION: &str = \"0.1\";\n                             \n                             pub fn authenticate(token: &str) -> bool {\n                                 // line 6\n                                 token.len() > 0\n                             }\n                             \n                             pub struct Config {\n                                 pub timeout_ms: u64,\n                             }\n                             \n                             impl Config {\n                                 pub fn default_timeout() -> u64 {\n                                     // line 16\n                                     5000\n                                 }\n                             }\n";
+
+    #[test]
+    fn find_fn_by_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let file_path = write_temp_rust_file(dir, "auth.rs", RUST_CODE);
+
+        let analyzer = TreeSitterAnalyzer::new();
+        let sel = analyzer.find_containing_symbol(&file_path, 6, dir);
+        assert_eq!(sel, Some("auth.rs::fn authenticate".to_string()));
+    }
+
+    #[test]
+    fn find_struct_by_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let file_path = write_temp_rust_file(dir, "auth.rs", RUST_CODE);
+
+        let analyzer = TreeSitterAnalyzer::new();
+        let sel = analyzer.find_containing_symbol(&file_path, 11, dir);
+        assert_eq!(sel, Some("auth.rs::struct Config".to_string()));
+    }
+
+    #[test]
+    fn find_impl_by_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let file_path = write_temp_rust_file(dir, "auth.rs", RUST_CODE);
+
+        let analyzer = TreeSitterAnalyzer::new();
+        // line 16 is inside impl Config -> fn default_timeout (deepest wins)
+        let sel = analyzer.find_containing_symbol(&file_path, 16, dir);
+        assert_eq!(sel, Some("auth.rs::fn default_timeout".to_string()));
+    }
+
+    #[test]
+    fn outside_all_defs_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let file_path = write_temp_rust_file(dir, "auth.rs", RUST_CODE);
+
+        let analyzer = TreeSitterAnalyzer::new();
+        let sel = analyzer.find_containing_symbol(&file_path, 1, dir);
+        assert_eq!(sel, None);
+    }
+
+    #[test]
+    fn missing_file_returns_none() {
+        let analyzer = TreeSitterAnalyzer::new();
+        let sel = analyzer.find_containing_symbol(
+            Path::new("/nonexistent/file.rs"),
+            1,
+            Path::new("/"),
+        );
+        assert_eq!(sel, None);
+    }
+}
