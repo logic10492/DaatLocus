@@ -1,0 +1,17 @@
+[package]
+name = "scope-engine"
+version = "0.1.0"
+edition = "2024"
+description = "Semantic Code Operation & Propagation Engine"
+license = "Apache-2.0"
+authors = ["shadow3 <shadow3aaaa@gmail.com>"]
+
+[dependencies]
+tokio = { version = "1.44", features = ["full"] }
+axum = "0.8.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tree-sitter = "0.25"
+
+[dev-dependencies]
+tokio-test = "0.4"
