@@ -6,13 +6,37 @@ mod server;
 mod state;
 mod treesitter;
 
-use std::net::SocketAddr;
+use std::io::{self, BufRead, Write};
 
-#[tokio::main]
-async fn main() {
-    let app = server::router();
-    let addr = SocketAddr::from(([127, 0, 0, 1], 53826));
-    println!("SCOPE engine listening on http://{}", addr);
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+fn main() {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let req: api::JsonRpcRequest = match serde_json::from_str(trimmed) {
+            Ok(r) => r,
+            Err(e) => {
+                let err = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": {"code": -32700, "message": format!("Parse error: {e}")}
+                });
+                let _ = writeln!(stdout.lock(), "{err}");
+                continue;
+            }
+        };
+
+        let resp = server::dispatch(&req);
+        let json = serde_json::to_string(&resp).unwrap_or_default();
+        let _ = writeln!(stdout.lock(), "{json}");
+    }
 }
