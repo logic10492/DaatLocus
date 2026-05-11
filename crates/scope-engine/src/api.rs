@@ -60,16 +60,27 @@ pub struct ReadCodeResponse {
     pub content: String,
     pub language: String,
 }
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SearchCodeRequest {
-    pub query: String,
-    pub project_root: String,
+/// Each match from a search_code query.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchMatch {
+    /// Relative file path from project root.
+    pub file: String,
+    /// 1-based line number.
+    pub line: usize,
+    /// The matching line text.
+    pub text: String,
+    /// The selector of the containing symbol (e.g. "src/net.rs::fn connect()").
+    pub selector: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchCodeResponse {
-    pub selectors: Vec<String>,
+    pub matches: Vec<SearchMatch>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchCodeRequest {
+    pub query: String,
 }
 
 /// edit_code parameters: selector + stripped v4a hunk-only patch
