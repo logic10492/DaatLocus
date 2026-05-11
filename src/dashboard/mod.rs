@@ -224,6 +224,88 @@ pub struct DashboardIncomingAttachment {
     pub description: Option<String>,
 }
 
+/// Editable input string with cursor tracking for in-place editing.
+#[derive(Debug)]
+struct InputState {
+    text: String,
+    /// Byte offset of the cursor within `text`.
+    cursor_pos: usize,
+}
+
+impl InputState {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            cursor_pos: 0,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Insert a character at cursor and advance cursor past it.
+    fn insert_char(&mut self, c: char) {
+        self.text.insert(self.cursor_pos, c);
+        self.cursor_pos += c.len_utf8();
+    }
+
+    /// Delete the character before the cursor (Backspace).
+    fn delete_before_cursor(&mut self) {
+        if self.cursor_pos > 0 {
+            let mut prev = self.cursor_pos - 1;
+            while prev > 0 && !self.text.is_char_boundary(prev) {
+                prev -= 1;
+            }
+            self.text.remove(prev);
+            self.cursor_pos = prev;
+        }
+    }
+
+    fn move_left(&mut self) {
+        if self.cursor_pos > 0 {
+            let mut pos = self.cursor_pos - 1;
+            while pos > 0 && !self.text.is_char_boundary(pos) {
+                pos -= 1;
+            }
+            self.cursor_pos = pos;
+        }
+    }
+
+    fn move_right(&mut self) {
+        if self.cursor_pos < self.text.len() {
+            let mut pos = self.cursor_pos + 1;
+            while pos < self.text.len() && !self.text.is_char_boundary(pos) {
+                pos += 1;
+            }
+            self.cursor_pos = pos;
+        }
+    }
+
+    fn move_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    fn move_end(&mut self) {
+        self.cursor_pos = self.text.len();
+    }
+
+    fn clear(&mut self) {
+        self.text.clear();
+        self.cursor_pos = 0;
+    }
+
+    /// Replace text and move cursor to end.
+    fn set_text(&mut self, text: String) {
+        self.text = text;
+        self.cursor_pos = self.text.len();
+    }
+}
+
 struct CommandOverlay {
     title: String,
     text: String,
@@ -1106,7 +1188,7 @@ pub async fn run_tui_dashboard(
     let mut terminal = Terminal::new(backend)?;
     crossterm::execute!(terminal.backend_mut(), SetCursorStyle::SteadyBar,)?;
     crossterm::execute!(terminal.backend_mut(), crossterm::event::EnableBracketedPaste)?;
-    let mut command_input = String::new();
+    let mut command_input = InputState::new();
     // Large/multi-line pastes stored as (placeholder, full_text) pairs.
     let mut pending_pastes: Vec<(String, String)> = Vec::new();
     let mut command_popup_selection: usize = 0;
@@ -1346,7 +1428,7 @@ pub async fn run_tui_dashboard(
                     }
                     match key.code {
                         KeyCode::Char(c) => {
-                            command_input.push(c);
+                            command_input.insert_char(c);
                             command_popup_selection = 0;
                             command_popup_scroll = 0;
                         }
@@ -1358,17 +1440,17 @@ pub async fn run_tui_dashboard(
                                 executor: None,
                             };
                             if let Some(completion) = selected_command_completion(
-                                &command_input,
+                                command_input.as_str(),
                                 command_popup_selection,
                                 &command_context,
                             ) {
-                                command_input = completion;
+                                command_input.set_text(completion);
                                 command_popup_selection = 0;
                                 command_popup_scroll = 0;
                             }
                         }
                         KeyCode::Backspace => {
-                            command_input.pop();
+                            command_input.delete_before_cursor();
                             command_popup_selection = 0;
                             command_popup_scroll = 0;
                         }
@@ -1379,7 +1461,7 @@ pub async fn run_tui_dashboard(
                                 state: &state,
                                 executor: None,
                             };
-                            let matches = matching_commands(&command_input, &command_context);
+                            let matches = matching_commands(command_input.as_str(), &command_context);
                             if !matches.is_empty() {
                                 command_popup_selection = command_popup_selection
                                     .saturating_sub(1)
@@ -1398,7 +1480,7 @@ pub async fn run_tui_dashboard(
                                 state: &state,
                                 executor: None,
                             };
-                            let matches = matching_commands(&command_input, &command_context);
+                            let matches = matching_commands(command_input.as_str(), &command_context);
                             if !matches.is_empty() {
                                 command_popup_selection =
                                     (command_popup_selection + 1).min(matches.len() - 1);
@@ -1416,17 +1498,17 @@ pub async fn run_tui_dashboard(
                         }
                         KeyCode::Enter => {
                             if key.modifiers.contains(KeyModifiers::ALT) {
-                                command_input.push('\n');
+                                command_input.insert_char('\n');
                                 command_popup_selection = 0;
                                 command_popup_scroll = 0;
                                 continue;
                             }
                             // Expand pending paste placeholders before submission.
                             if !pending_pastes.is_empty() {
-                                command_input = expand_paste_placeholders(
-                                    &command_input,
+                                command_input.set_text(expand_paste_placeholders(
+                                    command_input.as_str(),
                                     &pending_pastes,
-                                );
+                                ));
                                 pending_pastes.clear();
                             }
                             let state = rx.borrow().clone();
@@ -1436,17 +1518,17 @@ pub async fn run_tui_dashboard(
                                 executor: None,
                             };
                             if let Some(completion) = selected_command_completion(
-                                &command_input,
+                                command_input.as_str(),
                                 command_popup_selection,
                                 &command_context,
-                            ) && completion != command_input
+                            ) && completion != command_input.as_str()
                             {
-                                command_input = completion;
+                                command_input.set_text(completion);
                                 command_popup_selection = 0;
                                 command_popup_scroll = 0;
                                 continue;
                             }
-                            let input = command_input.trim().to_string();
+                            let input = command_input.as_str().trim().to_string();
                             if !input.is_empty() {
                                 if matches!(dashboard_command_body(&input), Some("quit" | "q" | "exit")) {
                                     break;
@@ -1475,6 +1557,26 @@ pub async fn run_tui_dashboard(
                             command_popup_selection = 0;
                             command_popup_scroll = 0;
                         }
+                        KeyCode::Left => {
+                            command_input.move_left();
+                            command_popup_selection = 0;
+                            command_popup_scroll = 0;
+                        }
+                        KeyCode::Right => {
+                            command_input.move_right();
+                            command_popup_selection = 0;
+                            command_popup_scroll = 0;
+                        }
+                        KeyCode::Home => {
+                            command_input.move_home();
+                            command_popup_selection = 0;
+                            command_popup_scroll = 0;
+                        }
+                        KeyCode::End => {
+                            command_input.move_end();
+                            command_popup_selection = 0;
+                            command_popup_scroll = 0;
+                        }
                         _ => {}
                     }
                     }
@@ -1484,9 +1586,10 @@ pub async fn run_tui_dashboard(
                     tui_event::TuiEvent::Paste(text) => {
                         handle_paste_placeholder(
                             &text,
-                            &mut command_input,
+                            &mut command_input.text,
                             &mut pending_pastes,
                         );
+                        command_input.move_end();
                         needs_render = true;
                     }
                     tui_event::TuiEvent::Draw => {
@@ -1523,12 +1626,12 @@ pub async fn run_tui_dashboard(
                 state: &state,
                 executor: None,
             };
-            command_popup_row_count(&command_input, &command_context)
+            command_popup_row_count(command_input.as_str(), &command_context)
         } else {
             0
         };
         let term_width = terminal.size().map(|s| s.width).unwrap_or(80);
-        let mut input_lines = wrapped_input_height(&command_input, term_width);
+        let mut input_lines = wrapped_input_height(command_input.as_str(), term_width);
         input_lines = input_lines.min(10);
 
         // Decrement load cooldown each tick
@@ -1637,7 +1740,8 @@ pub async fn run_tui_dashboard(
                 f,
                 root[1],
                 CommandBarRenderState {
-                    input: &command_input,
+                    input: command_input.as_str(),
+                    cursor_pos: command_input.cursor_pos,
                     context: &DashboardCommandContext {
                         requests: &pending_requests,
                         state: &state,
@@ -2044,6 +2148,7 @@ fn render_command_popup(
 
 struct CommandBarRenderState<'a> {
     input: &'a str,
+    cursor_pos: usize,
     context: &'a DashboardCommandContext<'a>,
     runtime_status: Option<&'a str>,
     footer_context: &'a str,
@@ -2127,9 +2232,45 @@ fn expand_paste_placeholders(
     result
 }
 
+/// Compute (x, y) display position for a byte cursor position within the input text.
+/// Accounts for multi-line input and terminal wrapping at `available_width`.
+/// `prompt_width` is the display width of the leading prompt (e.g. "› " = 2).
+fn cursor_display_xy(
+    text: &str,
+    byte_pos: usize,
+    available_width: usize,
+    prompt_width: u16,
+    area: Rect,
+) -> (u16, u16) {
+    let byte_pos = byte_pos.min(text.len());
+    let before = &text[..byte_pos];
+    let mut total_rows: u16 = 0;
+    let mut col: u16 = 0;
+    let mut lines = before.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        let dw: usize = line.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+        if lines.peek().is_some() {
+            // completed logical line
+            if dw == 0 {
+                total_rows += 1;
+            } else {
+                total_rows += ((dw + available_width - 1) / available_width) as u16;
+            }
+        } else {
+            // current (last) line
+            total_rows += (dw / available_width) as u16;
+            col = (dw % available_width) as u16;
+        }
+    }
+    let x = area.x + prompt_width + col;
+    let y = area.y + total_rows;
+    (x, y)
+}
+
 fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_>) {
     let CommandBarRenderState {
         input,
+        cursor_pos,
         input_lines,
         context,
         runtime_status,
@@ -2199,11 +2340,14 @@ fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_
         .wrap(ratatui::widgets::Wrap { trim: false });
     f.render_widget(input_para, rows[1]);
 
-    // Cursor at end of input, accounting for multi-line wrapping
-    let cursor_y = rows[1].y + input_lines.saturating_sub(1);
-    let last_logical_line = input.rsplit('\n').next().unwrap_or("");
-    let last_line_width: usize = last_logical_line.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
-    let cursor_x = rows[1].x + 2 + (last_line_width % available_width) as u16;
+    // Compute cursor position from tracked cursor_pos, accounting for wrapping
+    let (cursor_x, cursor_y) = cursor_display_xy(
+        input,
+        cursor_pos,
+        available_width,
+        2, // prompt "› " width
+        rows[1],
+    );
     f.set_cursor_position(Position {
         x: cursor_x,
         y: cursor_y,
