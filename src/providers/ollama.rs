@@ -833,7 +833,7 @@ impl OllamaClient {
         if let Some(keep_alive) = &self.keep_alive {
             ollama_payload["keep_alive"] = json!(keep_alive);
         }
-        ollama_payload["options"] = build_ollama_options(temperature);
+        ollama_payload["options"] = build_ollama_options(temperature, self.effective_context_window_tokens);
 
         let request_context = vec![format!(
             "hindsight LLM proxy ollama chat completion: model={}",
@@ -889,7 +889,7 @@ impl Llm for OllamaClient {
         if let Some(keep_alive) = &self.keep_alive {
             payload["keep_alive"] = json!(keep_alive);
         }
-        payload["options"] = build_ollama_options(self.temperature);
+        payload["options"] = build_ollama_options(self.temperature, self.effective_context_window_tokens);
 
         let (response, usage) = self
             .post_ollama_chat_with_adaptive_retry(
@@ -977,7 +977,7 @@ impl Llm for OllamaClient {
         if let Some(keep_alive) = &self.keep_alive {
             payload["keep_alive"] = json!(keep_alive);
         }
-        payload["options"] = build_ollama_options(self.temperature);
+        payload["options"] = build_ollama_options(self.temperature, self.effective_context_window_tokens);
 
         self.call_ollama_stream(context, &payload, &budget, &request)
             .await
@@ -992,9 +992,10 @@ impl Llm for OllamaClient {
     }
 }
 
-fn build_ollama_options(temperature: f64) -> Value {
+fn build_ollama_options(temperature: f64, num_ctx: usize) -> Value {
     json!({
         "temperature": temperature,
+        "num_ctx": num_ctx,
     })
 }
 
