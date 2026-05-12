@@ -14,6 +14,7 @@ use crate::{
     hindsight::{HindsightClient, llm_proxy::HindsightLlmProxy, managed::HindsightManagedServer},
     memory::Memory,
     pending_work::PendingWorkQueue,
+    persistence::PersistenceStore,
     plan::Plan,
     providers::build_llm,
     reasoning::{
@@ -86,6 +87,25 @@ async fn tail_hindsight_log(profile: &str) {
             }
             Err(_) => break,
         }
+    }
+}
+
+const TOKEN_ESTIMATE_BASELINE_FILE: &str = "token_estimate_baseline.json";
+
+pub(crate) async fn load_token_estimate_baseline() -> TokenEstimateBaseline {
+    let persistence = PersistenceStore::runtime().await;
+    persistence
+        .read_json_state_or_default(TOKEN_ESTIMATE_BASELINE_FILE, "token estimate baseline")
+        .await
+}
+
+pub async fn save_token_estimate_baseline(baseline: &TokenEstimateBaseline) {
+    let persistence = PersistenceStore::runtime().await;
+    if let Err(err) = persistence
+        .write_json_state(TOKEN_ESTIMATE_BASELINE_FILE, baseline)
+        .await
+    {
+        tracing::warn!("failed to persist token estimate baseline: {err}");
     }
 }
 
@@ -274,7 +294,7 @@ pub(crate) async fn build_eval_context_with_compiled(
         afterclaim_context_fingerprint: None,
         idle_since: None,
         last_idle_sleep_at: None,
-        token_estimate_baseline: TokenEstimateBaseline::default(),
+        token_estimate_baseline: load_token_estimate_baseline().await,
     }
 }
 

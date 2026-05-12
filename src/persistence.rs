@@ -121,6 +121,27 @@ impl PersistenceStore {
     {
         write_json_pretty_atomic_sync(path, value, PersistenceFileMode::Default)
     }
+
+    pub async fn read_json_state_or_default<T>(&self, file_name: &str, label: &str) -> T
+    where
+        T: DeserializeOwned + Default,
+    {
+        read_json_or_default(&self.state_file(file_name), label).await
+    }
+
+    pub async fn write_json_state<T>(&self, file_name: &str, value: &T) -> Result<()>
+    where
+        T: Serialize + ?Sized,
+    {
+        let bytes = serde_json::to_vec_pretty(value).into_diagnostic()?;
+        write_bytes_atomic(
+            self.state_file(file_name),
+            bytes,
+            PersistenceFileMode::Default,
+        )
+        .await
+        .into_diagnostic()
+    }
 }
 
 pub async fn read_postcard_or_default<T>(path: &Path, label: &str) -> T

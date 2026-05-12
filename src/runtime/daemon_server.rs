@@ -3,7 +3,6 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::{
     app::{AppId, AppManager},
     context::Context,
-    context_budget::TokenEstimateBaseline,
     daemon::{
         DAEMON_HOST_DISPLAY, DaemonControlCommand as RuntimeDaemonControlCommand,
         DaemonLifecycleHandle, DaemonLifecycleState, DaemonLock, DaemonServerHandle,
@@ -29,6 +28,7 @@ use crate::{
     preturn_state::PreTurnState,
     providers::build_llm,
     reasoning::runtime::PromptMemoryContext,
+    runtime::bootstrap::load_token_estimate_baseline,
     runtime_context::build_preturn_context_text,
     sleep_status::{SleepStatusSnapshot, load_sleep_status_snapshot},
     telegram_acl::TelegramAclHandle,
@@ -277,7 +277,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         afterclaim_context_fingerprint: None,
         idle_since: None,
         last_idle_sleep_at: None,
-        token_estimate_baseline: TokenEstimateBaseline::default(),
+        token_estimate_baseline: load_token_estimate_baseline().await,
     };
 
     let mut sleep_status = load_sleep_status_snapshot().await;

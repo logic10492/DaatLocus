@@ -1,4 +1,5 @@
 use miette::Report;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -25,7 +26,7 @@ pub struct BudgetSection {
     pub tokens: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TokenEstimateBaseline {
     pub estimated_input_tokens: usize,
     pub observed_input_tokens: Option<usize>,
