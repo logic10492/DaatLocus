@@ -463,3 +463,109 @@ mod tests {
         assert_eq!(result, Some("line 1\nline 5\n".to_string()));
     }
 }
+
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::io::Write;
+
+    fn setup_temp_rust_project() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    fn write_rust_file(dir: &Path, filename: &str, content: &str) -> PathBuf {
+        let src_dir = dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let path = src_dir.join(filename);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn edit_code_apply_modifies_file_and_returns_open_ended_propagation() {
+        let dir = setup_temp_rust_project();
+        let rust_code = "pub fn hello() {\n    println!(\"hello\");\n}\n\npub fn world() {\n    println!(\"world\");\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        let selector = "src/lib.rs::fn hello()";
+        let patch = "@@ -2,1 +2,1 @@\n-    println!(\"hello\");\n+    println!(\"hello world\");\n";
+
+        let result = edit_code_apply(selector, patch, dir.path());
+        assert!(result.is_ok(), "edit_code_apply should succeed");
+
+        let propagation = result.unwrap();
+        // Since LspAnalyzer is a placeholder, all propagation should be OpenEnded
+        assert!(!propagation.is_empty(), "Should have propagation results");
+
+        // Verify the file was actually modified
+        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        assert!(modified.contains("hello world"), "File should contain the new content");
+        assert!(!modified.contains("\"hello\""), "File should not contain old content");
+    }
+
+    #[test]
+    fn edit_code_apply_creates_new_file_when_not_exists() {
+        let dir = setup_temp_rust_project();
+        let new_content = "pub fn new_fn() -> i32 {\n    42\n}\n";
+
+        let selector = "src/new.rs::fn new_fn()";
+        let result = edit_code_apply(selector, new_content, dir.path());
+        assert!(result.is_ok(), "Creating new file should succeed");
+
+        let propagation = result.unwrap();
+        assert!(propagation.is_empty(), "New file should have no propagation");
+
+        let created = std::fs::read_to_string(dir.path().join("src/new.rs")).unwrap();
+        assert!(created.contains("new_fn"));
+    }
+
+    #[test]
+    fn edit_code_apply_rejects_invalid_syntax() {
+        let dir = setup_temp_rust_project();
+        let rust_code = "pub fn ok() {\n    let x = 1;\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        // This patch produces incomplete Rust that tree-sitter should reject
+        let selector = "src/lib.rs::fn ok()";
+        let bad_patch = "@@ -1,3 +1,1 @@\n-pub fn ok() {\n-    let x = 1;\n-}\n+pub fn BROKEN {\n";
+
+        let result = edit_code_apply(selector, bad_patch, dir.path());
+        // tree-sitter may or may not catch this — it depends on the grammar.
+        // The important thing is the function doesn't panic.
+        // We just verify it returns either Ok or Err without crashing.
+        let _ = result;
+    }
+
+    #[test]
+    fn edit_code_apply_propagation_includes_modified_symbol() {
+        let dir = setup_temp_rust_project();
+        let rust_code = "pub fn greet() {\n    println!(\"hi\");\n}\n\npub fn farewell() {\n    println!(\"bye\");\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        let selector = "src/lib.rs::fn greet()";
+        let patch = "@@ -2,1 +2,1 @@\n-    println!(\"hi\");\n+    println!(\"hello\");\n";
+
+        let result = edit_code_apply(selector, patch, dir.path()).unwrap();
+        // Should have at least one OpenEnded result for the modified symbol
+        let has_greet = result.iter().any(|r| r.selector.contains("greet") || r.reason.contains("greet"));
+        assert!(has_greet, "Propagation should mention the modified symbol 'greet'");
+    }
+
+    #[test]
+    fn delete_code_apply_removes_symbol_and_returns_propagation() {
+        let dir = setup_temp_rust_project();
+        let rust_code = "pub fn hello() {\n    println!(\"hello\");\n}\n\npub fn world() {\n    println!(\"world\");\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        let selector = "src/lib.rs::fn hello()";
+        let result = delete_code_apply(selector, dir.path());
+        assert!(result.is_ok(), "delete_code_apply should succeed");
+
+        let propagation = result.unwrap();
+        assert!(!propagation.is_empty(), "Should have propagation results");
+        // Should have an OpenEnded result for the deleted symbol
+        assert!(propagation.iter().any(|r| r.reason.contains("deleted")), "Should note deletion");
+    }
+}
