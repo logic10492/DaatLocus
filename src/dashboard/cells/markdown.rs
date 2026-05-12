@@ -9,7 +9,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use tui_markdown::{self, from_str_with_options, Options, StyleSheet};
+use tui_markdown::{self, Options, StyleSheet, from_str_with_options};
 
 // ── Custom StyleSheet ─────────────────────────────────────────────────────
 
@@ -97,9 +97,10 @@ pub fn render_markdown(input: &str, base_color: Color) -> Vec<Line<'static>> {
             // ("```" and "```lang") as regular spans.  Detect them
             // and apply a subtle colour so they act as visual
             // boundaries without blending into the body text.
-            let is_fence = line.spans.first().map_or(false, |s| {
-                s.content.starts_with("```")
-            });
+            let is_fence = line
+                .spans
+                .first()
+                .is_some_and(|s| s.content.starts_with("```"));
             let fence_color = if is_fence {
                 Some(Color::DarkGray)
             } else {
@@ -117,8 +118,7 @@ pub fn render_markdown(input: &str, base_color: Color) -> Vec<Line<'static>> {
                     let has_line_color = line_style.fg.is_some()
                         || line_style.bg.is_some()
                         || line_style.underline_color.is_some();
-                    let style = if !has_span_color && !has_line_color
-                    {
+                    let style = if !has_span_color && !has_line_color {
                         s.style.fg(fence_color.unwrap_or(base_color))
                     } else {
                         s.style
@@ -133,10 +133,10 @@ pub fn render_markdown(input: &str, base_color: Color) -> Vec<Line<'static>> {
             new_line.style = line_style;
             // For fence lines also set the line style so that any
             // indentation spans (inserted by callers) inherit it.
-            if let Some(fc) = fence_color {
-                if new_line.style.fg.is_none() {
-                    new_line.style = new_line.style.fg(fc);
-                }
+            if let Some(fc) = fence_color
+                && new_line.style.fg.is_none()
+            {
+                new_line.style = new_line.style.fg(fc);
             }
             new_line
         })

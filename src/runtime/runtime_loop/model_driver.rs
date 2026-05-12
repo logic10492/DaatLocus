@@ -1,6 +1,8 @@
 use super::*;
 use crate::{
-    context_budget::{estimate_agent_message_tokens, estimate_tool_spec_tokens},
+    context_budget::{
+        TokenEstimateBaseline, estimate_agent_message_tokens, estimate_tool_spec_tokens,
+    },
     dashboard::{
         DashboardContextCompositionPrefixUnit, DashboardContextCompositionSegment,
         DashboardContextCompositionSnapshot,
@@ -14,12 +16,15 @@ pub(super) async fn run_agent_turn_with_retry(
     request: AgentTurnRequest,
     tx: Option<&tokio::sync::watch::Sender<DashboardState>>,
 ) -> Result<AgentTurnStreamResult> {
-    let budget = estimate_agent_turn_request(
-        &request.messages,
-        &request.tools,
-        runtime_request_budget_limits(context),
-    );
-    let estimated_input_tokens = budget.total_input_tokens;
+    let limits = runtime_request_budget_limits(context);
+    let estimated_input_tokens = {
+        let raw_budget = estimate_agent_turn_request(&request.messages, &request.tools, limits);
+        let calibrated_budget =
+            raw_budget.with_calibrated_input_tokens(&context.token_estimate_baseline);
+        calibrated_budget.total_input_tokens
+    };
+    let budget = estimate_agent_turn_request(&request.messages, &request.tools, limits)
+        .with_calibrated_input_tokens(&context.token_estimate_baseline);
     write_current_turn_messages_dump(&request, &budget, context.llm.model_name().as_deref()).await;
     let context_composition = build_context_composition_snapshot(
         context.latest_context_composition.as_ref(),
@@ -79,6 +84,16 @@ pub(super) async fn run_agent_turn_with_retry(
             }
             Ok(Ok(response)) => {
                 write_current_turn_response_dump(&response, attempt).await;
+                if let Some(info) = context.llm.token_usage_info() {
+                    let observed_input =
+                        usize::try_from(info.last_token_usage.input_tokens.max(0)).unwrap_or(0);
+                    if observed_input > 0 {
+                        context.token_estimate_baseline = TokenEstimateBaseline {
+                            estimated_input_tokens,
+                            observed_input_tokens: Some(observed_input),
+                        };
+                    }
+                }
                 clear_runtime_status(tx);
                 return Ok(response);
             }

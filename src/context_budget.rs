@@ -25,6 +25,12 @@ pub struct BudgetSection {
     pub tokens: usize,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct TokenEstimateBaseline {
+    pub estimated_input_tokens: usize,
+    pub observed_input_tokens: Option<usize>,
+}
+
 #[derive(Clone, Debug)]
 pub struct RequestBudgetBreakdown {
     pub sections: Vec<BudgetSection>,
@@ -57,6 +63,19 @@ impl RequestBudgetLimits {
     }
 }
 
+impl TokenEstimateBaseline {
+    pub fn calibrated_total_input_tokens(&self, current_estimated_input_tokens: usize) -> usize {
+        let Some(observed) = self.observed_input_tokens else {
+            return current_estimated_input_tokens;
+        };
+        if self.estimated_input_tokens == 0 {
+            return current_estimated_input_tokens;
+        }
+        let delta = current_estimated_input_tokens.saturating_sub(self.estimated_input_tokens);
+        observed.saturating_add(delta)
+    }
+}
+
 impl RequestBudgetBreakdown {
     fn new(mut sections: Vec<BudgetSection>, limits: RequestBudgetLimits) -> Self {
         sections.retain(|section| section.tokens > 0);
@@ -72,6 +91,13 @@ impl RequestBudgetBreakdown {
             context_window_tokens: limits.context_window_tokens,
             auto_compact_threshold_tokens: limits.auto_compact_threshold_tokens,
         }
+    }
+
+    pub fn with_calibrated_input_tokens(mut self, baseline: &TokenEstimateBaseline) -> Self {
+        let calibrated = baseline.calibrated_total_input_tokens(self.total_input_tokens);
+        self.total_with_reserve_tokens = calibrated.saturating_add(self.reserved_output_tokens);
+        self.total_input_tokens = calibrated;
+        self
     }
 
     pub fn within_context_window(&self) -> bool {
@@ -467,5 +493,52 @@ mod tests {
         assert_eq!(breakdown.auto_compact_input_threshold_tokens(), 128_000);
         assert!(breakdown.within_context_window());
         assert!(!breakdown.above_auto_compact_threshold());
+    }
+
+    #[test]
+    fn token_estimate_baseline_returns_estimated_when_no_observed() {
+        let baseline = TokenEstimateBaseline::default();
+        assert_eq!(baseline.calibrated_total_input_tokens(500_000), 500_000);
+    }
+
+    #[test]
+    fn token_estimate_baseline_returns_calibrated_when_observed() {
+        let baseline = TokenEstimateBaseline {
+            estimated_input_tokens: 545_000,
+            observed_input_tokens: Some(810_000),
+        };
+        assert_eq!(baseline.calibrated_total_input_tokens(600_000), 865_000);
+    }
+
+    #[test]
+    fn token_estimate_baseline_handles_observed_zero() {
+        let baseline = TokenEstimateBaseline {
+            estimated_input_tokens: 545_000,
+            observed_input_tokens: Some(0),
+        };
+        assert_eq!(baseline.calibrated_total_input_tokens(600_000), 55_000);
+    }
+
+    #[test]
+    fn token_estimate_baseline_with_calibrated_input_tokens() {
+        let baseline = TokenEstimateBaseline {
+            estimated_input_tokens: 545_000,
+            observed_input_tokens: Some(810_000),
+        };
+        let limits = RequestBudgetLimits {
+            context_window_tokens: 1_000_000,
+            auto_compact_threshold_tokens: 900_000,
+            reserved_output_tokens: 400_000,
+        };
+        let breakdown = RequestBudgetBreakdown::new(
+            vec![BudgetSection {
+                name: "user_messages",
+                tokens: 600_000,
+            }],
+            limits,
+        )
+        .with_calibrated_input_tokens(&baseline);
+        assert_eq!(breakdown.total_input_tokens, 865_000);
+        assert_eq!(breakdown.total_with_reserve_tokens, 1_265_000);
     }
 }

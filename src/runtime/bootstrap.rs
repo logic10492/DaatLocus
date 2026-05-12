@@ -8,6 +8,7 @@ use crate::{
     app::{AppId, AppManager},
     browser_app::BrowserApp,
     context::Context,
+    context_budget::TokenEstimateBaseline,
     daat_locus_paths::daat_locus_paths,
     events::EventStore,
     hindsight::{HindsightClient, llm_proxy::HindsightLlmProxy, managed::HindsightManagedServer},
@@ -273,6 +274,7 @@ pub(crate) async fn build_eval_context_with_compiled(
         afterclaim_context_fingerprint: None,
         idle_since: None,
         last_idle_sleep_at: None,
+        token_estimate_baseline: TokenEstimateBaseline::default(),
     }
 }
 

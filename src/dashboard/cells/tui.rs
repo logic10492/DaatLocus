@@ -9,7 +9,6 @@ use ratatui::{
 };
 
 use super::markdown::render_markdown;
-use crate::dashboard::renderable::{FlexRenderable, Renderable, ViewportCulledColumn};
 use super::{
     ActivityCell, LiveActivityCell,
     apps::{AppAttentionActivityCell, BrowserActivityCell, LiveBrowserActivityCell},
@@ -23,6 +22,7 @@ use super::{
     plan::{PlanActivityCell, PlanStepDisplayStatus},
     workflow::{ActivateWorkflowActivityCell, CreateWorkflowActivityCell, DeepRecallActivityCell},
 };
+use crate::dashboard::renderable::{FlexRenderable, Renderable, ViewportCulledColumn};
 use crate::tool_ui::{PatchDiffLineKind, PatchDiffLineUiData, PatchFileUiData, glyph};
 
 // ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ impl CachedActivityLines {
         Self { entries: vec![] }
     }
 
-#[allow(dead_code)]
+    #[allow(dead_code)]
     /// Drop all cached entries (e.g. after expand/collapse toggle).
     pub fn invalidate(&mut self) {
         self.entries.clear();
@@ -162,8 +162,8 @@ pub fn render_activity_feed_cached(
     let total_cells = cells.len() + live_cells.len();
 
     if total_cells == 0 {
-        let placeholder = Paragraph::new("No activity yet")
-            .style(Style::default().fg(Color::DarkGray));
+        let placeholder =
+            Paragraph::new("No activity yet").style(Style::default().fg(Color::DarkGray));
         placeholder.render(inner, buf);
         return 0;
     }
@@ -195,10 +195,10 @@ pub fn render_activity_feed_cached(
         let idx = cells.len() + i;
         let lines = render_activity_cell_lines(&lc.cell, inner.width);
         // Still cache for consistency (the next frame may hit cache if cell stabilizes).
-        if let Some(cached) = cache.get(idx, inner.width, &lc.cell) {
-            if cached.len() == lines.len() {
-                // Reuse cached if same structure; live cells rarely change shape.
-            }
+        if let Some(cached) = cache.get(idx, inner.width, &lc.cell)
+            && cached.len() == lines.len()
+        {
+            // Reuse cached if same structure; live cells rarely change shape.
         }
         cache.set(idx, inner.width, lc.cell.clone(), lines.clone());
         column.push(CachedCellLines(lines));
@@ -222,7 +222,8 @@ pub fn render_activity_feed_cached(
     // overrides render_skip with Paragraph::scroll((n,0)), so cells whose
     // top rows have scrolled above the viewport render correctly without
     // sticky-header artefacts.
-    let max_scroll = column.desired_height(inner.width)
+    let max_scroll = column
+        .desired_height(inner.width)
         .saturating_sub(inner.height.saturating_sub(1));
 
     let mut flex = FlexRenderable::new();
@@ -304,40 +305,48 @@ fn render_assistant_cell_lines(cell: &AssistantActivityCell) -> Vec<Line<'static
     // body_lines breaks multi-line constructs (fenced code blocks,
     // tables) because the closing fences / separators are cut off,
     // causing tui-markdown to swallow subsequent content.
-    if cell.rich_mode {
-        if let Some(ref full) = cell.full_body {
-            let body_text = full
-                .lines()
-                .skip(1) // first line is the title, already rendered above
-                .collect::<Vec<_>>()
-                .join("\n");
-            let mut lines = vec![Line::from(vec![
-                Span::styled(
-                    "›",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    cell.title.clone(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ])];
-            let md_lines = render_markdown(&body_text, Color::White);
-            for md_line in md_lines {
-                let mut spans = vec![Span::raw("   ")];
-                spans.extend(md_line.spans);
+    if cell.rich_mode
+        && let Some(ref full) = cell.full_body
+    {
+        let body_text = full
+            .lines()
+            .skip(1) // first line is the title, already rendered above
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut lines = vec![Line::from(vec![
+            Span::styled(
+                "›",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                cell.title.clone(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])];
+        let md_lines = render_markdown(&body_text, Color::White);
+        for md_line in md_lines {
+            let mut spans = vec![Span::raw("   ")];
+            spans.extend(md_line.spans);
             let mut line = Line::from(spans);
             line.style = md_line.style;
             lines.push(line);
-            }
-            return lines;
         }
+        return lines;
     }
-    render_text_activity_lines("›", Color::Cyan, &cell.title, &cell.body_lines, 8, None, true)
+    render_text_activity_lines(
+        "›",
+        Color::Cyan,
+        &cell.title,
+        &cell.body_lines,
+        8,
+        None,
+        true,
+    )
 }
 
 fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Vec<Line<'static>> {
@@ -1184,7 +1193,6 @@ mod tests {
     use super::*;
     use crate::tool_ui::{PatchDiffLineKind, PatchFileOperation, ReplyDisposition, ReplySubject};
 
-
     /// Verify that fenced code blocks inside an assistant cell produce
     /// syntax-highlighted spans (syntect per-token colours) and fence
     /// markers styled as DarkGray delimiters.
@@ -1202,7 +1210,12 @@ fn main() {
 That's it.";
         let cell = AssistantActivityCell {
             title: "Here is some code:".to_string(),
-            body_lines: body.lines().skip(1).take(8).map(|s| s.to_string()).collect(),
+            body_lines: body
+                .lines()
+                .skip(1)
+                .take(8)
+                .map(|s| s.to_string())
+                .collect(),
             full_body: Some(body.to_string()),
             rich_mode: true,
         };
@@ -1213,25 +1226,29 @@ That's it.";
         // and also verify the line-level style.
         let fence_lines: Vec<_> = lines
             .iter()
-            .filter(|line| {
-                line.spans.iter().any(|s| s.content.starts_with("```"))
-            })
+            .filter(|line| line.spans.iter().any(|s| s.content.starts_with("```")))
             .collect();
         assert!(
             !fence_lines.is_empty(),
             "expected at least one fence line (```)"
         );
         for fl in &fence_lines {
-            let fence_span = fl.spans.iter()
+            let fence_span = fl
+                .spans
+                .iter()
                 .find(|s| s.content.starts_with("```"))
                 .unwrap();
             assert_eq!(
-                fence_span.style.fg, Some(Color::DarkGray),
-                "fence span should be DarkGray, got {:?}", fence_span.style
+                fence_span.style.fg,
+                Some(Color::DarkGray),
+                "fence span should be DarkGray, got {:?}",
+                fence_span.style
             );
             assert_eq!(
-                fl.style.fg, Some(Color::DarkGray),
-                "fence LINE style should be DarkGray, got {:?}", fl.style
+                fl.style.fg,
+                Some(Color::DarkGray),
+                "fence LINE style should be DarkGray, got {:?}",
+                fl.style
             );
         }
 
@@ -1258,11 +1275,8 @@ That's it.";
         );
 
         // At least 2 distinct colours → syntax highlighting active.
-        let unique_fgs: std::collections::HashSet<Color> = code_line
-            .spans
-            .iter()
-            .filter_map(|s| s.style.fg)
-            .collect();
+        let unique_fgs: std::collections::HashSet<Color> =
+            code_line.spans.iter().filter_map(|s| s.style.fg).collect();
         assert!(
             unique_fgs.len() >= 2,
             "code block should have >= 2 distinct colours, got {:?}",

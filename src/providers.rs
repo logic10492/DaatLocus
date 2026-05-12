@@ -596,7 +596,8 @@ impl OpenAIClient {
             &request.messages,
             &request.tools,
             self.request_budget_limits(),
-        );
+        )
+        .with_calibrated_input_tokens(&context.token_estimate_baseline);
         if !budget.within_context_window() {
             return Err(ContextBudgetExceededError::for_request(
                 "agent turn",

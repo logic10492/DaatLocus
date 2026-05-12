@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::{
     app::{AppId, AppManager},
     context::Context,
+    context_budget::TokenEstimateBaseline,
     daemon::{
         DAEMON_HOST_DISPLAY, DaemonControlCommand as RuntimeDaemonControlCommand,
         DaemonLifecycleHandle, DaemonLifecycleState, DaemonLock, DaemonServerHandle,
@@ -276,6 +277,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         afterclaim_context_fingerprint: None,
         idle_since: None,
         last_idle_sleep_at: None,
+        token_estimate_baseline: TokenEstimateBaseline::default(),
     };
 
     let mut sleep_status = load_sleep_status_snapshot().await;

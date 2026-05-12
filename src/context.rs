@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use crate::{
     app::{AppId, AppManager},
     config::Config,
+    context_budget::TokenEstimateBaseline,
     core::Llm,
     daemon::DaemonControlCommand,
     dashboard::{DashboardActivityHistoryStore, DashboardState},
@@ -97,6 +98,7 @@ pub struct Context {
     pub afterclaim_context_fingerprint: Option<String>,
     pub idle_since: Option<Instant>,
     pub last_idle_sleep_at: Option<Instant>,
+    pub token_estimate_baseline: TokenEstimateBaseline,
 }
 
 #[derive(Debug, Clone)]

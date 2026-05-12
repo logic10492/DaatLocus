@@ -372,6 +372,7 @@ pub(crate) async fn execute_agent_loop_step(
             &initial_injected_context_messages,
             &initial_tools,
             request_budget_limits,
+            &context.token_estimate_baseline,
             RUNTIME_HISTORY_MIN_MESSAGES,
             runtime_conversation_summary_budget,
         )
@@ -411,14 +412,19 @@ pub(crate) async fn execute_agent_loop_step(
                 }
             }
         }
-        let summary = match summary {
+        match summary {
             Some(summary) => {
                 tracing::info!(
                     elapsed_ms = compaction_started_at.elapsed().as_millis(),
                     "runtime preflight stage completed: {}",
                     RuntimeTurnPhase::PreflightCompaction.label()
                 );
-                summary
+                let _ = context
+                    .memory
+                    .apply_runtime_conversation_compaction(plan, summary)
+                    .await;
+                context.token_estimate_baseline = TokenEstimateBaseline::default();
+                pre_turn_compacted = true;
             }
             None => {
                 let err = miette!(
@@ -440,25 +446,39 @@ pub(crate) async fn execute_agent_loop_step(
                     "runtime preflight stage timed out: {}",
                     RuntimeTurnPhase::PreflightCompaction.label()
                 );
-                return abort_runtime_turn_before_model(
-                    context,
-                    RuntimeTurnAbort {
-                        live_draft_session,
-                        claimed_input_fingerprint: claimed_input_fingerprint.as_deref(),
-                        claimed_event_ids: &claimed_event_ids,
-                        claimed_app_notices: &claimed_app_notice_entries,
-                        observation: format!("runtime preflight failed: {err}"),
-                        description: "Failed to execute pre-turn context compaction.".to_string(),
-                    },
-                )
-                .await;
+                let force_trimmed = context
+                    .memory
+                    .force_trim_runtime_conversation_to_fit_budget(
+                        &request_envelope,
+                        &initial_injected_context_messages,
+                        &initial_tools,
+                        request_budget_limits,
+                        &context.token_estimate_baseline,
+                    )
+                    .await;
+                if force_trimmed {
+                    tracing::warn!(
+                        "force-trimmed oldest runtime conversation messages to fit budget after preflight compaction timeout"
+                    );
+                    context.token_estimate_baseline = TokenEstimateBaseline::default();
+                    pre_turn_compacted = true;
+                } else {
+                    return abort_runtime_turn_before_model(
+                        context,
+                        RuntimeTurnAbort {
+                            live_draft_session,
+                            claimed_input_fingerprint: claimed_input_fingerprint.as_deref(),
+                            claimed_event_ids: &claimed_event_ids,
+                            claimed_app_notices: &claimed_app_notice_entries,
+                            observation: format!("runtime preflight failed: {err}"),
+                            description: "Failed to execute pre-turn context compaction."
+                                .to_string(),
+                        },
+                    )
+                    .await;
+                }
             }
-        };
-        let _ = context
-            .memory
-            .apply_runtime_conversation_compaction(plan, summary)
-            .await;
-        pre_turn_compacted = true;
+        }
     }
     let mut conversation_slice = context.memory.runtime_conversation_slice(
         runtime_conversation_budget,
@@ -527,6 +547,20 @@ pub(crate) async fn execute_agent_loop_step(
                     ));
                 }
                 let is_overflow = is_context_budget_exceeded(&err);
+                if is_overflow {
+                    let force_trimmed = runtime_step.force_trim_to_fit_budget(
+                        &tools,
+                        runtime_request_budget_limits(context),
+                        &context.token_estimate_baseline,
+                    );
+                    if force_trimmed {
+                        tracing::warn!(
+                            "force-trimmed oldest messages to fit budget after compaction recovery failed"
+                        );
+                        context.token_estimate_baseline = TokenEstimateBaseline::default();
+                        continue 'agent_loop;
+                    }
+                }
                 let overflow_fuse_tripped = if is_overflow {
                     handle_runtime_overflow(
                         context,
@@ -981,6 +1015,7 @@ pub(crate) async fn execute_agent_loop_step(
             || output_is_runtime_context_compaction_boundary(&output))
     {
         context.afterclaim_context_fingerprint = None;
+        context.token_estimate_baseline = TokenEstimateBaseline::default();
     }
     context.claimed_event_ids.clear();
     context.claimed_app_notices.clear();

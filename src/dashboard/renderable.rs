@@ -31,14 +31,12 @@ pub trait Renderable {
         let _ = skip;
         self.render(area, buf);
     }
-
 }
 
 // ---------------------------------------------------------------------------
 // ColumnRenderable
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 #[allow(dead_code)]
 /// Stacks children vertically, one after the other.
 pub struct ColumnRenderable {
@@ -82,10 +80,7 @@ impl Renderable for ColumnRenderable {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        self.children
-            .iter()
-            .map(|c| c.desired_height(width))
-            .sum()
+        self.children.iter().map(|c| c.desired_height(width)).sum()
     }
 }
 
@@ -238,11 +233,7 @@ impl Renderable for ViewportCulledColumn {
             if child_bottom > viewport_top && y < viewport_bottom {
                 // Child overlaps viewport.
                 // Compute how many leading rows to skip and the visible area.
-                let skip = if y < viewport_top {
-                    viewport_top - y
-                } else {
-                    0
-                };
+                let skip = viewport_top.saturating_sub(y);
                 let screen_y = area.y.saturating_add(y.saturating_sub(viewport_top));
                 let visible_h = (child_h - skip)
                     .min(area.height.saturating_sub(screen_y.saturating_sub(area.y)));
@@ -265,9 +256,6 @@ impl Renderable for ViewportCulledColumn {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        self.children
-            .iter()
-            .map(|c| c.desired_height(width))
-            .sum()
+        self.children.iter().map(|c| c.desired_height(width)).sum()
     }
 }

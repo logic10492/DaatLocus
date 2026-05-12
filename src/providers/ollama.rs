@@ -833,7 +833,8 @@ impl OllamaClient {
         if let Some(keep_alive) = &self.keep_alive {
             ollama_payload["keep_alive"] = json!(keep_alive);
         }
-        ollama_payload["options"] = build_ollama_options(temperature, self.effective_context_window_tokens);
+        ollama_payload["options"] =
+            build_ollama_options(temperature, self.effective_context_window_tokens);
 
         let request_context = vec![format!(
             "hindsight LLM proxy ollama chat completion: model={}",
@@ -889,7 +890,8 @@ impl Llm for OllamaClient {
         if let Some(keep_alive) = &self.keep_alive {
             payload["keep_alive"] = json!(keep_alive);
         }
-        payload["options"] = build_ollama_options(self.temperature, self.effective_context_window_tokens);
+        payload["options"] =
+            build_ollama_options(self.temperature, self.effective_context_window_tokens);
 
         let (response, usage) = self
             .post_ollama_chat_with_adaptive_retry(
@@ -914,7 +916,8 @@ impl Llm for OllamaClient {
             &request.messages,
             &request.tools,
             self.request_budget_limits(),
-        );
+        )
+        .with_calibrated_input_tokens(&context.token_estimate_baseline);
         if !budget.within_context_window() {
             return Err(ContextBudgetExceededError::for_request(
                 "agent turn",
@@ -977,7 +980,8 @@ impl Llm for OllamaClient {
         if let Some(keep_alive) = &self.keep_alive {
             payload["keep_alive"] = json!(keep_alive);
         }
-        payload["options"] = build_ollama_options(self.temperature, self.effective_context_window_tokens);
+        payload["options"] =
+            build_ollama_options(self.temperature, self.effective_context_window_tokens);
 
         self.call_ollama_stream(context, &payload, &budget, &request)
             .await

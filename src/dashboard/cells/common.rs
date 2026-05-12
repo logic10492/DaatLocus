@@ -18,7 +18,6 @@ fn default_rich_mode() -> bool {
     true
 }
 
-
 /// Controls animation behaviour in the TUI dashboard.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum ReducedMotion {
@@ -42,7 +41,6 @@ pub struct ThinkingActivityCell {
     #[serde(default)]
     pub expanded: bool,
 }
-
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserActivityCell {

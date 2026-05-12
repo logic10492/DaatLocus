@@ -12,9 +12,10 @@ use uuid::Uuid;
 
 use crate::{
     context_budget::{
-        RequestBudgetBreakdown, RequestBudgetLimits, approx_token_count,
-        estimate_agent_turn_request, estimate_runtime_request_envelope,
-        truncate_text_to_token_budget, truncate_text_to_token_budget_with_notice,
+        RequestBudgetBreakdown, RequestBudgetLimits, TokenEstimateBaseline, approx_token_count,
+        estimate_agent_message_tokens, estimate_agent_turn_request,
+        estimate_runtime_request_envelope, truncate_text_to_token_budget,
+        truncate_text_to_token_budget_with_notice,
     },
     hindsight::{HINDSIGHT_RUNTIME_DOCUMENT_ID, HindsightRetainItem, HindsightRetainJob},
     persistence::PersistenceStore,
@@ -191,12 +192,14 @@ impl Memory {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn plan_runtime_conversation_compaction_for_request(
         &self,
         envelope: &RuntimeRequestEnvelope,
         injected_messages: &[HistoryMessage],
         tools: &[AgentToolSpec],
         limits: RequestBudgetLimits,
+        baseline: &TokenEstimateBaseline,
         min_messages: usize,
         summary_max_tokens: usize,
     ) -> Option<RuntimeConversationCompactionPlan> {
@@ -205,6 +208,7 @@ impl Memory {
             injected_messages,
             tools,
             limits,
+            baseline,
             min_messages,
             summary_max_tokens,
         )
@@ -241,6 +245,27 @@ impl Memory {
 
     pub fn runtime_conversation_mut(&mut self) -> &mut RuntimeConversation {
         &mut self.runtime_conversation
+    }
+
+    pub async fn force_trim_runtime_conversation_to_fit_budget(
+        &mut self,
+        envelope: &RuntimeRequestEnvelope,
+        injected_messages: &[HistoryMessage],
+        tools: &[AgentToolSpec],
+        limits: RequestBudgetLimits,
+        baseline: &TokenEstimateBaseline,
+    ) -> bool {
+        let trimmed = self.runtime_conversation.force_trim_messages_to_fit_budget(
+            envelope,
+            injected_messages,
+            tools,
+            limits,
+            baseline,
+        );
+        if trimmed {
+            self.runtime_conversation.sync_to_disk().await;
+        }
+        trimmed
     }
 
     pub fn handoff_backlog_count(&self) -> usize {
@@ -434,6 +459,52 @@ impl RuntimeRequestEnvelope {
     }
 }
 
+/// Forced trimming: compute how many tokens to free, then drop the oldest
+/// non-system messages in bulk until the projected savings cover the excess.
+impl RuntimeStepConversation {
+    pub fn force_trim_to_fit_budget(
+        &mut self,
+        tools: &[AgentToolSpec],
+        limits: RequestBudgetLimits,
+        baseline: &TokenEstimateBaseline,
+    ) -> bool {
+        let breakdown = estimate_agent_turn_request(self.agent_messages(), tools, limits)
+            .with_calibrated_input_tokens(baseline);
+        if breakdown.within_context_window() {
+            return true;
+        }
+        let excess = breakdown
+            .total_with_reserve_tokens
+            .saturating_sub(limits.context_window_tokens);
+        if excess == 0 {
+            return true;
+        }
+        let first_non_system = self
+            .agent_messages
+            .iter()
+            .position(|message| !matches!(message, AgentMessage::System { .. }));
+        let Some(start) = first_non_system else {
+            return false;
+        };
+        let mut saved = 0usize;
+        let mut cut = 0usize;
+        for message in &self.agent_messages[start..] {
+            if saved >= excess {
+                break;
+            }
+            saved += estimate_agent_message_tokens(message);
+            cut += 1;
+        }
+        if cut == 0 {
+            return false;
+        }
+        self.agent_messages.drain(start..start + cut);
+        let check = estimate_agent_turn_request(self.agent_messages(), tools, limits)
+            .with_calibrated_input_tokens(baseline);
+        check.within_context_window()
+    }
+}
+
 impl RuntimeStepConversation {
     fn new(turn_draft: RuntimeTurnDraft, agent_messages: Vec<AgentMessage>) -> Self {
         Self {
@@ -478,6 +549,7 @@ impl RuntimeStepConversation {
         &mut self,
         tools: &[AgentToolSpec],
         limits: RequestBudgetLimits,
+        baseline: &TokenEstimateBaseline,
         compact_for_overflow: bool,
         policy: RuntimeStepCompactionPolicy,
         mut build_summary: F,
@@ -488,7 +560,8 @@ impl RuntimeStepConversation {
     {
         let mut compacted_any = false;
         for _ in 0..policy.max_recoveries {
-            let breakdown = estimate_agent_turn_request(self.agent_messages(), tools, limits);
+            let breakdown = estimate_agent_turn_request(self.agent_messages(), tools, limits)
+                .with_calibrated_input_tokens(baseline);
             let needs_compaction = if compact_for_overflow {
                 !breakdown.within_context_window()
             } else {
@@ -661,12 +734,66 @@ impl RuntimeConversation {
         messages
     }
 
+    fn force_trim_messages_to_fit_budget(
+        &mut self,
+        envelope: &RuntimeRequestEnvelope,
+        injected_messages: &[HistoryMessage],
+        tools: &[AgentToolSpec],
+        limits: RequestBudgetLimits,
+        baseline: &TokenEstimateBaseline,
+    ) -> bool {
+        let all_messages = self.messages();
+        let mut request_messages = all_messages.clone();
+        request_messages.extend(injected_messages.iter().cloned());
+        let agent_messages = envelope.agent_messages_with_history(&request_messages);
+        let breakdown = estimate_agent_turn_request(&agent_messages, tools, limits)
+            .with_calibrated_input_tokens(baseline);
+        if breakdown.within_context_window() {
+            return true;
+        }
+        let excess = breakdown
+            .total_with_reserve_tokens
+            .saturating_sub(limits.context_window_tokens);
+        if excess == 0 {
+            return true;
+        }
+        let first_non_system = self
+            .messages
+            .iter()
+            .position(|msg| !matches!(msg.message, AgentMessage::System { .. }));
+        let Some(start) = first_non_system else {
+            return false;
+        };
+        let mut saved = 0usize;
+        let mut cut = 0usize;
+        for message in &self.messages[start..] {
+            if saved >= excess {
+                break;
+            }
+            saved += history_message_token_cost(message);
+            cut += 1;
+        }
+        if cut == 0 {
+            return false;
+        }
+        self.messages.drain(start..start + cut);
+        let check_all = self.messages();
+        let mut check_request = check_all.clone();
+        check_request.extend(injected_messages.iter().cloned());
+        let check_agent = envelope.agent_messages_with_history(&check_request);
+        let check = estimate_agent_turn_request(&check_agent, tools, limits)
+            .with_calibrated_input_tokens(baseline);
+        check.within_context_window()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn plan_compaction_for_request(
         &self,
         envelope: &RuntimeRequestEnvelope,
         injected_messages: &[HistoryMessage],
         tools: &[AgentToolSpec],
         limits: RequestBudgetLimits,
+        baseline: &TokenEstimateBaseline,
         _min_messages: usize,
         summary_max_tokens: usize,
     ) -> Option<RuntimeConversationCompactionPlan> {
@@ -674,7 +801,8 @@ impl RuntimeConversation {
         let mut request_messages = all_messages.clone();
         request_messages.extend(injected_messages.iter().cloned());
         let agent_messages = envelope.agent_messages_with_history(&request_messages);
-        let breakdown = estimate_agent_turn_request(&agent_messages, tools, limits);
+        let breakdown = estimate_agent_turn_request(&agent_messages, tools, limits)
+            .with_calibrated_input_tokens(baseline);
         if !breakdown.above_auto_compact_threshold() {
             return None;
         }
@@ -1531,7 +1659,15 @@ mod tests {
         assert!(history_messages_total_token_cost(&history_only_messages) <= history_only_budget);
         assert!(
             conversation
-                .plan_compaction_for_request(&envelope, &injected_messages, &tools, limits, 0, 80,)
+                .plan_compaction_for_request(
+                    &envelope,
+                    &injected_messages,
+                    &tools,
+                    limits,
+                    &TokenEstimateBaseline::default(),
+                    0,
+                    80,
+                )
                 .is_some()
         );
     }
@@ -1854,5 +1990,91 @@ mod tests {
                 })
             })
         }));
+    }
+
+    #[test]
+    fn force_trim_drops_oldest_non_system_messages_until_within_budget() {
+        let limits = RequestBudgetLimits {
+            context_window_tokens: 50,
+            auto_compact_threshold_tokens: 40,
+            reserved_output_tokens: 10,
+        };
+        let baseline = TokenEstimateBaseline::default();
+        let long_message: String = "x".repeat(500);
+        let mut step = RuntimeStepConversation::new(
+            RuntimeTurnDraft::new("test".to_string()),
+            vec![
+                AgentMessage::system("s"),
+                AgentMessage::user(long_message.clone()),
+                AgentMessage::assistant("a1"),
+                AgentMessage::user(long_message.clone()),
+                AgentMessage::assistant("a2"),
+            ],
+        );
+        let tools: Vec<AgentToolSpec> = vec![];
+        let before_count = step.agent_messages().len();
+        let trimmed = step.force_trim_to_fit_budget(&tools, limits, &baseline);
+        assert!(trimmed, "force_trim should succeed by removing messages");
+        assert!(
+            step.agent_messages().len() < before_count,
+            "force_trim should have removed at least one message, had {} before and {} after",
+            before_count,
+            step.agent_messages().len(),
+        );
+        assert!(
+            step.agent_messages()
+                .first()
+                .map(|m| matches!(m, AgentMessage::System { .. }))
+                .unwrap_or(false),
+            "system message should be preserved"
+        );
+        let budget = estimate_agent_turn_request(step.agent_messages(), &tools, limits)
+            .with_calibrated_input_tokens(&baseline);
+        assert!(
+            budget.within_context_window(),
+            "after force_trim, budget should be within context window"
+        );
+    }
+
+    #[test]
+    fn force_trim_drops_enough_messages_to_cover_excess() {
+        let limits = RequestBudgetLimits {
+            context_window_tokens: 100,
+            auto_compact_threshold_tokens: 80,
+            reserved_output_tokens: 10,
+        };
+        let baseline = TokenEstimateBaseline::default();
+        let long_a: String = "abcdefghij".repeat(50);
+        let long_b: String = "abcdefghij".repeat(40);
+        let mut step = RuntimeStepConversation::new(
+            RuntimeTurnDraft::new("test".to_string()),
+            vec![
+                AgentMessage::system("sys"),
+                AgentMessage::user(long_a.clone()),
+                AgentMessage::assistant(long_b.clone()),
+                AgentMessage::user(long_a.clone()),
+                AgentMessage::assistant(long_b.clone()),
+                AgentMessage::user("short"),
+                AgentMessage::assistant("ok"),
+            ],
+        );
+        let tools: Vec<AgentToolSpec> = vec![];
+        let before_count = step.agent_messages().len();
+        let trimmed = step.force_trim_to_fit_budget(&tools, limits, &baseline);
+        assert!(trimmed, "force_trim should succeed");
+        assert!(
+            step.agent_messages().len() < before_count,
+            "should have removed messages"
+        );
+        assert!(
+            step.agent_messages()
+                .first()
+                .map(|m| matches!(m, AgentMessage::System { .. }))
+                .unwrap_or(false),
+            "system message must be preserved"
+        );
+        let budget = estimate_agent_turn_request(step.agent_messages(), &tools, limits)
+            .with_calibrated_input_tokens(&baseline);
+        assert!(budget.within_context_window());
     }
 }

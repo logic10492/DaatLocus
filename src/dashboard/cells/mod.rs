@@ -422,11 +422,11 @@ fn remaining_lines_with_limit(content: &str, limit: usize) -> Vec<String> {
         lines.remove(0);
     }
     // trim leading blank lines
-    while lines.first().map_or(false, |l| l.trim().is_empty()) {
+    while lines.first().is_some_and(|l| l.trim().is_empty()) {
         lines.remove(0);
     }
     // trim trailing blank lines
-    while lines.last().map_or(false, |l| l.trim().is_empty()) {
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
     lines

@@ -25,7 +25,6 @@ use std::{collections::HashSet, sync::Arc};
 use async_trait::async_trait;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
-use std::time::Duration;
 use futures_util::StreamExt;
 use ratatui::{
     prelude::*,
@@ -33,6 +32,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
 };
+use std::time::Duration;
 
 use crate::{
     app::AppId,
@@ -1187,7 +1187,10 @@ pub async fn run_tui_dashboard(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     crossterm::execute!(terminal.backend_mut(), SetCursorStyle::SteadyBar,)?;
-    crossterm::execute!(terminal.backend_mut(), crossterm::event::EnableBracketedPaste)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        crossterm::event::EnableBracketedPaste
+    )?;
     let mut command_input = InputState::new();
     // Large/multi-line pastes stored as (placeholder, full_text) pairs.
     let mut pending_pastes: Vec<(String, String)> = Vec::new();
@@ -1715,7 +1718,10 @@ pub async fn run_tui_dashboard(
         terminal.draw(|f| {
             let root = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(18), Constraint::Length(2 + input_lines + popup_rows)])
+                .constraints([
+                    Constraint::Min(18),
+                    Constraint::Length(2 + input_lines + popup_rows),
+                ])
                 .split(f.area());
             // max_scroll now returned directly from render (no double traversal)
             max_scroll_storage = render_activity_feed_cached(
@@ -2171,7 +2177,7 @@ fn wrapped_input_height(text: &str, term_width: u16) -> u16 {
             continue;
         }
         let display_width: usize = line.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
-        let lines = ((display_width + available - 1) / available).max(1);
+        let lines = display_width.div_ceil(available).max(1);
         total += lines as u16;
     }
     total.max(1)
@@ -2186,11 +2192,7 @@ const LARGE_PASTE_CHAR_THRESHOLD: usize = 500;
 /// - Pastes exceeding `LARGE_PASTE_CHAR_THRESHOLD` chars → placeholder
 /// - Pastes containing newlines and > 10 chars → placeholder
 /// - Otherwise → insert inline as normal text
-fn handle_paste_placeholder(
-    text: &str,
-    input: &mut String,
-    pending: &mut Vec<(String, String)>,
-) {
+fn handle_paste_placeholder(text: &str, input: &mut String, pending: &mut Vec<(String, String)>) {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let char_count = normalized.chars().count();
     let is_multi_line = normalized.contains('\n');
@@ -2221,10 +2223,7 @@ fn handle_paste_placeholder(
 }
 
 /// Replace all `[Pasted Content N chars]` placeholders in `text` with their stored full text.
-fn expand_paste_placeholders(
-    text: &str,
-    pending: &[(String, String)],
-) -> String {
+fn expand_paste_placeholders(text: &str, pending: &[(String, String)]) -> String {
     let mut result = text.to_string();
     for (placeholder, full_text) in pending {
         result = result.replace(placeholder, full_text);
@@ -2254,7 +2253,7 @@ fn cursor_display_xy(
             if dw == 0 {
                 total_rows += 1;
             } else {
-                total_rows += ((dw + available_width - 1) / available_width) as u16;
+                total_rows += dw.div_ceil(available_width) as u16;
             }
         } else {
             // current (last) line
@@ -2291,10 +2290,7 @@ fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints({
-            let mut c = vec![
-                Constraint::Length(1),
-                Constraint::Length(input_lines),
-            ];
+            let mut c = vec![Constraint::Length(1), Constraint::Length(input_lines)];
             if popup_rows > 0 {
                 c.push(Constraint::Length(popup_rows));
             }
@@ -2322,11 +2318,7 @@ fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRenderState<'_
         if let Some(completion) = completion
             && completion != input
         {
-            s.push_str(
-                completion
-                    .strip_prefix(input)
-                    .unwrap_or_default(),
-            );
+            s.push_str(completion.strip_prefix(input).unwrap_or_default());
         }
         s
     };

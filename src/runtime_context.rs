@@ -143,6 +143,7 @@ pub async fn maybe_compact_runtime_messages(
         .maybe_compact(
             tools,
             runtime_request_budget_limits(context),
+            &context.token_estimate_baseline,
             compact_for_overflow,
             runtime_step_compaction_policy(),
             |messages, max_tokens| async move {

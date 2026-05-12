@@ -190,10 +190,17 @@ pub fn render_dashboard_footer_context(
         .to_string();
     };
     let used = usize::try_from(info.last_token_usage.input_tokens.max(0)).unwrap_or(0);
+    let calibrated = estimated_input_tokens.map(|est| {
+        context
+            .token_estimate_baseline
+            .calibrated_total_input_tokens(est)
+    });
     let footer_usage = if used > 0 {
         Some((used, false))
     } else {
-        estimated_input_tokens.map(|value| (value, true))
+        calibrated
+            .or(estimated_input_tokens)
+            .map(|value| (value, true))
     };
     match footer_usage {
         Some((used, estimated)) => format!(
