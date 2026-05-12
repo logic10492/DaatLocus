@@ -1,3 +1,4 @@
+mod analyzer;
 mod api;
 mod language;
 mod lsp;

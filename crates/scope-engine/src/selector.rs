@@ -39,6 +39,20 @@ impl SymbolKind {
             _ => SymbolKind::Unknown,
         }
     }
+
+    /// Heuristic: guess the kind from a tree-sitter node kind string.
+    /// Used to map tree-sitter parse results back to SymbolKind.
+    #[allow(dead_code)]
+    pub fn from_ts_node_kind(kind: &str) -> Self {
+        match kind {
+            "function_item" => SymbolKind::Function,
+            "struct_item" => SymbolKind::Struct,
+            "enum_item" => SymbolKind::Enum,
+            "trait_item" => SymbolKind::Trait,
+            "impl_item" => SymbolKind::Impl,
+            _ => SymbolKind::Unknown,
+        }
+    }
 }
 
 impl std::fmt::Display for SymbolKind {

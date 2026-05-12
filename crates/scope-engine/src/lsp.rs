@@ -1,3 +1,4 @@
+use crate::analyzer::Analyzer;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -585,4 +586,35 @@ fn path_to_file_uri(path: &Path) -> String {
 fn uri_to_path(uri: &str) -> PathBuf {
     let stripped = uri.strip_prefix("file://").unwrap_or(uri);
     PathBuf::from(stripped)
+}
+
+impl Analyzer for LspAnalyzer {
+    fn find_references_for_symbol(
+        &self,
+        _file_path: &Path,
+        _line: usize,
+        _character: usize,
+        _project_root: &Path,
+    ) -> Vec<PropagationResult> {
+        // The Analyzer trait uses &self, but find_references_for_symbol
+        // needs mutable access to stdin/stdout for the LSP protocol.
+        // Use the concrete LspAnalyzer directly for full functionality.
+        vec![]
+    }
+
+    fn notify_did_open(&mut self, file_path: &Path, text: &str) {
+        LspAnalyzer::notify_did_open(self, file_path, text);
+    }
+
+    fn notify_did_change(&mut self, file_path: &Path, version: i32, text: &str) {
+        LspAnalyzer::notify_did_change(self, file_path, version, text);
+    }
+
+    fn notify_did_close(&mut self, file_path: &Path) {
+        LspAnalyzer::notify_did_close(self, file_path);
+    }
+
+    fn is_initialized(&self) -> bool {
+        self.initialized
+    }
 }
