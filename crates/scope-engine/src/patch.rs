@@ -266,7 +266,8 @@ pub fn edit_code_apply(
 
     // ── Validate: tree-sitter must be able to parse the new content ──
     let analyzer = TreeSitterAnalyzer::new();
-    if !analyzer.can_parse(&full_path, &new_content) {
+    let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if !analyzer.can_parse(ext, &new_content) {
         return Err(format!(
             "edit rejected: tree-sitter cannot parse the result for {}",
             full_path.display()

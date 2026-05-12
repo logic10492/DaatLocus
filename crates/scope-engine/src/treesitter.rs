@@ -68,11 +68,7 @@ impl TreeSitterAnalyzer {
     /// Validate that a file's content can be parsed by tree-sitter.
     /// Returns true if parsing succeeds (i.e. the file is syntactically valid
     /// for the given language), false otherwise.
-    pub fn can_parse(&self, file_path: &Path, content: &str) -> bool {
-        let ext = match file_path.extension().and_then(|e| e.to_str()) {
-            Some(e) => e,
-            None => return false,
-        };
+    pub fn can_parse(&self, ext: &str, content: &str) -> bool {
         let adapter = match self.registry.get(ext) {
             Some(a) => a,
             None => return false,
@@ -161,5 +157,24 @@ mod tests {
         let result = analyzer.find_containing_symbol(&path, 3, dir.path());
         // Just check it doesn't crash; exact line numbers depend on the test string
         println!("find_containing_symbol result: {:?}", result);
+    }
+
+    #[test]
+    fn test_can_parse_valid_rust() {
+        let analyzer = TreeSitterAnalyzer::new();
+        let valid = "fn main() { println!(\"hello\"); }";
+        assert!(analyzer.can_parse("rs", valid));
+    }
+
+    #[test]
+    fn test_can_parse_empty_string() {
+        let analyzer = TreeSitterAnalyzer::new();
+        assert!(analyzer.can_parse("rs", ""));
+    }
+
+    #[test]
+    fn test_can_parse_unknown_language_returns_false() {
+        let analyzer = TreeSitterAnalyzer::new();
+        assert!(!analyzer.can_parse("unknown_ext", "fn main() {}"));
     }
 }
