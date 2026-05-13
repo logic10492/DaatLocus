@@ -325,6 +325,52 @@ Operational constraints:
 - Coding app `render_state()` must include: project_root, open_languages, lsp_status, propagation_pending_count, and up to N recent propagation events.
 - LSP process lifecycle (start, crash recovery, shutdown) belongs to Coding app internals, not to tool return values.
 
+### App Composition
+
+An app may declare that it *contains* other apps, making their tools available when the composing app is focused.
+
+When `Coding` is focused, the tool scope includes:
+
+- Coding's own tools: `read_code`, `edit_code`, `delete_code`, `search_code`, `find_references`
+- Terminal's tools: `terminal_exec`, `terminal_write_stdin`, `terminal_terminate`, `apply_patch`
+- Browser's tools: **not** available unless the model explicitly focuses Browser
+
+Implementation: each `App` can optionally expose `fn composed_apps() -> Vec<AppId>`. The runtime tool-scope check traverses this list so that focused-app restriction plus composition gives the correct tool availability.
+
+Rationale:
+
+- "I am coding" inherently includes "I need to run commands and edit raw files."
+- Forcing `focus_app("Terminal")` back-and-forth would be an unnecessary interruption.
+- Composition preserves the attention model: `focus_app("Coding")` means "I am in coding mode," and all tools needed for that mode are available.
+
+### SCOPE Capability Gap and Propagation Bridge
+
+SCOPE (scope-engine) provides semantic code operations, but its modification capability is **not complete**:
+
+| Capability | SCOPE Status | Gap |
+|---|---|---|
+| Symbol location | ✅ tree-sitter `find_containing_symbol` | — |
+| Read code | ✅ `read_code` (selector-based) | — |
+| Search code | ✅ `search_code` (ripgrep + symbol) | — |
+| Edit code | ⚠️ `edit_code` (stripped v4a patch) | Single-symbol hunks only; no cross-symbol refactoring |
+| Delete code | ⚠️ `delete_code` | Deletes symbol body; does not trace callers |
+| Rename | ❌ | Not implemented |
+| Extract/inline | ❌ | Not implemented |
+| File-level structure | ❌ | Cannot add imports, move files |
+| New files | ⚠️ | `edit_code` can create files but no template support |
+| Config files | ❌ | SCOPE does not understand .toml/.yaml/.json config |
+
+**Propagation bridge for `apply_patch`:**
+
+When Coding is focused and `apply_patch` is used on a source-code file (by extension: `.rs`, `.py`, `.go`, `.ts`, `.js`, `.java`, `.c`, `.cpp`, `.rb`, `.php`):
+
+1. The patch executes normally as a raw file edit.
+2. **Then** Coding app automatically runs tree-sitter symbol analysis on the modified file to find affected symbols.
+3. The propagation results are appended to the tool result in the same format as `edit_code` returns.
+4. For non-source-code files (`.toml`, `.yaml`, `.md`, `.json`, `.sh`, etc.), `apply_patch` works normally with no propagation analysis.
+
+This ensures that even when the model bypasses semantic editing, propagation tracking does not go silent.
+
 ## Third-Party App Package
 
 Future third-party `App` extensions use a source-first design. Do not copy Codex plugin or connector structure.
