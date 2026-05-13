@@ -300,6 +300,31 @@ Operational constraints:
 - If a page change invalidates refs, reread the page instead of blindly retrying old refs.
 - Search result pages are usually leads for locating sources, not final facts.
 
+### Coding (Planned)
+
+`Coding` is the interface for semantic code operations powered by scope-engine.
+
+It is an `App` because:
+
+- project state (open project, LSP connections) persists across tool calls
+- symbol lookups and propagation analysis require a focused project context
+- the model needs to see propagation status to decide whether to continue editing
+
+**State rendering design:**
+
+Coding app must render its key state into `AppStateRender` so that:
+
+1. **Turn re-entry sees critical state immediately** — after context compression or turn interruption, the model can read the current project, LSP status, and pending propagation events from `<preturn_context>` or `<afterclaim_context>` without relying on conversation history.
+2. **Tool return values carry immediate feedback** — `edit_code`, `delete_code`, `search_code`, and `read_code` return `PropagationResult` lists in their tool result so the model sees impact scope mid-turn.
+3. **Notice is NOT for propagation review** — Coding app uses `notice_reason()` only for background events like "LSP server crashed" or "project index ready". Propagation review is handled through tool return values and state rendering, not through notice-triggered turn interrupts.
+
+Operational constraints:
+
+- Coding tools (`read_code`, `edit_code`, `delete_code`, `search_code`, `find_references`) must go through the Coding app, requiring `focus_app("Coding")` first.
+- `apply_patch` remains a Terminal app tool for raw file edits; Coding app handles semantic (selector-based) operations.
+- Coding app `render_state()` must include: project_root, open_languages, lsp_status, propagation_pending_count, and up to N recent propagation events.
+- LSP process lifecycle (start, crash recovery, shutdown) belongs to Coding app internals, not to tool return values.
+
 ## Third-Party App Package
 
 Future third-party `App` extensions use a source-first design. Do not copy Codex plugin or connector structure.
