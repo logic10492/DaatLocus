@@ -1,4 +1,5 @@
 pub mod rust;
+pub mod python;
 
 use tree_sitter::{Language, Parser};
 
@@ -38,6 +39,7 @@ impl LanguageRegistry {
             by_ext: HashMap::new(),
         };
         r.register(Box::new(rust::RustAdapter::new()));
+        r.register(Box::new(python::PythonAdapter::new()));
         r
     }
 

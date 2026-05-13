@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::api::*;
-use crate::lsp::LspAnalyzer;
+use crate::lsp::{LspAnalyzer, LspServerConfig, RustAnalyzerConfig, PyrightConfig};
 use crate::patch;
 use crate::selector;
 use crate::state::PropagationState;
@@ -29,40 +29,64 @@ pub fn dispatch(
                 }
             };
 
-            // Initialize LspAnalyzer for this project
+            // Initialize LspClient for this project
             let language = params.language.as_deref().unwrap_or("auto");
-            let lsp_lang = if language == "auto" || language == "rust" {
-                "rust"
-            } else {
-                language
+            let lsp_lang = match language {
+                "auto" | "rust" => "rust",
+                "python" | "py" => "python",
+                other => other,
             };
-            if lsp_lang == "rust" {
+            let config: Box<dyn LspServerConfig> = match lsp_lang {
+                "rust" => Box::new(RustAnalyzerConfig),
+                "python" => Box::new(PyrightConfig),
+                _ => {
+                    // Unsupported language — skip LSP initialization
+                    return JsonRpcResponse::ok(
+                        req.id.clone(),
+                        serde_json::json!({
+                            "status": "opened",
+                            "project_root": params.project_root,
+                            "language": params.language.unwrap_or_else(|| "auto".to_string()),
+                            "lsp": "unsupported",
+                        }),
+                    );
+                }
+            };
+            {
                 let lsp_guard = match lsp_analyzer.lock() {
                     Ok(g) => g,
                     Err(_) => return JsonRpcResponse::err(req.id.clone(), -32603, "lock poisoned"),
                 };
-                // Shut down previous LSP if any
                 // Drop previous LSP analyzer — its Drop impl sends shutdown
                 *lsp_guard = None;
-                let new_lsp = LspAnalyzer::new(Path::new(&params.project_root), lsp_lang);
+                let new_lsp = LspAnalyzer::new(Path::new(&params.project_root), config.as_ref());
                 *lsp_guard = Some(Box::new(new_lsp));
             }
 
-            // Open all existing .rs files in LSP so that references work
-            if lsp_lang == "rust" {
+            // Open all existing source files in LSP so that references work
+            {
                 let lsp_guard = match lsp_analyzer.lock() {
                     Ok(g) => g,
                     Err(_) => return JsonRpcResponse::err(req.id.clone(), -32603, "lock poisoned"),
                 };
                 if let Some(ref lsp) = *lsp_guard {
                     let root = Path::new(&params.project_root);
-                    if let Ok(entries) = std::fs::read_dir(root.join("src")) {
+                    let src_dir = root.join("src");
+                    let scan_dir = if src_dir.exists() { src_dir.as_path() } else { root };
+                    if let Ok(entries) = std::fs::read_dir(scan_dir) {
+                        let exts: &[&str] = match lsp_lang {
+                            "rust" => &["rs"],
+                            "python" => &["py"],
+                            _ => &["rs"],
+                        };
                         for entry in entries.flatten() {
                             let path = entry.path();
-                            if path.extension().and_then(|e| e.to_str()) == Some("rs")
-                                && let Ok(content) = std::fs::read_to_string(&path)
-                            {
-                                lsp.notify_did_open(&path, &content);
+                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                if exts.contains(&ext)
+                                    && let Ok(content) = std::fs::read_to_string(&path)
+                                {
+                                    lsp.notify_did_open(&path, &content);
+                                }
                             }
                         }
                     }

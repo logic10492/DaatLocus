@@ -52,6 +52,9 @@ impl TreeSitterAnalyzer {
             Some("enum_item") => "enum ",
             Some("trait_item") => "trait ",
             Some("impl_item") => "impl ",
+            // Python tree-sitter node types
+            Some("function_definition") => "fn ",
+            Some("class_definition") => "class ",
             _ => "",
         };
 
@@ -99,6 +102,7 @@ impl TreeSitterAnalyzer {
         let is_def = matches!(
             kind,
             "function_item" | "struct_item" | "enum_item" | "trait_item" | "impl_item"
+            | "function_definition" | "class_definition" | "decorated_definition"
         );
 
         if is_def {

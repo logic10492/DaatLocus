@@ -7,36 +7,103 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use crate::api::{PropagationResult, PropagationSource};
 use crate::treesitter::TreeSitterAnalyzer;
 
-// ── Constants ────────────────────────────────────────────────
+// ── LSP Server Configuration ──────────────────────────────────
 
-const RA_BINARY_NAME: &str = "rust-analyzer";
+/// Configuration for a language server binary.
+///
+/// Each supported language provides an implementation that knows how to
+/// locate/download the server binary and what parameters to send during
+/// LSP initialization.
+pub trait LspServerConfig: Send + Sync {
+    /// Human-readable name for logging.
+    fn server_name(&self) -> &str;
+
+    /// The binary name to look for on PATH (e.g. "rust-analyzer", "pyright-langserver").
+    fn binary_name(&self) -> &str;
+
+    /// The LSP language ID for `textDocument/didOpen` (e.g. "rust", "python").
+    fn language_id(&self) -> &str;
+
+    /// Cache directory relative filename for the downloaded binary (if applicable).
+    fn cached_binary_name(&self) -> String;
+
+    /// URL to download the binary from (if PATH lookup fails and download feature enabled).
+    fn download_url(&self) -> Option<String>;
+
+    /// Extra initialization parameters to include in the LSP `initialize` request.
+    fn init_params_extra(&self, _root_uri: &str) -> serde_json::Value {
+        serde_json::json!({})
+    }
+
+    /// Seconds to sleep after initialization to let the server index.
+    fn post_init_delay_secs(&self) -> u64 {
+        3
+    }
+
+    /// Arguments to pass to the server binary when spawning.
+    fn spawn_args(&self) -> Vec<String> {
+        vec![]
+    }
+}
+
+// ── Rust LSP config ────────────────────────────────────────────
+
+pub struct RustAnalyzerConfig;
+
 const RA_VERSION: &str = "2025-05-05";
-const RA_GITHUB_RELEASE: &str = "https://github.com/rust-lang/rust-analyzer/releases/download/2025-05-05/rust-analyzer-x86_64-apple-darwin";
 
-// ── LspAnalyzer ──────────────────────────────────────────────
+impl LspServerConfig for RustAnalyzerConfig {
+    fn server_name(&self) -> &str { "rust-analyzer" }
+    fn binary_name(&self) -> &str { "rust-analyzer" }
+    fn language_id(&self) -> &str { "rust" }
+    fn cached_binary_name(&self) -> String { format!("rust-analyzer-{RA_VERSION}") }
+    fn download_url(&self) -> Option<String> {
+        Some(format!(
+            "https://github.com/rust-lang/rust-analyzer/releases/download/{RA_VERSION}/rust-analyzer-x86_64-apple-darwin"
+        ))
+    }
+}
 
-/// Internal mutable state for LspAnalyzer, wrapped in RefCell for interior mutability.
-struct LspAnalyzerInner {
+// ── Python LSP config ──────────────────────────────────────────
+
+pub struct PyrightConfig;
+
+impl LspServerConfig for PyrightConfig {
+    fn server_name(&self) -> &str { "pyright-langserver" }
+    fn binary_name(&self) -> &str { "pyright-langserver" }
+    fn language_id(&self) -> &str { "python" }
+    fn cached_binary_name(&self) -> String { "pyright-langserver".to_string() }
+    fn download_url(&self) -> Option<String> { None } // installed via npm/pip
+    fn spawn_args(&self) -> Vec<String> { vec!["--node-ipc".to_string()] }
+    fn post_init_delay_secs(&self) -> u64 { 2 }
+}
+
+// ── LspClient (was LspAnalyzer) ───────────────────────────────
+
+/// Internal mutable state for LspClient, wrapped in RefCell for interior mutability.
+struct LspClientInner {
     process: Option<Child>,
     stdin_writer: Option<BufWriter<ChildStdin>>,
     stdout_reader: Option<std::io::BufReader<ChildStdout>>,
     next_id: u64,
     initialized: bool,
+    /// The language ID for didOpen notifications.
+    language_id: String,
 }
 
-/// Manages a rust-analyzer subprocess and communicates via LSP JSON-RPC 2.0.
+/// Manages an LSP language server subprocess and communicates via JSON-RPC 2.0.
 ///
-/// Uses `RefCell<LspAnalyzerInner>` for interior mutability so that the
+/// Uses `RefCell<LspClientInner>` for interior mutability so that the
 /// `Analyzer` trait's `&self` methods can perform LSP I/O without needing
 /// `&mut self`.
 ///
 /// Lifecycle:
-/// 1. `new()` — locate or download rust-analyzer, spawn it, perform LSP `initialize`.
+/// 1. `new()` — locate or download the server binary, spawn it, perform LSP `initialize`.
 /// 2. `notify_did_open()` / `notify_did_change()` / `notify_did_close()` — keep LSP in sync.
 /// 3. `find_references_for_symbol()` — query cross-file references via `textDocument/references`.
 /// 4. `Drop` — send `shutdown`, then kill the subprocess.
-pub struct LspAnalyzer {
-    inner: RefCell<LspAnalyzerInner>,
+pub struct LspClient {
+    inner: RefCell<LspClientInner>,
 }
 
 // Newtype wrappers so we can implement Read/Write on the inner types
@@ -51,97 +118,89 @@ impl<W: Write> Write for BufWriter<W> {
     }
 }
 
-impl LspAnalyzer {
-    pub fn new(project_root: &Path, language: &str) -> Self {
+impl LspClient {
+    pub fn new(project_root: &Path, config: &dyn LspServerConfig) -> Self {
         let project_root = project_root.to_path_buf();
+        let language_id = config.language_id().to_string();
 
-        // Only support rust-analyzer for Rust projects
-        if language != "rust" {
-            eprintln!(
-                "[scope-engine/lsp] language '{}' not supported by LSP; only 'rust' is supported",
-                language
-            );
-            return Self {
-                inner: RefCell::new(LspAnalyzerInner {
-                    process: None,
-                    stdin_writer: None,
-                    stdout_reader: None,
-                    next_id: 0,
-                    initialized: false,
-                }),
-            };
-        }
-
-        let binary_path = match Self::locate_or_download_ra() {
+        let binary_path = match Self::locate_or_download(config) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[scope-engine/lsp] cannot locate or download rust-analyzer: {e}");
+                eprintln!("[scope-engine/lsp] cannot locate {}: {e}", config.server_name());
                 return Self {
-                    inner: RefCell::new(LspAnalyzerInner {
+                    inner: RefCell::new(LspClientInner {
                         process: None,
                         stdin_writer: None,
                         stdout_reader: None,
                         next_id: 0,
                         initialized: false,
+                        language_id,
                     }),
                 };
             }
         };
 
-        match Self::spawn_and_initialize(&binary_path, &project_root) {
+        match Self::spawn_and_initialize(&binary_path, &project_root, config) {
             Ok((process, stdin_w, stdout_r)) => Self {
-                inner: RefCell::new(LspAnalyzerInner {
+                inner: RefCell::new(LspClientInner {
                     process: Some(process),
                     stdin_writer: Some(stdin_w),
                     stdout_reader: Some(stdout_r),
-                    next_id: 1, // id 0 was used for initialize
+                    next_id: 1,
                     initialized: true,
+                    language_id,
                 }),
             },
             Err(e) => {
-                eprintln!("[scope-engine/lsp] failed to spawn/initialize rust-analyzer: {e}");
+                eprintln!("[scope-engine/lsp] failed to spawn/initialize {}: {e}", config.server_name());
                 Self {
-                    inner: RefCell::new(LspAnalyzerInner {
+                    inner: RefCell::new(LspClientInner {
                         process: None,
                         stdin_writer: None,
                         stdout_reader: None,
                         next_id: 0,
                         initialized: false,
+                        language_id,
                     }),
                 }
             }
         }
     }
 
-    // ── Binary location ───────────────────────────────────────
+    // ── Binary location ─────────────────────────────────────────
 
-    /// Try PATH first; if not found, try the cache dir; if still not found,
-    /// attempt to download from GitHub.
-    fn locate_or_download_ra() -> Result<PathBuf, String> {
+    fn locate_or_download(config: &dyn LspServerConfig) -> Result<PathBuf, String> {
         // 1. Check PATH
-        if let Ok(output) = Command::new("which").arg(RA_BINARY_NAME).output()
+        if let Ok(output) = Command::new("which").arg(config.binary_name()).output()
             && output.status.success()
         {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
-                eprintln!("[scope-engine/lsp] found rust-analyzer on PATH: {path}");
+                eprintln!("[scope-engine/lsp] found {} on PATH: {path}", config.server_name());
                 return Ok(PathBuf::from(path));
             }
         }
 
         // 2. Check cache
         let cache_dir = Self::cache_dir()?;
-        let cached = cache_dir.join(format!("rust-analyzer-{RA_VERSION}"));
+        let cached = cache_dir.join(config.cached_binary_name());
         if cached.is_file() {
             eprintln!(
-                "[scope-engine/lsp] found cached rust-analyzer: {}",
+                "[scope-engine/lsp] found cached {}: {}",
+                config.server_name(),
                 cached.display()
             );
             return Ok(cached);
         }
 
-        // 3. Download
-        Self::download_ra(&cache_dir, &cached)
+        // 3. Download (if available)
+        match config.download_url() {
+            Some(url) => Self::download_binary(&cache_dir, &cached, &url, config.server_name()),
+            None => Err(format!(
+                "{} not found on PATH and no download URL configured",
+                config.server_name()
+            )),
+        }
     }
 
     fn cache_dir() -> Result<PathBuf, String> {
@@ -154,14 +213,14 @@ impl LspAnalyzer {
     }
 
     #[cfg(feature = "download-ra")]
-    fn download_ra(cache_dir: &Path, target: &Path) -> Result<PathBuf, String> {
-        eprintln!("[scope-engine/lsp] downloading rust-analyzer {RA_VERSION} from GitHub...");
-        let tmp = cache_dir.join("rust-analyzer-download.tmp");
+    fn download_binary(cache_dir: &Path, target: &Path, url: &str, name: &str) -> Result<PathBuf, String> {
+        eprintln!("[scope-engine/lsp] downloading {name}...");
+        let tmp = cache_dir.join("download.tmp");
         let mut resp = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
             .map_err(|e| format!("HTTP client build failed: {e}"))?
-            .get(RA_GITHUB_RELEASE)
+            .get(url)
             .send()
             .map_err(|e| format!("download failed: {e}"))?;
 
@@ -178,7 +237,6 @@ impl LspAnalyzer {
         std::fs::rename(&tmp, target)
             .map_err(|e| format!("cannot rename tmp to final path: {e}"))?;
 
-        // Make executable
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -186,16 +244,13 @@ impl LspAnalyzer {
                 .map_err(|e| format!("cannot chmod: {e}"))?;
         }
 
-        eprintln!(
-            "[scope-engine/lsp] downloaded rust-analyzer to {}",
-            target.display()
-        );
+        eprintln!("[scope-engine/lsp] downloaded {} to {}", name, target.display());
         Ok(target.to_path_buf())
     }
 
     #[cfg(not(feature = "download-ra"))]
-    fn download_ra(_cache_dir: &Path, _target: &Path) -> Result<PathBuf, String> {
-        Err("rust-analyzer download not available (feature 'download-ra' disabled)".to_string())
+    fn download_binary(_cache_dir: &Path, _target: &Path, _url: &str, name: &str) -> Result<PathBuf, String> {
+        Err(format!("{name} download not available (feature 'download-ra' disabled)"))
     }
 
     // ── Subprocess management ──────────────────────────────────
@@ -203,6 +258,7 @@ impl LspAnalyzer {
     fn spawn_and_initialize(
         binary_path: &Path,
         project_root: &Path,
+        config: &dyn LspServerConfig,
     ) -> Result<
         (
             Child,
@@ -212,12 +268,13 @@ impl LspAnalyzer {
         String,
     > {
         let mut child = Command::new(binary_path)
+            .args(config.spawn_args())
             .current_dir(project_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("cannot spawn rust-analyzer: {e}"))?;
+            .map_err(|e| format!("cannot spawn {}: {e}", config.server_name()))?;
 
         let stdin = child.stdin.take().ok_or("cannot take stdin")?;
         let stdout = child.stdout.take().ok_or("cannot take stdout")?;
@@ -227,10 +284,19 @@ impl LspAnalyzer {
 
         // ── LSP initialize ─────────────────────────────────────
         let root_uri = path_to_file_uri(project_root);
-        let init_params = serde_json::json!({
-            "rootUri": root_uri,
+        let mut init_params = serde_json::json!({
+            "rootUri": root_uri.clone(),
             "capabilities": {},
         });
+        // Merge extra params from config
+        let extra = config.init_params_extra(&root_uri);
+        if let serde_json::Value::Object(extra_map) = extra {
+            if let serde_json::Value::Object(ref mut params_map) = init_params {
+                for (k, v) in extra_map {
+                    params_map.insert(k, v);
+                }
+            }
+        }
 
         let resp = Self::send_request_raw(&mut writer, &mut reader, 0, "initialize", init_params)
             .map_err(|e| {
@@ -243,7 +309,7 @@ impl LspAnalyzer {
             return Err(format!("initialize error: {err}"));
         }
 
-        // ── initialized notification ───────────────────────────
+        // ── initialized notification ────────────────────────────
         Self::send_notification(&mut writer, "initialized", serde_json::json!({})).map_err(
             |e| {
                 let _ = child.kill();
@@ -252,27 +318,27 @@ impl LspAnalyzer {
         )?;
 
         eprintln!(
-            "[scope-engine/lsp] rust-analyzer initialized for {}",
+            "[scope-engine/lsp] {} initialized for {}",
+            config.server_name(),
             project_root.display()
         );
-        // Give RA some time to start indexing
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        std::thread::sleep(std::time::Duration::from_secs(config.post_init_delay_secs()));
         Ok((child, writer, reader))
     }
 
     // ── LSP file synchronization ────────────────────────────────
 
-    /// Notify LSP that a file was opened.
     pub fn notify_did_open(&self, file_path: &Path, text: &str) {
         let mut inner = self.inner.borrow_mut();
         if !inner.initialized {
             return;
         }
         let uri = path_to_file_uri(file_path);
+        let lang_id = inner.language_id.clone();
         let params = serde_json::json!({
             "textDocument": {
                 "uri": uri,
-                "languageId": "rust",
+                "languageId": lang_id,
                 "version": 0,
                 "text": text,
             }
@@ -282,7 +348,6 @@ impl LspAnalyzer {
         }
     }
 
-    /// Notify LSP that a file was modified (full sync).
     pub fn notify_did_change(&self, file_path: &Path, version: i32, text: &str) {
         let mut inner = self.inner.borrow_mut();
         if !inner.initialized {
@@ -298,7 +363,6 @@ impl LspAnalyzer {
         }
     }
 
-    /// Notify LSP that a file was closed.
     pub fn notify_did_close(&self, file_path: &Path) {
         let mut inner = self.inner.borrow_mut();
         if !inner.initialized {
@@ -315,7 +379,6 @@ impl LspAnalyzer {
 
     // ── LSP requests ──────────────────────────────────────────
 
-    /// Send `textDocument/references` and map results to PropagationResult.
     pub fn find_references_for_symbol(
         &self,
         file_path: &Path,
@@ -345,7 +408,7 @@ impl LspAnalyzer {
         let id = inner.next_id;
         inner.next_id += 1;
 
-        let params = params.clone(); // clone for retry
+        let params = params.clone();
         let resp = match Self::send_request_raw(
             writer,
             reader,
@@ -360,11 +423,9 @@ impl LspAnalyzer {
             }
         };
 
-        // Parse result \u2014 LSP returns Location[] or null
         let locations = match resp.get("result") {
             Some(serde_json::Value::Array(arr)) => arr.clone(),
             Some(serde_json::Value::Null) | None => {
-                // RA might still be indexing \u2014 retry after a delay
                 eprintln!("[scope-engine/lsp] references returned null, waiting and retrying...");
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 let retry_id = inner.next_id;
@@ -378,9 +439,7 @@ impl LspAnalyzer {
                 ) {
                     Ok(r) => r,
                     Err(e) => {
-                        eprintln!(
-                            "[scope-engine/lsp] retry textDocument/references also failed: {e}"
-                        );
+                        eprintln!("[scope-engine/lsp] retry textDocument/references also failed: {e}");
                         return vec![];
                     }
                 };
@@ -413,7 +472,6 @@ impl LspAnalyzer {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as usize;
 
-            // Convert file URI back to a path
             let loc_path = uri_to_path(loc_uri);
             let rel_path = loc_path
                 .strip_prefix(project_root)
@@ -421,18 +479,15 @@ impl LspAnalyzer {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| loc_path.to_string_lossy().to_string());
 
-            // Get context: read the line
             let context_line = std::fs::read_to_string(&loc_path)
                 .ok()
                 .and_then(|content| content.lines().nth(loc_line).map(|l| l.to_string()))
                 .unwrap_or_default();
 
-            // Map to containing symbol selector
             let selector = ts
                 .find_containing_symbol(&loc_path, loc_line + 1, project_root)
                 .unwrap_or_else(|| format!("{rel_path}::line {}", loc_line + 1));
 
-            // Build lsp_references tuple
             let lsp_ref = (selector.clone(), loc_line + 1, context_line.clone());
 
             results.push(PropagationResult {
@@ -451,8 +506,6 @@ impl LspAnalyzer {
 
     // ── JSON-RPC transport ─────────────────────────────────────
 
-    /// Send a JSON-RPC request and read the response.
-    /// Returns the full response as a serde_json::Value.
     fn send_request_raw(
         writer: &mut BufWriter<ChildStdin>,
         reader: &mut std::io::BufReader<ChildStdout>,
@@ -466,12 +519,10 @@ impl LspAnalyzer {
             "method": method,
             "params": params,
         });
-
         Self::write_message(writer, &request)?;
         Self::read_response(reader, id)
     }
 
-    /// Send a JSON-RPC notification (no id, no response expected).
     fn send_notification(
         writer: &mut BufWriter<ChildStdin>,
         method: &str,
@@ -485,7 +536,6 @@ impl LspAnalyzer {
         Self::write_message(writer, &notification)
     }
 
-    /// Write a JSON-RPC message using LSP Content-Length header.
     fn write_message(
         writer: &mut BufWriter<ChildStdin>,
         msg: &serde_json::Value,
@@ -502,14 +552,11 @@ impl LspAnalyzer {
         Ok(())
     }
 
-    /// Read a JSON-RPC response, matching by id.
-    /// Skips over notifications and responses for other ids.
     fn read_response(
         reader: &mut std::io::BufReader<ChildStdout>,
         expected_id: u64,
     ) -> Result<serde_json::Value, String> {
         loop {
-            // Read Content-Length header
             let mut header_line = String::new();
             loop {
                 let mut byte = [0u8; 1];
@@ -521,13 +568,11 @@ impl LspAnalyzer {
                 if header_line.ends_with("\r\n\r\n") {
                     break;
                 }
-                // Safety: prevent infinite loop on malformed input
                 if header_line.len() > 4096 {
                     return Err("header too long, possibly malformed LSP response".to_string());
                 }
             }
 
-            // Parse Content-Length
             let content_length: usize = header_line
                 .lines()
                 .find_map(|line| {
@@ -536,7 +581,6 @@ impl LspAnalyzer {
                 })
                 .ok_or("missing Content-Length header")?;
 
-            // Read body
             let mut body_buf = vec![0u8; content_length];
             reader
                 .read_exact(&mut body_buf)
@@ -544,21 +588,17 @@ impl LspAnalyzer {
             let body: serde_json::Value =
                 serde_json::from_slice(&body_buf).map_err(|e| format!("json parse failed: {e}"))?;
 
-            // Check if this is a response (has "id") or a notification (no "id")
             if let Some(resp_id) = body.get("id").and_then(|v| v.as_u64()) {
-                // A response has "result" or "error" field; a request/notification has "method"
                 let is_response = body.get("result").is_some() || body.get("error").is_some();
                 if resp_id == expected_id && is_response {
                     return Ok(body);
                 }
-                // Response for a different id \u2014 skip
             }
-            // Notification or wrong-id response \u2014 skip and read next message
         }
     }
 }
 
-impl Drop for LspAnalyzer {
+impl Drop for LspClient {
     fn drop(&mut self) {
         let inner = self.inner.get_mut();
         if !inner.initialized {
@@ -582,11 +622,11 @@ impl Drop for LspAnalyzer {
         inner.process = None;
         inner.stdin_writer = None;
         inner.stdout_reader = None;
-        eprintln!("[scope-engine/lsp] rust-analyzer shut down");
+        eprintln!("[scope-engine/lsp] language server shut down");
     }
 }
 
-// \u2500\u2500 URI helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── URI helpers ──────────────────────────────────────────────
 
 fn path_to_file_uri(path: &Path) -> String {
     let abs = if path.is_absolute() {
@@ -603,7 +643,9 @@ fn uri_to_path(uri: &str) -> PathBuf {
     PathBuf::from(stripped)
 }
 
-impl Analyzer for LspAnalyzer {
+// ── Analyzer trait impl ──────────────────────────────────────
+
+impl Analyzer for LspClient {
     fn find_references_for_symbol(
         &self,
         file_path: &Path,
@@ -611,22 +653,27 @@ impl Analyzer for LspAnalyzer {
         character: usize,
         project_root: &Path,
     ) -> Vec<PropagationResult> {
-        LspAnalyzer::find_references_for_symbol(self, file_path, line, character, project_root)
+        LspClient::find_references_for_symbol(self, file_path, line, character, project_root)
     }
 
     fn notify_did_open(&self, file_path: &Path, text: &str) {
-        LspAnalyzer::notify_did_open(self, file_path, text);
+        LspClient::notify_did_open(self, file_path, text);
     }
 
     fn notify_did_change(&self, file_path: &Path, version: i32, text: &str) {
-        LspAnalyzer::notify_did_change(self, file_path, version, text);
+        LspClient::notify_did_change(self, file_path, version, text);
     }
 
     fn notify_did_close(&self, file_path: &Path) {
-        LspAnalyzer::notify_did_close(self, file_path);
+        LspClient::notify_did_close(self, file_path);
     }
 
     fn is_initialized(&self) -> bool {
         self.inner.borrow().initialized
     }
 }
+
+// ── Backward-compatible type alias ────────────────────────────
+
+/// LspAnalyzer is a type alias for LspClient, preserving API compatibility.
+pub type LspAnalyzer = LspClient;

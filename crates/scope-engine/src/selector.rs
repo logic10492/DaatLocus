@@ -23,6 +23,7 @@ pub enum SymbolKind {
     Enum,
     Trait,
     Impl,
+    Class,
     /// Mod, const, static, type alias, or bare name (fuzzy match all).
     Unknown,
 }
@@ -36,6 +37,7 @@ impl SymbolKind {
             "enum" => SymbolKind::Enum,
             "trait" => SymbolKind::Trait,
             "impl" => SymbolKind::Impl,
+            "class" => SymbolKind::Class,
             _ => SymbolKind::Unknown,
         }
     }
@@ -49,6 +51,10 @@ impl SymbolKind {
             "enum_item" => SymbolKind::Enum,
             "trait_item" => SymbolKind::Trait,
             "impl_item" => SymbolKind::Impl,
+            // Python tree-sitter node types
+            "function_definition" => SymbolKind::Function,
+            "class_definition" => SymbolKind::Class,
+            "decorated_definition" => SymbolKind::Function,
             _ => SymbolKind::Unknown,
         }
     }
@@ -62,6 +68,7 @@ impl std::fmt::Display for SymbolKind {
             SymbolKind::Enum => write!(f, "enum"),
             SymbolKind::Trait => write!(f, "trait"),
             SymbolKind::Impl => write!(f, "impl"),
+            SymbolKind::Class => write!(f, "class"),
             SymbolKind::Unknown => write!(f, "symbol"),
         }
     }
