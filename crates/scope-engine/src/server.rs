@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::api::*;
-use crate::lsp::{LspAnalyzer, LspServerConfig, RustAnalyzerConfig, PyrightConfig, GoplsConfig};
+use crate::lsp::{LspAnalyzer, LspServerConfig, RustAnalyzerConfig, PyrightConfig, GoplsConfig, JdtlsConfig};
 use crate::lsp::TsJsConfig;
 use crate::patch;
 use crate::selector;
@@ -44,6 +44,7 @@ pub fn dispatch(
                 "python" => Box::new(PyrightConfig),
                 "typescript" | "javascript" => Box::new(TsJsConfig),
                 "go" => Box::new(GoplsConfig),
+                "java" => Box::new(JdtlsConfig),
                 _ => {
                     // Unsupported language — skip LSP initialization
                     return JsonRpcResponse::ok(
@@ -84,6 +85,7 @@ pub fn dispatch(
                             "python" => &["py"],
                             "typescript" | "javascript" => &["ts", "tsx", "js", "jsx"],
                             "go" => &["go"],
+                            "java" => &["java"],
                             _ => &["rs"],
                         };
                         for entry in entries.flatten() {

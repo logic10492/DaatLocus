@@ -47,6 +47,10 @@ impl SymbolKind {
             "type" => SymbolKind::Struct,
             "method" => SymbolKind::Function,
             "package" => SymbolKind::Unknown,
+            // Java-style prefixes
+            "class" => SymbolKind::Class,
+            "interface" => SymbolKind::Trait,
+            "constructor" => SymbolKind::Function,
             _ => SymbolKind::Unknown,
         }
     }
@@ -77,6 +81,14 @@ impl SymbolKind {
             "method_declaration" => SymbolKind::Function,
             "type_declaration" => SymbolKind::Struct,
             "type_identifier" => SymbolKind::Struct,
+            // Java tree-sitter node types
+            "class_declaration" => SymbolKind::Class,
+            "interface_declaration" => SymbolKind::Trait,
+            "enum_declaration" => SymbolKind::Enum,
+            "method_declaration" => SymbolKind::Function,
+            "constructor_declaration" => SymbolKind::Function,
+            "field_declaration" => SymbolKind::Unknown,
+            "local_variable_declaration" => SymbolKind::Unknown,
             _ => SymbolKind::Unknown,
         }
     }

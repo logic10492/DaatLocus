@@ -118,6 +118,25 @@ impl LspServerConfig for GoplsConfig {
     }
 }
 
+
+
+// ── Java LSP config (Eclipse JDT Language Server) ──────────────
+
+pub struct JdtlsConfig;
+
+impl LspServerConfig for JdtlsConfig {
+    fn server_name(&self) -> &str { "jdtls" }
+    fn binary_name(&self) -> &str { "jdtls" }
+    fn language_id(&self) -> &str { "java" }
+    fn cached_binary_name(&self) -> String { "jdtls".to_string() }
+    fn download_url(&self) -> Option<String> { None }
+    fn spawn_args(&self) -> Vec<String> { vec![] }
+    fn post_init_delay_secs(&self) -> u64 { 5 }
+    fn install_command(&self) -> Option<(String, Vec<String>)> {
+        Some(("brew".to_string(), vec!["install".to_string(), "eclipse-jdtls".to_string()]))
+    }
+}
+
 // ── LspClient (was LspAnalyzer) ───────────────────────────────
 
 /// Internal mutable state for LspClient, wrapped in RefCell for interior mutability.
