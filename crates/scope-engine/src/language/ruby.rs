@@ -7,6 +7,12 @@ impl RubyAdapter {
     pub fn new() -> Self { Self }
 }
 
+impl Default for RubyAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for RubyAdapter {
     fn language_name(&self) -> &'static str { "ruby" }
     fn extensions(&self) -> &[&'static str] { &["rb"] }

@@ -6,6 +6,12 @@ pub struct PropagationState {
     seen: HashSet<String>,
 }
 
+impl Default for PropagationState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PropagationState {
     pub fn new() -> Self {
         Self {

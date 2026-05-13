@@ -9,6 +9,12 @@ impl RustAdapter {
     }
 }
 
+impl Default for RustAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for RustAdapter {
     fn language_name(&self) -> &'static str {
         "rust"

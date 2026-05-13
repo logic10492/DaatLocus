@@ -1,14 +1,8 @@
-mod analyzer;
-mod api;
-mod language;
-mod lsp;
-mod patch;
-mod selector;
-mod server;
-mod state;
-mod treesitter;
+use scope_engine::server;
+use scope_engine::api;
+use scope_engine::state::PropagationState;
+use scope_engine::analyzer::Analyzer;
 
-use analyzer::Analyzer;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -17,7 +11,7 @@ fn main() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut project_root: Option<PathBuf> = None;
-    let propagation_state = Mutex::new(state::PropagationState::new());
+    let propagation_state = Mutex::new(PropagationState::new());
     let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
 
     for line in stdin.lock().lines() {

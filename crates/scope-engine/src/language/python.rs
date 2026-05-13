@@ -9,6 +9,12 @@ impl PythonAdapter {
     }
 }
 
+impl Default for PythonAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for PythonAdapter {
     fn language_name(&self) -> &'static str {
         "python"

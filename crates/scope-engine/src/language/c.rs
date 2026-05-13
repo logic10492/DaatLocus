@@ -7,6 +7,12 @@ impl CAdapter {
     pub fn new() -> Self { Self }
 }
 
+impl Default for CAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for CAdapter {
     fn language_name(&self) -> &'static str { "c" }
     fn extensions(&self) -> &[&'static str] { &["c", "h"] }

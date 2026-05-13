@@ -7,6 +7,12 @@ impl CppAdapter {
     pub fn new() -> Self { Self }
 }
 
+impl Default for CppAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for CppAdapter {
     fn language_name(&self) -> &'static str { "cpp" }
     fn extensions(&self) -> &[&'static str] { &["cpp", "cxx", "cc", "hpp", "hxx", "hh"] }

@@ -6,6 +6,12 @@ pub struct TreeSitterAnalyzer {
     registry: LanguageRegistry,
 }
 
+impl Default for TreeSitterAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TreeSitterAnalyzer {
     pub fn new() -> Self {
         Self {

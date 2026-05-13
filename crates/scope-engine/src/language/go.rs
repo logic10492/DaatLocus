@@ -9,6 +9,12 @@ impl GoAdapter {
     }
 }
 
+impl Default for GoAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for GoAdapter {
     fn language_name(&self) -> &'static str {
         "go"

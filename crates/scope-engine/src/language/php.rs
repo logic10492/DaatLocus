@@ -7,6 +7,12 @@ impl PhpAdapter {
     pub fn new() -> Self { Self }
 }
 
+impl Default for PhpAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for PhpAdapter {
     fn language_name(&self) -> &'static str { "php" }
     fn extensions(&self) -> &[&'static str] { &["php"] }

@@ -94,12 +94,11 @@ pub fn dispatch(
                         };
                         for entry in entries.flatten() {
                             let path = entry.path();
-                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                if exts.contains(&ext)
-                                    && let Ok(content) = std::fs::read_to_string(&path)
-                                {
-                                    lsp.notify_did_open(&path, &content);
-                                }
+                            if let Some(ext) = path.extension().and_then(|e| e.to_str())
+                                && exts.contains(&ext)
+                                && let Ok(content) = std::fs::read_to_string(&path)
+                            {
+                                lsp.notify_did_open(&path, &content);
                             }
                         }
                     }
@@ -418,7 +417,7 @@ fn handle_delete_code(
 }
 
 
-fn handle_get_config_hints(req: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn handle_get_config_hints(req: &JsonRpcRequest) -> JsonRpcResponse {
     use crate::language::LanguageRegistry;
     use crate::lsp::{LspServerConfig, RustAnalyzerConfig, PyrightConfig, TsJsConfig, GoplsConfig, JdtlsConfig};
 
@@ -478,4 +477,8 @@ fn handle_get_config_hints(req: &JsonRpcRequest) -> JsonRpcResponse {
             "lsp_languages": languages,
         }),
     )
+}
+/// Public convenience wrapper for `handle_get_config_hints`.
+pub fn dispatch_get_config_hints(req: &JsonRpcRequest) -> JsonRpcResponse {
+    handle_get_config_hints(req)
 }

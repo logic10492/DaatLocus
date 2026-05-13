@@ -311,11 +311,11 @@ impl LspClient {
                         Command::new("go").args(["env", "GOPATH"]).output().ok().map(|o| {
                             PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()).join("bin")
                         }),
-                        Command::new("go").args(["env", "GOBIN"]).output().ok().map(|o| {
+                        Command::new("go").args(["env", "GOBIN"]).output().ok().and_then(|o| {
                             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
                             if s.is_empty() { None } else { Some(PathBuf::from(s)) }
-                        }).flatten(),
-                    ].into_iter().filter_map(|x| x).collect();
+                        }),
+                    ].into_iter().flatten().collect();
                     for dir in go_bin_dirs {
                         let candidate = dir.join(config.binary_name());
                         if candidate.is_file() {
@@ -425,11 +425,11 @@ impl LspClient {
         });
         // Merge extra params from config
         let extra = config.init_params_extra(&root_uri);
-        if let serde_json::Value::Object(extra_map) = extra {
-            if let serde_json::Value::Object(ref mut params_map) = init_params {
-                for (k, v) in extra_map {
-                    params_map.insert(k, v);
-                }
+        if let serde_json::Value::Object(extra_map) = extra
+            && let serde_json::Value::Object(ref mut params_map) = init_params
+        {
+            for (k, v) in extra_map {
+                params_map.insert(k, v);
             }
         }
 

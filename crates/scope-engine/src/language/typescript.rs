@@ -35,6 +35,12 @@ impl JavaScriptAdapter {
     }
 }
 
+impl Default for JavaScriptAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for JavaScriptAdapter {
     fn language_name(&self) -> &'static str {
         "javascript"
@@ -74,5 +80,11 @@ impl TypeScriptAdapter {
                 (type_identifier) @ref
             "#,
         }
+    }
+}
+
+impl Default for TypeScriptAdapter {
+    fn default() -> Self {
+        Self::new()
     }
 }

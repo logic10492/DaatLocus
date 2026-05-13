@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize)]
 pub struct JsonRpcRequest {
     #[serde(rename = "jsonrpc")]
-    _jsonrpc: String,
+    pub _jsonrpc: String,
     pub id: serde_json::Value,
     pub method: String,
     #[serde(default)]

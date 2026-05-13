@@ -9,6 +9,12 @@ impl JavaAdapter {
     }
 }
 
+impl Default for JavaAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LanguageAdapter for JavaAdapter {
     fn language_name(&self) -> &'static str {
         "java"
