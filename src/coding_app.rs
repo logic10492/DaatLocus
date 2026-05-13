@@ -28,12 +28,13 @@ const CODING_HOW_TO_USE: &str = r#"Coding app is used to modify projects; think 
 
 First, if the project you need to edit is not open yet, use `coding_open_project` to open it.
 
-When editing source code, always prefer Coding app tools such as `coding_edit_code`, `coding_read_code`, and `coding_search_code` instead of substituting terminal commands. Important: except for configuration, generated assets, or other non-source areas outside SCOPE engine responsibility, or cases where these tools genuinely cannot complete the task, do not use other tools or shell commands to edit source code.
+When editing source code, always prefer Coding app tools such as `coding_edit_code`, `coding_read_code`, `grep`, and `glob` instead of substituting terminal commands. Important: except for configuration, generated assets, or other non-source areas outside SCOPE engine responsibility, or cases where these tools genuinely cannot complete the task, do not use other tools or shell commands to edit source code.
 
 After each edit, the tool automatically evaluates the impact of your changes and accumulates pending review events. You can also see the current number of pending review events in Coding app state. You do not need to handle them immediately. However, after you finish a series of edits (usually when a plan step is complete, or when you judge that too many review events have accumulated), call `coding_next_review` to acknowledge and claim review events, then follow their instructions to inspect the impact of your changes. This must always be done before reporting back to the user.
 
-SCOPE engine configuration hints are returned by `coding_open_project` and summarized in Coding app state, including available tree-sitter languages and LSP language/server setup guidance."#;
+SCOPE engine configuration hints are returned by `coding_open_project` and retained in Coding app state, including available tree-sitter languages plus visible per-language `lsp_setup_hint` lines for LSP language/server setup guidance."#;
 const CODING_TOOL_SCOPES: &[AppToolScope] = &[AppToolScope::Coding];
+const MAX_RENDERED_LSP_SETUP_HINTS: usize = 5;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CodingOpenProjectArgs {
@@ -47,8 +48,16 @@ pub struct CodingReadCodeArgs {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct CodingSearchCodeArgs {
-    pub query: String,
+pub struct CodingGrepArgs {
+    pub pattern: String,
+    pub path: Option<String>,
+    pub include: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct CodingGlobArgs {
+    pub pattern: String,
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -69,30 +78,147 @@ pub struct CodingNextReviewArgs {}
 struct CodingConfigHintSummary {
     tree_sitter_languages: usize,
     lsp_languages: usize,
+    lsp_setup_hints: Vec<CodingLspSetupHint>,
+}
+
+#[derive(Debug, Clone)]
+struct CodingLspSetupHint {
+    language: String,
+    lsp_server: String,
+    lsp_binary: String,
+    lsp_available: bool,
+    setup_hints: String,
+    install_command: Option<String>,
+    download_url: Option<String>,
 }
 
 impl CodingConfigHintSummary {
     fn from_hints(hints: &Value) -> Self {
+        let lsp_entries = hints
+            .get("lsp_languages")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+
         Self {
             tree_sitter_languages: hints
                 .get("tree_sitter_languages")
                 .and_then(|value| value.as_array())
                 .map(|items| items.len())
                 .unwrap_or(0),
-            lsp_languages: hints
-                .get("lsp_languages")
-                .and_then(|value| value.as_array())
-                .map(|items| items.len())
-                .unwrap_or(0),
+            lsp_languages: lsp_entries.len(),
+            lsp_setup_hints: lsp_entries
+                .iter()
+                .map(CodingLspSetupHint::from_config_hint)
+                .collect(),
         }
     }
 
-    fn state_line(&self) -> String {
+    fn count_state_line(&self) -> String {
         format!(
             "scope_config_hints=tree_sitter_languages:{} lsp_languages:{}",
             self.tree_sitter_languages, self.lsp_languages
         )
     }
+
+    fn state_lines(&self) -> Vec<String> {
+        let mut lines = vec![self.count_state_line()];
+        lines.extend(
+            self.lsp_setup_hints
+                .iter()
+                .take(MAX_RENDERED_LSP_SETUP_HINTS)
+                .map(CodingLspSetupHint::state_line),
+        );
+        if self.lsp_setup_hints.len() > MAX_RENDERED_LSP_SETUP_HINTS {
+            lines.push(format!(
+                "lsp_setup_hint_more={}",
+                self.lsp_setup_hints.len() - MAX_RENDERED_LSP_SETUP_HINTS
+            ));
+        }
+        lines
+    }
+
+    fn model_content(&self) -> String {
+        let mut lines = vec![self.count_state_line()];
+        lines.extend(
+            self.lsp_setup_hints
+                .iter()
+                .map(CodingLspSetupHint::model_content),
+        );
+        lines.join("\n")
+    }
+}
+
+impl CodingLspSetupHint {
+    fn from_config_hint(entry: &Value) -> Self {
+        Self {
+            language: json_string(entry, "language"),
+            lsp_server: json_string(entry, "lsp_server"),
+            lsp_binary: json_string(entry, "lsp_binary"),
+            lsp_available: entry
+                .get("lsp_available")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            setup_hints: json_string(entry, "setup_hints"),
+            install_command: format_install_command(entry.get("install_command")),
+            download_url: entry
+                .get("download_url")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string),
+        }
+    }
+
+    fn state_line(&self) -> String {
+        format!(
+            "lsp_setup_hint language={} server={} binary={} available={} setup_hints={}",
+            self.language,
+            self.lsp_server,
+            self.lsp_binary,
+            self.lsp_available,
+            summarize_coding_inline_text(&self.setup_hints)
+        )
+    }
+
+    fn model_content(&self) -> String {
+        let mut line = format!(
+            "lsp_setup_hint language={} server={} binary={} available={}\n  setup_hints: {}",
+            self.language, self.lsp_server, self.lsp_binary, self.lsp_available, self.setup_hints
+        );
+        if let Some(install_command) = self.install_command.as_ref() {
+            line.push_str(&format!("\n  install_command: {install_command}"));
+        }
+        if let Some(download_url) = self.download_url.as_ref() {
+            line.push_str(&format!("\n  download_url: {download_url}"));
+        }
+        line
+    }
+}
+
+fn json_string(entry: &Value, key: &str) -> String {
+    entry
+        .get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn format_install_command(value: Option<&Value>) -> Option<String> {
+    let command = value?.get("command")?.as_str()?;
+    let args = value
+        .and_then(|entry| entry.get("args"))
+        .and_then(|args| args.as_array())
+        .map(|args| {
+            args.iter()
+                .filter_map(|arg| arg.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    Some(if args.is_empty() {
+        command.to_string()
+    } else {
+        format!("{command} {args}")
+    })
 }
 
 pub struct CodingApp {
@@ -165,6 +291,13 @@ impl CodingApp {
         self.config_hint_summary = Some(config_hint_summary.clone());
         self.last_action = Some("opened project".to_string());
 
+        let model_content = truncate_text_to_token_budget(
+            &config_hint_summary.model_content(),
+            context.tool_output_max_tokens,
+        );
+        let mut ui_lines = vec![format!("project_root={}", project_root.display())];
+        ui_lines.extend(config_hint_summary.state_lines());
+
         Ok(AppToolExecutionResult {
             summary: format!("opened coding project {}", project_root.display()),
             payload: json!({
@@ -173,14 +306,8 @@ impl CodingApp {
                 "scope_response": response.result,
                 "config_hints": config_hints,
             }),
-            model_content: None,
-            ui_event: ToolUiEvent::app(
-                "coding_open_project",
-                vec![
-                    format!("project_root={}", project_root.display()),
-                    config_hint_summary.state_line(),
-                ],
-            ),
+            model_content: Some(model_content),
+            ui_event: ToolUiEvent::app("coding_open_project", ui_lines),
             turn_boundary_reason: None,
         })
     }
@@ -220,7 +347,7 @@ impl App for CodingApp {
             lines.push(format!("language={language}"));
         }
         if let Some(summary) = self.config_hint_summary.as_ref() {
-            lines.push(summary.state_line());
+            lines.extend(summary.state_lines());
         }
         if let Some(last_action) = self.last_action.as_ref() {
             lines.push(format!("last_action={last_action}"));
@@ -266,9 +393,14 @@ impl App for CodingApp {
                 input_schema: serde_json::to_value(schema_for!(CodingReadCodeArgs)).unwrap(),
             },
             AppToolSpec {
-                name: "coding_search_code".to_string(),
-                description: "Search the opened project and return matching lines with containing symbol selectors.".to_string(),
-                input_schema: serde_json::to_value(schema_for!(CodingSearchCodeArgs)).unwrap(),
+                name: "grep".to_string(),
+                description: "Search file contents using a regex pattern.".to_string(),
+                input_schema: serde_json::to_value(schema_for!(CodingGrepArgs)).unwrap(),
+            },
+            AppToolSpec {
+                name: "glob".to_string(),
+                description: "Find files by glob pattern.".to_string(),
+                input_schema: serde_json::to_value(schema_for!(CodingGlobArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "coding_edit_code".to_string(),
@@ -302,9 +434,13 @@ impl App for CodingApp {
                 let args: CodingReadCodeArgs = parse_coding_tool_args(call)?;
                 format!("selector={}", summarize_coding_inline_text(&args.selector))
             }
-            "coding_search_code" => {
-                let args: CodingSearchCodeArgs = parse_coding_tool_args(call)?;
-                format!("query={}", summarize_coding_inline_text(&args.query))
+            "grep" => {
+                let args: CodingGrepArgs = parse_coding_tool_args(call)?;
+                format!("pattern={}", summarize_coding_inline_text(&args.pattern))
+            }
+            "glob" => {
+                let args: CodingGlobArgs = parse_coding_tool_args(call)?;
+                format!("pattern={}", summarize_coding_inline_text(&args.pattern))
             }
             "coding_edit_code" => {
                 let args: CodingEditCodeArgs = parse_coding_tool_args(call)?;
@@ -369,18 +505,44 @@ impl App for CodingApp {
                     turn_boundary_reason: None,
                 })
             }
-            "coding_search_code" => {
+            "grep" => {
                 self.require_project()?;
-                let args: CodingSearchCodeArgs = parse_coding_tool_args(call)?;
-                let result = self.scope.search_code(&args.query)?;
-                self.last_action = Some(format!("searched {}", args.query));
+                let args: CodingGrepArgs = parse_coding_tool_args(call)?;
+                let result = self.scope.grep_code(
+                    &args.pattern,
+                    args.path.as_deref(),
+                    args.include.as_deref(),
+                )?;
+                self.last_action = Some(format!("searched {}", args.pattern));
                 Ok(AppToolExecutionResult {
-                    summary: format!("found {} code matches", result.matches.len()),
+                    summary: format!("found {} matches", result.matches.len()),
                     payload: serde_json::to_value(&result).unwrap(),
-                    model_content: None,
+                    model_content: Some(truncate_text_to_token_budget(
+                        &result.output,
+                        context.tool_output_max_tokens,
+                    )),
                     ui_event: ToolUiEvent::app(
-                        "coding_search_code",
+                        "grep",
                         vec![format!("matches={}", result.matches.len())],
+                    ),
+                    turn_boundary_reason: None,
+                })
+            }
+            "glob" => {
+                self.require_project()?;
+                let args: CodingGlobArgs = parse_coding_tool_args(call)?;
+                let result = self.scope.glob_files(&args.pattern, args.path.as_deref())?;
+                self.last_action = Some(format!("globbed {}", args.pattern));
+                Ok(AppToolExecutionResult {
+                    summary: format!("found {} files", result.files.len()),
+                    payload: serde_json::to_value(&result).unwrap(),
+                    model_content: Some(truncate_text_to_token_budget(
+                        &result.output,
+                        context.tool_output_max_tokens,
+                    )),
+                    ui_event: ToolUiEvent::app(
+                        "glob",
+                        vec![format!("files={}", result.files.len())],
                     ),
                     turn_boundary_reason: None,
                 })
@@ -496,4 +658,92 @@ fn compact_coding_argument_lines(arguments: &Value) -> Vec<String> {
         other => summarize_coding_inline_text(&other.to_string()),
     };
     compact_body_lines(&text, 8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn config_hint_summary_keeps_lsp_setup_hints_visible() {
+        let hints = json!({
+            "tree_sitter_languages": [
+                {"name": "rust", "extensions": ["rs"]}
+            ],
+            "lsp_languages": [
+                {
+                    "language": "rust",
+                    "lsp_server": "rust-analyzer",
+                    "lsp_binary": "rust-analyzer",
+                    "lsp_available": false,
+                    "setup_hints": "Install rust-analyzer and ensure it is on PATH.",
+                    "install_command": {
+                        "command": "rustup",
+                        "args": ["component", "add", "rust-analyzer"]
+                    },
+                    "download_url": "https://rust-analyzer.github.io/"
+                }
+            ]
+        });
+
+        let summary = CodingConfigHintSummary::from_hints(&hints);
+
+        assert_eq!(summary.tree_sitter_languages, 1);
+        assert_eq!(summary.lsp_languages, 1);
+        assert_eq!(summary.lsp_setup_hints.len(), 1);
+
+        let state = summary.state_lines().join("\n");
+        assert!(state.contains("scope_config_hints=tree_sitter_languages:1 lsp_languages:1"));
+        assert!(state.contains("lsp_setup_hint language=rust"));
+        assert!(state.contains("server=rust-analyzer"));
+        assert!(state.contains("setup_hints=Install rust-analyzer and ensure it is on PATH."));
+
+        let model_content = summary.model_content();
+        assert!(
+            model_content.contains("setup_hints: Install rust-analyzer and ensure it is on PATH.")
+        );
+        assert!(model_content.contains("install_command: rustup component add rust-analyzer"));
+        assert!(model_content.contains("download_url: https://rust-analyzer.github.io/"));
+    }
+
+    #[test]
+    fn config_hint_summary_caps_rendered_state_hints() {
+        let lsp_languages = (0..=MAX_RENDERED_LSP_SETUP_HINTS)
+            .map(|idx| {
+                json!({
+                    "language": format!("lang{idx}"),
+                    "lsp_server": format!("server{idx}"),
+                    "lsp_binary": format!("binary{idx}"),
+                    "lsp_available": true,
+                    "setup_hints": format!("hint {idx}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let hints = json!({
+            "tree_sitter_languages": [],
+            "lsp_languages": lsp_languages,
+        });
+
+        let summary = CodingConfigHintSummary::from_hints(&hints);
+        let state_lines = summary.state_lines();
+
+        assert_eq!(summary.lsp_languages, MAX_RENDERED_LSP_SETUP_HINTS + 1);
+        assert_eq!(
+            state_lines
+                .iter()
+                .filter(|line| line.starts_with("lsp_setup_hint language="))
+                .count(),
+            MAX_RENDERED_LSP_SETUP_HINTS
+        );
+        assert_eq!(
+            state_lines.last().map(String::as_str),
+            Some("lsp_setup_hint_more=1")
+        );
+        assert!(
+            summary
+                .model_content()
+                .contains("lsp_setup_hint language=lang5")
+        );
+    }
 }

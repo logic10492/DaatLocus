@@ -63,11 +63,13 @@ pub struct ReadCodeRequest {
     pub selector: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReadCodeResponse {
     pub selector: String,
     pub content: String,
     pub language: String,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 /// Each match from a search_code query.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -90,6 +92,35 @@ pub struct SearchCodeResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchCodeRequest {
     pub query: String,
+    /// Optional maximum number of matches to return.
+    /// If omitted, scope-engine applies a safe default limit.
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GrepCodeRequest {
+    pub pattern: String,
+    pub path: Option<String>,
+    pub include: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GrepCodeResponse {
+    pub matches: Vec<SearchMatch>,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GlobFilesRequest {
+    pub pattern: String,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GlobFilesResponse {
+    pub files: Vec<String>,
+    pub truncated: bool,
+    pub output: String,
 }
 
 /// edit_code parameters: selector + stripped v4a hunk-only patch

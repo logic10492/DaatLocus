@@ -261,6 +261,10 @@ pub fn edit_code_apply(
         return Ok(vec![]);
     }
 
+    let selector_match = TreeSitterAnalyzer::new()
+        .resolve_selector(&full_path, &parsed)
+        .map_err(|e| format!("cannot resolve selector: {e}"))?;
+
     let original = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("cannot read {}: {e}", full_path.display()))?;
 
@@ -293,6 +297,7 @@ pub fn edit_code_apply(
     let mut results: Vec<PropagationResult> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut modified_symbol_names = HashSet::new();
+    modified_symbol_names.insert(selector_match.name.clone());
 
     // Step 1: collect all symbol names that were modified
     for hunk in &hunks {
@@ -403,6 +408,10 @@ pub fn delete_code_apply(
     let (full_path, _ext) = crate::selector::resolve_file(&parsed, project_root)
         .map_err(|e| format!("cannot resolve file: {e}"))?;
 
+    let selector_match = TreeSitterAnalyzer::new()
+        .resolve_selector(&full_path, &parsed)
+        .map_err(|e| format!("cannot resolve selector: {e}"))?;
+
     let original = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("cannot read {}: {e}", full_path.display()))?;
 
@@ -475,7 +484,12 @@ pub fn delete_code_apply(
     }
 
     // ── Execute the deletion ──
-    let new_content = remove_hunk_lines(&original, &parsed.name, 3).ok_or_else(|| {
+    let new_content = remove_symbol_range(
+        &original,
+        selector_match.start_line,
+        selector_match.end_line,
+    )
+    .ok_or_else(|| {
         format!(
             "symbol '{}' not found in {}",
             parsed.name,
@@ -496,17 +510,17 @@ pub fn delete_code_apply(
     Ok(results)
 }
 
-/// Remove lines matching a pattern with surrounding context (simple delete tool).
-fn remove_hunk_lines(source: &str, pattern: &str, context_lines: usize) -> Option<String> {
+/// Remove a 1-based inclusive line range.
+fn remove_symbol_range(source: &str, start_line: usize, end_line: usize) -> Option<String> {
     let lines: Vec<&str> = source.lines().collect();
-    let target_idx = lines.iter().position(|l| l.contains(pattern))?;
+    if start_line == 0 || end_line < start_line || end_line > lines.len() {
+        return None;
+    }
 
-    let start = target_idx.saturating_sub(context_lines);
-    let end = (target_idx + context_lines + 1).min(lines.len());
-
+    let start = start_line - 1;
     let result: Vec<&str> = lines[..start]
         .iter()
-        .chain(lines[end..].iter())
+        .chain(lines[end_line..].iter())
         .copied()
         .collect();
 
@@ -570,9 +584,9 @@ mod tests {
     }
 
     #[test]
-    fn remove_hunk_lines_works() {
+    fn remove_symbol_range_works() {
         let content = "line 1\nline 2\ntarget line here\nline 4\nline 5\n";
-        let result = remove_hunk_lines(content, "target", 1);
+        let result = remove_symbol_range(content, 2, 4);
         assert_eq!(result, Some("line 1\nline 5\n".to_string()));
     }
 }

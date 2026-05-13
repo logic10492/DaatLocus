@@ -14,6 +14,8 @@ pub struct ParsedSelector {
     pub kind: SymbolKind,
     /// The symbol name to match against AST nodes.
     pub name: String,
+    /// Optional 1-based line range disambiguator: `#Lstart-Lend`.
+    pub line_range: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +137,8 @@ pub fn parse_selector(input: &str) -> Result<ParsedSelector, String> {
         return Err("selector symbol part is empty after '::'".to_string());
     }
 
+    let (symbol_part, line_range) = parse_line_range_suffix(symbol_part)?;
+
     // Parse the symbol part: optional kind prefix + name
     let (kind, name) = parse_symbol_expr(symbol_part);
 
@@ -149,7 +153,38 @@ pub fn parse_selector(input: &str) -> Result<ParsedSelector, String> {
         file_path,
         kind,
         name,
+        line_range,
     })
+}
+
+/// Parse an optional `#Lstart-Lend` line-range disambiguator suffix.
+fn parse_line_range_suffix(expr: &str) -> Result<(&str, Option<(usize, usize)>), String> {
+    let Some((symbol_expr, range_expr)) = expr.rsplit_once("#L") else {
+        return Ok((expr, None));
+    };
+
+    let symbol_expr = symbol_expr.trim_end();
+    if symbol_expr.is_empty() {
+        return Err(format!(
+            "selector symbol name is empty before line range: '{expr}'"
+        ));
+    }
+
+    let (start_str, end_str) = range_expr
+        .split_once("-L")
+        .or_else(|| range_expr.split_once('-'))
+        .ok_or_else(|| format!("bad selector line range '#L{range_expr}'"))?;
+    let start = start_str
+        .parse::<usize>()
+        .map_err(|_| format!("bad selector line range start: '#L{range_expr}'"))?;
+    let end = end_str
+        .parse::<usize>()
+        .map_err(|_| format!("bad selector line range end: '#L{range_expr}'"))?;
+    if start == 0 || end == 0 || start > end {
+        return Err(format!("bad selector line range '#L{range_expr}'"));
+    }
+
+    Ok((symbol_expr, Some((start, end))))
 }
 
 /// Parse the symbol expression (everything after `::`).
@@ -231,6 +266,19 @@ mod tests {
     fn parse_fn_with_parens() {
         let sel = parse_selector("src/foo.rs::fn authenticate()").unwrap();
         assert_eq!(sel.name, "authenticate");
+    }
+
+    #[test]
+    fn parse_line_range_disambiguator() {
+        let sel = parse_selector("src/foo.rs::fn authenticate #L10-L20").unwrap();
+        assert_eq!(sel.name, "authenticate");
+        assert_eq!(sel.line_range, Some((10, 20)));
+    }
+
+    #[test]
+    fn invalid_line_range_disambiguator_is_error() {
+        assert!(parse_selector("src/foo.rs::fn authenticate #L20-L10").is_err());
+        assert!(parse_selector("src/foo.rs::fn authenticate #Labc-L20").is_err());
     }
 
     #[test]

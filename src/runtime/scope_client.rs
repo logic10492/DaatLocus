@@ -121,24 +121,57 @@ impl ScopeClient {
     /// Read a selector's file content using scope-engine selector resolution.
     #[allow(dead_code)]
     pub fn read_code(&self, selector_str: &str) -> Result<api::ReadCodeResponse> {
-        let parsed =
-            selector::parse_selector(selector_str).map_err(|err| miette!("Bad selector: {err}"))?;
-        let (full_path, _ext) = self.resolve_file(&parsed).map_err(|err| miette!("{err}"))?;
-        let content = std::fs::read_to_string(&full_path)
-            .map_err(|err| miette!("Failed to read {}: {err}", full_path.display()))?;
-
-        Ok(api::ReadCodeResponse {
-            selector: selector_str.to_string(),
-            content,
-            language: guess_language(&full_path).to_string(),
-        })
+        let result = self.dispatch("read_code", serde_json::json!({ "selector": selector_str }))?;
+        serde_json::from_value(result).map_err(|err| miette!("invalid read_code response: {err}"))
     }
 
     /// Search code using scope-engine's JSON-RPC dispatch path.
     #[allow(dead_code)]
-    pub fn search_code(&self, query: &str) -> Result<api::SearchCodeResponse> {
-        let result = self.dispatch("search_code", serde_json::json!({ "query": query }))?;
+    pub fn search_code(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<api::SearchCodeResponse> {
+        let result = self.dispatch(
+            "search_code",
+            serde_json::json!({
+                "query": query,
+                "limit": limit,
+            }),
+        )?;
         serde_json::from_value(result).map_err(|err| miette!("invalid search_code response: {err}"))
+    }
+
+    /// Search code with opencode-style grep parameters.
+    #[allow(dead_code)]
+    pub fn grep_code(
+        &self,
+        pattern: &str,
+        path: Option<&str>,
+        include: Option<&str>,
+    ) -> Result<api::GrepCodeResponse> {
+        let result = self.dispatch(
+            "grep_code",
+            serde_json::json!({
+                "pattern": pattern,
+                "path": path,
+                "include": include,
+            }),
+        )?;
+        serde_json::from_value(result).map_err(|err| miette!("invalid grep_code response: {err}"))
+    }
+
+    /// Find files with opencode-style glob parameters.
+    #[allow(dead_code)]
+    pub fn glob_files(&self, pattern: &str, path: Option<&str>) -> Result<api::GlobFilesResponse> {
+        let result = self.dispatch(
+            "glob_files",
+            serde_json::json!({
+                "pattern": pattern,
+                "path": path,
+            }),
+        )?;
+        serde_json::from_value(result).map_err(|err| miette!("invalid glob_files response: {err}"))
     }
 
     /// Apply a stripped v4a hunk-only patch via scope-engine.
@@ -255,24 +288,6 @@ impl ScopeClient {
                 )
             })
             .collect()
-    }
-}
-
-fn guess_language(path: &Path) -> &'static str {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("rs") => "rust",
-        Some("py") => "python",
-        Some("js") | Some("mjs") | Some("cjs") => "javascript",
-        Some("ts") | Some("mts") | Some("cts") => "typescript",
-        Some("go") => "go",
-        Some("java") => "java",
-        Some("c") | Some("h") => "c",
-        Some("cpp") | Some("cc") | Some("cxx") | Some("hpp") => "cpp",
-        Some("toml") => "toml",
-        Some("json") => "json",
-        Some("yaml") | Some("yml") => "yaml",
-        Some("md") => "markdown",
-        _ => "text",
     }
 }
 
