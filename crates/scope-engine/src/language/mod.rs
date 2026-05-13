@@ -62,6 +62,11 @@ impl LanguageRegistry {
         let idx = self.by_ext.get(ext)?;
         Some(self.adapters[*idx].as_ref())
     }
+
+    /// Return a list of (language_name, extensions) for all registered adapters.
+    pub fn list_languages(&self) -> Vec<(&str, &[&str])> {
+        self.adapters.iter().map(|a| (a.language_name(), a.extensions())).collect()
+    }
 }
 
 impl Default for LanguageRegistry {

@@ -84,8 +84,6 @@ impl SymbolKind {
             // Java tree-sitter node types
             "class_declaration" => SymbolKind::Class,
             "interface_declaration" => SymbolKind::Trait,
-            "enum_declaration" => SymbolKind::Enum,
-            "method_declaration" => SymbolKind::Function,
             "constructor_declaration" => SymbolKind::Function,
             "field_declaration" => SymbolKind::Unknown,
             "local_variable_declaration" => SymbolKind::Unknown,

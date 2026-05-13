@@ -174,6 +174,7 @@ pub fn dispatch(
                 serde_json::to_value(NextReviewResponse { review }).unwrap(),
             )
         }
+        "get_config_hints" => handle_get_config_hints(req),
         _ => JsonRpcResponse::err(
             req.id.clone(),
             -32601,
@@ -410,4 +411,67 @@ fn handle_delete_code(
         }
         Err(e) => JsonRpcResponse::err(req.id.clone(), -32001, e),
     }
+}
+
+
+fn handle_get_config_hints(req: &JsonRpcRequest) -> JsonRpcResponse {
+    use crate::language::LanguageRegistry;
+    use crate::lsp::{LspServerConfig, RustAnalyzerConfig, PyrightConfig, TsJsConfig, GoplsConfig, JdtlsConfig};
+
+    let registry = LanguageRegistry::new();
+    let configs: Vec<Box<dyn LspServerConfig>> = vec![
+        Box::new(RustAnalyzerConfig),
+        Box::new(PyrightConfig),
+        Box::new(TsJsConfig),   // covers both TS and JS
+        Box::new(GoplsConfig),
+        Box::new(JdtlsConfig),
+    ];
+
+    let mut languages = Vec::new();
+
+    // Tree-sitter languages from registry
+    let ts_langs: Vec<serde_json::Value> = registry.list_languages().into_iter().map(|(name, exts)| {
+        serde_json::json!({
+            "name": name,
+            "extensions": exts,
+        })
+    }).collect();
+
+    // LSP configs
+    for cfg in &configs {
+        let binary_found = std::process::Command::new("which")
+            .arg(cfg.binary_name())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let mut lang_entry = serde_json::json!({
+            "language": cfg.language_id(),
+            "lsp_server": cfg.server_name(),
+            "lsp_binary": cfg.binary_name(),
+            "lsp_available": binary_found,
+            "setup_hints": cfg.setup_hints(),
+        });
+
+        if let Some((cmd, args)) = cfg.install_command() {
+            lang_entry["install_command"] = serde_json::json!({
+                "command": cmd,
+                "args": args,
+            });
+        }
+
+        if let Some(url) = cfg.download_url() {
+            lang_entry["download_url"] = serde_json::json!(url);
+        }
+
+        languages.push(lang_entry);
+    }
+
+    JsonRpcResponse::ok(
+        req.id.clone(),
+        serde_json::json!({
+            "tree_sitter_languages": ts_langs,
+            "lsp_languages": languages,
+        }),
+    )
 }

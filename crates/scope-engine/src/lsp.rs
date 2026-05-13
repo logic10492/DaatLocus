@@ -51,6 +51,17 @@ pub trait LspServerConfig: Send + Sync {
     fn install_command(&self) -> Option<(String, Vec<String>)> {
         None
     }
+
+    /// Human-readable setup/installation hints for this LSP server.
+    /// Returns a description of how to install the server, for the agent to act on.
+    fn setup_hints(&self) -> String {
+        format!(
+            "LSP server '{}' (binary: '{}') for language '{}'. ",
+            self.server_name(),
+            self.binary_name(),
+            self.language_id()
+        )
+    }
 }
 
 // ── Rust LSP config ────────────────────────────────────────────
@@ -69,6 +80,10 @@ impl LspServerConfig for RustAnalyzerConfig {
             "https://github.com/rust-lang/rust-analyzer/releases/download/{RA_VERSION}/rust-analyzer-x86_64-apple-darwin"
         ))
     }
+
+    fn setup_hints(&self) -> String {
+        "For Rust: rust-analyzer is auto-downloaded by scope-engine. No manual setup needed.".to_string()
+    }
 }
 
 // ── Python LSP config ──────────────────────────────────────────
@@ -83,6 +98,10 @@ impl LspServerConfig for PyrightConfig {
     fn download_url(&self) -> Option<String> { None } // installed via npm/pip
     fn spawn_args(&self) -> Vec<String> { vec!["--stdio".to_string()] }
     fn post_init_delay_secs(&self) -> u64 { 2 }
+
+    fn setup_hints(&self) -> String {
+        "For Python: install pyright-langserver via 'npm install -g pyright' or 'pip install pyright'.".to_string()
+    }
 }
 
 // ── TypeScript/JavaScript LSP config ──────────────────────────
@@ -97,6 +116,10 @@ impl LspServerConfig for TsJsConfig {
     fn download_url(&self) -> Option<String> { None } // installed via npm
     fn spawn_args(&self) -> Vec<String> { vec!["--stdio".to_string()] }
     fn post_init_delay_secs(&self) -> u64 { 3 }
+
+    fn setup_hints(&self) -> String {
+        "For TypeScript/JavaScript: install typescript-language-server via 'npm install -g typescript-language-server typescript'.".to_string()
+    }
 }
 
 // ── Go LSP config ──────────────────────────────────────────────
@@ -132,6 +155,10 @@ impl LspServerConfig for JdtlsConfig {
     fn download_url(&self) -> Option<String> { None }
     fn spawn_args(&self) -> Vec<String> { vec![] }
     fn post_init_delay_secs(&self) -> u64 { 5 }
+
+    fn setup_hints(&self) -> String {
+        "For Java: install Eclipse JDT Language Server (jdtls). On macOS: 'brew install eclipse-jdtls'. On Linux: download from https://download.eclipse.org/jdtls/snapshots/ and add 'jdtls' to PATH. Requires JDK 17+.".to_string()
+    }
 }
 
 // ── LspClient (was LspAnalyzer) ───────────────────────────────
