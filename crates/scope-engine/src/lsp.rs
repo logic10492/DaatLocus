@@ -132,9 +132,6 @@ impl LspServerConfig for JdtlsConfig {
     fn download_url(&self) -> Option<String> { None }
     fn spawn_args(&self) -> Vec<String> { vec![] }
     fn post_init_delay_secs(&self) -> u64 { 5 }
-    fn install_command(&self) -> Option<(String, Vec<String>)> {
-        Some(("brew".to_string(), vec!["install".to_string(), "eclipse-jdtls".to_string()]))
-    }
 }
 
 // ── LspClient (was LspAnalyzer) ───────────────────────────────
