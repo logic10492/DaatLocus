@@ -78,6 +78,20 @@ impl LspServerConfig for PyrightConfig {
     fn post_init_delay_secs(&self) -> u64 { 2 }
 }
 
+// ── TypeScript/JavaScript LSP config ──────────────────────────
+
+pub struct TsJsConfig;
+
+impl LspServerConfig for TsJsConfig {
+    fn server_name(&self) -> &str { "typescript-language-server" }
+    fn binary_name(&self) -> &str { "typescript-language-server" }
+    fn language_id(&self) -> &str { "typescript" }
+    fn cached_binary_name(&self) -> String { "typescript-language-server".to_string() }
+    fn download_url(&self) -> Option<String> { None } // installed via npm
+    fn spawn_args(&self) -> Vec<String> { vec!["--stdio".to_string()] }
+    fn post_init_delay_secs(&self) -> u64 { 3 }
+}
+
 // ── LspClient (was LspAnalyzer) ───────────────────────────────
 
 /// Internal mutable state for LspClient, wrapped in RefCell for interior mutability.

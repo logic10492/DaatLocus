@@ -38,6 +38,11 @@ impl SymbolKind {
             "trait" => SymbolKind::Trait,
             "impl" => SymbolKind::Impl,
             "class" => SymbolKind::Class,
+            "interface" => SymbolKind::Trait,
+            "enum" => SymbolKind::Enum,
+            "const" => SymbolKind::Unknown,
+            "let" => SymbolKind::Unknown,
+            "var" => SymbolKind::Unknown,
             _ => SymbolKind::Unknown,
         }
     }
@@ -55,6 +60,15 @@ impl SymbolKind {
             "function_definition" => SymbolKind::Function,
             "class_definition" => SymbolKind::Class,
             "decorated_definition" => SymbolKind::Function,
+            // TypeScript/JavaScript node types
+            "function_declaration" => SymbolKind::Function,
+            "class_declaration" => SymbolKind::Class,
+            "interface_declaration" => SymbolKind::Trait,
+            "enum_declaration" => SymbolKind::Enum,
+            "method_definition" => SymbolKind::Function,
+            "arrow_function" => SymbolKind::Function,
+            "variable_declarator" => SymbolKind::Function,
+            "type_alias_declaration" => SymbolKind::Struct,
             _ => SymbolKind::Unknown,
         }
     }

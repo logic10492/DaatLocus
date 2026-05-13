@@ -55,6 +55,13 @@ impl TreeSitterAnalyzer {
             // Python tree-sitter node types
             Some("function_definition") => "fn ",
             Some("class_definition") => "class ",
+            // TypeScript/JavaScript tree-sitter node types
+            Some("function_declaration") => "fn ",
+            Some("class_declaration") => "class ",
+            Some("interface_declaration") => "trait ",
+            Some("enum_declaration") => "enum ",
+            Some("method_definition") => "fn ",
+            Some("type_alias_declaration") => "type ",
             _ => "",
         };
 
@@ -103,6 +110,8 @@ impl TreeSitterAnalyzer {
             kind,
             "function_item" | "struct_item" | "enum_item" | "trait_item" | "impl_item"
             | "function_definition" | "class_definition" | "decorated_definition"
+            | "function_declaration" | "class_declaration" | "interface_declaration"
+            | "enum_declaration" | "method_definition" | "type_alias_declaration"
         );
 
         if is_def {

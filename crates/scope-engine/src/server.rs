@@ -3,6 +3,7 @@ use std::process::Command;
 
 use crate::api::*;
 use crate::lsp::{LspAnalyzer, LspServerConfig, RustAnalyzerConfig, PyrightConfig};
+use crate::lsp::TsJsConfig;
 use crate::patch;
 use crate::selector;
 use crate::state::PropagationState;
@@ -34,11 +35,14 @@ pub fn dispatch(
             let lsp_lang = match language {
                 "auto" | "rust" => "rust",
                 "python" | "py" => "python",
+                "typescript" | "ts" | "tsx" => "typescript",
+                "javascript" | "js" | "jsx" => "javascript",
                 other => other,
             };
             let config: Box<dyn LspServerConfig> = match lsp_lang {
                 "rust" => Box::new(RustAnalyzerConfig),
                 "python" => Box::new(PyrightConfig),
+                "typescript" | "javascript" => Box::new(TsJsConfig),
                 _ => {
                     // Unsupported language — skip LSP initialization
                     return JsonRpcResponse::ok(
@@ -77,6 +81,7 @@ pub fn dispatch(
                         let exts: &[&str] = match lsp_lang {
                             "rust" => &["rs"],
                             "python" => &["py"],
+                            "typescript" | "javascript" => &["ts", "tsx", "js", "jsx"],
                             _ => &["rs"],
                         };
                         for entry in entries.flatten() {
