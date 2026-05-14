@@ -90,17 +90,28 @@ pub fn build_runtime_app_usages(context: &Context) -> Vec<(AppId, AppUsage)> {
 
 pub fn build_runtime_focused_app_how_to_use_prompt(context: &Context) -> Option<String> {
     let app_id = context.apps.focused()?;
-    let how_to_use = context.apps.how_to_use(&app_id)?;
-    Some(build_app_how_to_use_prompt(app_id, &how_to_use))
+    build_runtime_app_how_to_use_prompt(context, &app_id)
+}
+
+pub fn build_runtime_app_how_to_use_prompt(context: &Context, app_id: &AppId) -> Option<String> {
+    let how_to_use = context.apps.how_to_use(app_id)?;
+    Some(build_app_how_to_use_prompt(app_id.clone(), &how_to_use))
 }
 
 pub fn build_runtime_background_hint_items(context: &Context) -> Vec<String> {
     let focused = context.apps.focused();
+    let composed_app_ids = context
+        .apps
+        .focused_composed_surfaces()
+        .into_iter()
+        .map(|surface| surface.app_id)
+        .collect::<Vec<_>>();
     context
         .apps
         .state_renders()
         .into_iter()
         .filter(|(app_id, _)| focused.as_ref() != Some(app_id))
+        .filter(|(app_id, _)| !composed_app_ids.contains(app_id))
         .filter_map(|(app_id, state)| background_app_attention_hint(app_id, &state))
         .collect()
 }

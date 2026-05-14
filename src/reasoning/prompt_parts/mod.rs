@@ -1,5 +1,5 @@
 use crate::{
-    app::AppId,
+    app::{AppComposedSurface, AppId},
     context::Context,
     events::{EventPayload, EventView},
     preturn_state::PreTurnState,
@@ -13,8 +13,9 @@ use super::{
         MEMORIES_UNIT_HOW, MEMORIES_UNIT_WHAT, MEMORIES_UNIT_WHEN, PLAN_UNIT_HOW, PLAN_UNIT_WHAT,
         PLAN_UNIT_WHEN, WORKFLOW_UNIT_HOW, WORKFLOW_UNIT_WHAT, WORKFLOW_UNIT_WHEN,
         WORKSPACE_UNIT_HOW, WORKSPACE_UNIT_WHEN, WORKSPACE_UNIT_WHY, build_app_usage_prompt,
-        build_runtime_app_usages, build_runtime_background_hint_items,
-        build_runtime_focused_app_how_to_use_prompt, build_workspace_unit_what,
+        build_runtime_app_how_to_use_prompt, build_runtime_app_usages,
+        build_runtime_background_hint_items, build_runtime_focused_app_how_to_use_prompt,
+        build_workspace_unit_what,
     },
     turn_compile::load_prompt_persona_spec_sync,
 };
@@ -354,12 +355,18 @@ impl PreTurnContextPart for PreTurnAppSurfacePart {
         let mut children = Vec::new();
 
         let focused = state.focused_app_runtime_text();
+        let composed_apps = ctx.apps.focused_composed_surfaces();
+        let composed_app_ids = composed_apps
+            .iter()
+            .map(|surface| surface.app_id.clone())
+            .collect::<Vec<_>>();
         let mut other_app_children = Vec::new();
 
         let app_usages = build_runtime_app_usages(ctx);
         if !app_usages.is_empty() {
             let app_groups = app_usages
                 .into_iter()
+                .filter(|(app_id, _usage)| !composed_app_ids.contains(app_id))
                 .map(|(app_id, usage)| {
                     PromptNode::State(PromptStateDoc::new(
                         app_id.to_string(),
@@ -412,6 +419,17 @@ impl PreTurnContextPart for PreTurnAppSurfacePart {
             )));
         }
 
+        let composed_app_children = composed_apps
+            .iter()
+            .filter_map(|surface| build_composed_app_surface_node(ctx, state, surface))
+            .collect::<Vec<_>>();
+        if !composed_app_children.is_empty() {
+            focused_app_children.push(PromptNode::Group(PromptGroupDoc::new(
+                "composed_apps",
+                composed_app_children,
+            )));
+        }
+
         if !focused_app_children.is_empty() {
             children.push(PromptNode::Group(PromptGroupDoc::new(
                 "focused_app",
@@ -428,6 +446,62 @@ impl PreTurnContextPart for PreTurnAppSurfacePart {
 
         Some(PromptNode::Group(PromptGroupDoc::new(self.key(), children)))
     }
+}
+
+fn build_composed_app_surface_node(
+    ctx: &Context,
+    state: &PreTurnState,
+    surface: &AppComposedSurface,
+) -> Option<PromptNode> {
+    let mut children = Vec::new();
+    children.push(PromptNode::State(PromptStateDoc::new(
+        "composition",
+        vec![PromptBlock::KeyValueList(vec![
+            ("role".to_string(), surface.role.clone()),
+            (
+                "exposed_scopes".to_string(),
+                render_bracketed_values(surface.exposed_scopes.iter().map(ToString::to_string)),
+            ),
+            (
+                "exposed_tools".to_string(),
+                render_bracketed_values(surface.exposed_tools.iter().cloned()),
+            ),
+        ])],
+    )));
+
+    if let Some(entry) = state.full_app_state_entry(&surface.app_id) {
+        let mut blocks = vec![PromptBlock::KeyValueList(vec![
+            ("id".to_string(), entry.app_id),
+            ("title".to_string(), entry.title),
+        ])];
+        if !entry.lines.is_empty() {
+            blocks.push(PromptBlock::BulletList(entry.lines));
+        }
+        children.push(PromptNode::State(PromptStateDoc::new("state", blocks)));
+    }
+
+    if let Some(how_to_use) = build_runtime_app_how_to_use_prompt(ctx, &surface.app_id)
+        && !how_to_use.trim().is_empty()
+    {
+        children.push(PromptNode::State(PromptStateDoc::new(
+            "how_to_use",
+            vec![PromptBlock::Paragraph(how_to_use)],
+        )));
+    }
+
+    (!children.is_empty())
+        .then(|| PromptNode::Group(PromptGroupDoc::new(surface.app_id.to_string(), children)))
+}
+
+fn render_bracketed_values(values: impl IntoIterator<Item = String>) -> String {
+    format!(
+        "[{}]",
+        values
+            .into_iter()
+            .filter(|value| !value.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 impl AfterClaimContextPart for AfterClaimInputPart {

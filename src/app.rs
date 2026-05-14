@@ -73,11 +73,23 @@ impl Display for AppId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum AppToolScope {
     Browser,
     Terminal,
     Coding,
+}
+
+impl Display for AppToolScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::Browser => "Browser",
+            Self::Terminal => "Terminal",
+            Self::Coding => "Coding",
+        };
+        write!(f, "{name}")
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -120,6 +132,21 @@ pub struct AppToolSpec {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    pub scope: AppToolScope,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppScopedToolSpec {
+    pub owner_app_id: AppId,
+    pub tool: AppToolSpec,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppComposedSurface {
+    pub app_id: AppId,
+    pub role: String,
+    pub exposed_scopes: Vec<AppToolScope>,
+    pub exposed_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +216,11 @@ pub trait App: Send + Sync {
     }
 
     fn tool_specs(&self) -> Result<Vec<AppToolSpec>> {
+        let scope = self
+            .focused_tool_scopes()
+            .first()
+            .copied()
+            .unwrap_or(AppToolScope::Coding);
         Ok(self
             .dynamic_tools()?
             .into_iter()
@@ -196,6 +228,7 @@ pub trait App: Send + Sync {
                 name: tool.name,
                 description: tool.description,
                 input_schema: tool.input_schema,
+                scope,
             })
             .collect())
     }
@@ -333,6 +366,54 @@ impl AppManager {
             .unwrap_or(&[])
     }
 
+    pub fn tool_scope_is_focused(&self, scope: AppToolScope) -> bool {
+        self.focused_tool_scopes().contains(&scope)
+    }
+
+    pub fn focused_composed_surfaces(&self) -> Vec<AppComposedSurface> {
+        let Some(focused) = self.focused.as_ref() else {
+            return Vec::new();
+        };
+        let focused_scopes = self.focused_tool_scopes();
+        if focused_scopes.is_empty() {
+            return Vec::new();
+        }
+
+        self.order
+            .iter()
+            .filter(|id| *id != focused)
+            .filter_map(|id| {
+                let app = self.apps.get(id)?;
+                let tool_specs = match app.tool_specs() {
+                    Ok(tools) => tools,
+                    Err(err) => {
+                        tracing::warn!("failed to list tools for app `{id}`: {err:?}");
+                        return None;
+                    }
+                };
+
+                let mut exposed_scopes = Vec::new();
+                let mut exposed_tools = Vec::new();
+                for tool in tool_specs {
+                    if !focused_scopes.contains(&tool.scope) {
+                        continue;
+                    }
+                    if !exposed_scopes.contains(&tool.scope) {
+                        exposed_scopes.push(tool.scope);
+                    }
+                    exposed_tools.push(tool.name);
+                }
+
+                (!exposed_tools.is_empty()).then(|| AppComposedSurface {
+                    app_id: id.clone(),
+                    role: "delegated_tools".to_string(),
+                    exposed_scopes,
+                    exposed_tools,
+                })
+            })
+            .collect()
+    }
+
     pub fn app_ids(&self) -> Vec<AppId> {
         self.order.clone()
     }
@@ -357,7 +438,7 @@ impl AppManager {
         Ok(())
     }
 
-    pub fn all_tool_specs(&self) -> Vec<(AppId, AppToolSpec)> {
+    pub fn all_tool_specs(&self) -> Vec<AppScopedToolSpec> {
         let mut tools = Vec::new();
         for id in &self.order {
             let Some(app) = self.apps.get(id) else {
@@ -365,7 +446,10 @@ impl AppManager {
             };
             match app.tool_specs() {
                 Ok(app_tools) => {
-                    tools.extend(app_tools.into_iter().map(|tool| (id.clone(), tool)));
+                    tools.extend(app_tools.into_iter().map(|tool| AppScopedToolSpec {
+                        owner_app_id: id.clone(),
+                        tool,
+                    }));
                 }
                 Err(err) => {
                     tracing::warn!("failed to list tools for app `{id}`: {err:?}");
@@ -399,9 +483,20 @@ impl AppManager {
         call: &AgentToolCall,
         context: &AppToolExecutionContext,
     ) -> Result<AppToolExecutionResult> {
-        if self.focused.as_ref() != Some(app_id) {
+        let owner = self
+            .apps
+            .get(app_id)
+            .ok_or_else(|| miette!("app missing for tool `{}`: {app_id}", call.name))?;
+        let tool_spec = owner
+            .tool_specs()?
+            .into_iter()
+            .find(|tool| tool.name == call.name)
+            .ok_or_else(|| miette!("app `{app_id}` does not own tool `{}`", call.name))?;
+        let focused_scopes = self.focused_tool_scopes();
+        if !focused_scopes.contains(&tool_spec.scope) {
             return Ok(app_tool_unavailable_result(
                 app_id,
+                tool_spec.scope,
                 self.focused.as_ref(),
                 call,
             ));
@@ -542,6 +637,7 @@ impl AppManager {
 
 fn app_tool_unavailable_result(
     app_id: &AppId,
+    required_scope: AppToolScope,
     focused: Option<&AppId>,
     call: &AgentToolCall,
 ) -> AppToolExecutionResult {
@@ -549,11 +645,11 @@ fn app_tool_unavailable_result(
         .map(|id| id.to_string())
         .unwrap_or_else(|| "<none>".to_string());
     let reason = format!(
-        "`{}` is scoped to app `{app_id}`, but the focused app is `{focused_text}`.",
+        "`{}` is owned by app `{app_id}` and requires `{required_scope}` tools, but the focused app is `{focused_text}`.",
         call.name
     );
     let allowed_next_action = format!(
-        "Call focus_app with app=\"{app_id}\" before using `{}` if the task requires this app.",
+        "Focus an app that exposes `{required_scope}` tools before using `{}` if the task requires this tool.",
         call.name
     );
     let model_content = format!(
@@ -566,6 +662,7 @@ fn app_tool_unavailable_result(
             "available": false,
             "tool": call.name,
             "app": app_id.to_string(),
+            "required_scope": required_scope.to_string(),
             "focused_app": focused_text,
             "reason": reason,
             "allowed_next_action": allowed_next_action,

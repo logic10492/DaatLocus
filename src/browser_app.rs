@@ -850,47 +850,56 @@ impl App for BrowserApp {
             AppToolSpec {
                 name: "browser_open_page".to_string(),
                 description: "Create a browser page, open the specified URL, and return the new `page_id`.".to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserOpenArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "browser_snapshot".to_string(),
                 description: "Read a compact semantic snapshot of the specified page, preserving high-value nodes and interactable element refs first."
                     .to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserSnapshotArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "browser_wait".to_string(),
                 description: "Wait until the specified page reaches a stable state. `state` may be `dom` or `load`.".to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserWaitArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "browser_click".to_string(),
                 description: "Click a page element by `element_ref`; if page changes made the ref stale, the tool fails directly.".to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserClickArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "browser_fill".to_string(),
                 description: "Fill an input by `element_ref`; if page changes made the ref stale, the tool fails directly.".to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserFillArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "browser_back".to_string(),
                 description: "Navigate the specified page backward.".to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserBackArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "browser_forward".to_string(),
                 description: "Navigate the specified page forward.".to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserForwardArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "browser_reload".to_string(),
                 description: "Reload the specified page.".to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserReloadArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "browser_close_page".to_string(),
                 description: "Close the specified browser page. Close pages that are no longer needed to save memory.".to_string(),
+                scope: AppToolScope::Browser,
                 input_schema: serde_json::to_value(schema_for!(BrowserClosePageArgs)).unwrap(),
             },
         ])

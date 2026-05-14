@@ -33,7 +33,7 @@ When editing source code, always prefer Coding app tools such as `coding_edit_co
 After each edit, the tool automatically evaluates the impact of your changes and accumulates pending review events. You can also see the current number of pending review events in Coding app state. You do not need to handle them immediately. However, after you finish a series of edits (usually when a plan step is complete, or when you judge that too many review events have accumulated), call `coding_next_review` to acknowledge and claim review events, then follow their instructions to inspect the impact of your changes. This must always be done before reporting back to the user.
 
 SCOPE engine configuration hints are returned by `coding_open_project` and retained in Coding app state, including available tree-sitter languages plus visible per-language `lsp_setup_hint` lines for LSP language/server setup guidance."#;
-const CODING_TOOL_SCOPES: &[AppToolScope] = &[AppToolScope::Coding];
+const CODING_TOOL_SCOPES: &[AppToolScope] = &[AppToolScope::Coding, AppToolScope::Terminal];
 const MAX_RENDERED_LSP_SETUP_HINTS: usize = 5;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -385,36 +385,43 @@ impl App for CodingApp {
             AppToolSpec {
                 name: "coding_open_project".to_string(),
                 description: "Open a project for semantic code operations using scope-engine.".to_string(),
+                scope: AppToolScope::Coding,
                 input_schema: serde_json::to_value(schema_for!(CodingOpenProjectArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "coding_read_code".to_string(),
                 description: "Read selector-resolved code content and language metadata.".to_string(),
+                scope: AppToolScope::Coding,
                 input_schema: serde_json::to_value(schema_for!(CodingReadCodeArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "grep".to_string(),
                 description: "Search file contents using a regex pattern.".to_string(),
+                scope: AppToolScope::Coding,
                 input_schema: serde_json::to_value(schema_for!(CodingGrepArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "glob".to_string(),
                 description: "Find files by glob pattern.".to_string(),
+                scope: AppToolScope::Coding,
                 input_schema: serde_json::to_value(schema_for!(CodingGlobArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "coding_edit_code".to_string(),
                 description: "Apply a stripped v4a hunk-only patch to selector-resolved code and return propagation results.".to_string(),
+                scope: AppToolScope::Coding,
                 input_schema: serde_json::to_value(schema_for!(CodingEditCodeArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "coding_delete_code".to_string(),
                 description: "Delete selector-resolved code and return propagation results.".to_string(),
+                scope: AppToolScope::Coding,
                 input_schema: serde_json::to_value(schema_for!(CodingDeleteCodeArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "coding_next_review".to_string(),
                 description: "Acknowledge and return the next accumulated scope-engine propagation review event, if any.".to_string(),
+                scope: AppToolScope::Coding,
                 input_schema: serde_json::to_value(schema_for!(CodingNextReviewArgs)).unwrap(),
             },
         ])

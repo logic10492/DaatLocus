@@ -339,7 +339,8 @@ LF: /\n/"#
 }
 
 struct AppRuntimeTool {
-    app_id: AppId,
+    owner_app_id: AppId,
+    scope: AppToolScope,
     name: String,
     description: String,
     input_spec: AgentToolInputSpec,
@@ -357,6 +358,10 @@ impl RuntimeTool for AppRuntimeTool {
 
     fn input_spec(&self) -> AgentToolInputSpec {
         self.input_spec.clone()
+    }
+
+    fn is_available(&self, context: &Context) -> bool {
+        context.apps.tool_scope_is_focused(self.scope)
     }
 
     fn summarize_action(&self, _call: &AgentToolCall) -> miette::Result<EpisodeActionRecord> {
@@ -386,7 +391,7 @@ impl RuntimeTool for AppRuntimeTool {
         };
         let result = context
             .apps
-            .execute_tool_for_app(&self.app_id, call, &app_context)
+            .execute_tool_for_app(&self.owner_app_id, call, &app_context)
             .await?;
         let mut output =
             ToolExecutionResult::new(result.summary.clone(), result.payload, result.ui_event);
@@ -412,25 +417,31 @@ fn build_app_runtime_tools(
 ) -> Vec<Box<dyn RuntimeTool>> {
     let mut tools: Vec<Box<dyn RuntimeTool>> = Vec::new();
     let mut seen_names = reserved_names.clone();
-    for (app_id, tool) in context.apps.all_tool_specs() {
+    for scoped_tool in context.apps.all_tool_specs() {
+        let owner_app_id = scoped_tool.owner_app_id;
+        let tool = scoped_tool.tool;
         if !is_valid_dynamic_tool_name(&tool.name) {
             tracing::warn!(
                 "skipping app tool `{}` from app `{}` because its name must match [A-Za-z0-9_-]+",
                 tool.name,
-                app_id
+                owner_app_id
             );
+            continue;
+        }
+        if !context.apps.tool_scope_is_focused(tool.scope) {
             continue;
         }
         if !seen_names.insert(tool.name.clone()) {
             tracing::warn!(
                 "skipping app tool `{}` from app `{}` because its name conflicts with another runtime tool",
                 tool.name,
-                app_id
+                owner_app_id
             );
             continue;
         }
         tools.push(Box::new(AppRuntimeTool {
-            app_id,
+            owner_app_id,
+            scope: tool.scope,
             name: tool.name,
             description: tool.description,
             input_spec: AgentToolInputSpec::JsonSchema {
@@ -770,6 +781,140 @@ pub async fn execute_agent_tool_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    use async_trait::async_trait;
+    use tempfile::TempDir;
+
+    use crate::{
+        app::{App, AppManager},
+        browser_app::BrowserApp,
+        coding_app::CodingApp,
+        config::Config,
+        context::Context,
+        context_budget::TokenEstimateBaseline,
+        core::Llm,
+        events::EventStore,
+        hindsight::HindsightClient,
+        memory::Memory,
+        pending_work::PendingWorkQueue,
+        plan::Plan,
+        preturn_state::PreTurnState,
+        reasoning::{
+            compiled::CompiledPromptStore,
+            runtime::{
+                AgentTurnRequest, AgentTurnStreamResult, PromptMemoryContext, PromptRequest,
+            },
+        },
+        runtime::bootstrap::DaatLocusHomeOverride,
+        runtime_context::build_preturn_context_text,
+        sandbox::RuntimeSandboxPolicy,
+        telegram_acl::TelegramAclHandle,
+        telegram_transport::state::TelegramTransportState,
+        terminal_app::TerminalApp,
+        workflow::WorkflowStore,
+        workspace_app::WorkspaceAppRegistry,
+    };
+
+    struct UnusedLlm;
+
+    #[async_trait]
+    impl Llm for UnusedLlm {
+        async fn run_json(
+            &self,
+            _context: &Context,
+            _request: PromptRequest,
+        ) -> Result<serde_json::Value> {
+            Err(miette!("unused test llm"))
+        }
+
+        async fn run_agent_turn(
+            &self,
+            _context: &Context,
+            _request: AgentTurnRequest,
+        ) -> Result<AgentTurnStreamResult> {
+            Err(miette!("unused test llm"))
+        }
+    }
+
+    struct IsolatedTestContext {
+        context: Context,
+        _home_override: DaatLocusHomeOverride,
+        _home: TempDir,
+        _execution: TempDir,
+    }
+
+    impl IsolatedTestContext {
+        async fn new(focused: AppId) -> Self {
+            let home = tempfile::tempdir().expect("test home");
+            let execution = tempfile::tempdir().expect("test execution cwd");
+            let home_override = DaatLocusHomeOverride::set(home.path().to_path_buf());
+            let config = Config::default();
+            let hindsight = HindsightClient::test_client(&config.hindsight);
+            let hindsight_retain = hindsight.spawn_retain_worker();
+            let telegram = TelegramTransportState::new();
+            let (daemon_control_tx, _daemon_control_rx) = tokio::sync::mpsc::unbounded_channel();
+            let apps: Vec<Box<dyn App>> = vec![
+                Box::new(BrowserApp::new()),
+                Box::new(TerminalApp::new()),
+                Box::new(CodingApp::new()),
+            ];
+            let apps = AppManager::new(Some(focused), apps).await.unwrap();
+            let context = Context {
+                llm: Box::new(UnusedLlm),
+                judge_llm: Box::new(UnusedLlm),
+                config,
+                hindsight,
+                hindsight_retain,
+                memory: Memory::new().await,
+                prompt_memory: PromptMemoryContext::default(),
+                plan: Plan::new().await,
+                events: EventStore::new().await,
+                pending_work: PendingWorkQueue::new().await,
+                workflows: WorkflowStore::new().await,
+                bound_workflow_id: None,
+                active_workflow_run: None,
+                pending_workflow_run_flushes: Vec::new(),
+                current_work_origin: None,
+                workflow_step_started_bound_id: None,
+                apps,
+                workspace_apps: WorkspaceAppRegistry::default(),
+                telegram: telegram.handle(),
+                telegram_acl: TelegramAclHandle::load().await,
+                compiled_prompts: CompiledPromptStore::from_entries(Vec::new()),
+                execution_cwd: execution.path().to_path_buf(),
+                sandbox_policy: RuntimeSandboxPolicy::disabled(),
+                dashboard_tx: None,
+                dashboard_history: None,
+                daemon_control_tx,
+                latest_context_composition: None,
+                active_runtime_turn: false,
+                active_runtime_phase: None,
+                runtime_turn_started_at: None,
+                active_app_notices: HashMap::new(),
+                runtime_overflow_failures: std::sync::Arc::new(parking_lot::Mutex::new(
+                    HashMap::new(),
+                )),
+                suppressed_app_notices: std::sync::Arc::new(
+                    parking_lot::Mutex::new(HashMap::new()),
+                ),
+                live_progress_tx: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+                telegram_live_drafts: std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                claimed_event_ids: Vec::new(),
+                claimed_app_notices: Vec::new(),
+                afterclaim_context_fingerprint: None,
+                idle_since: None,
+                last_idle_sleep_at: None,
+                token_estimate_baseline: TokenEstimateBaseline::default(),
+            };
+            Self {
+                context,
+                _home_override: home_override,
+                _home: home,
+                _execution: execution,
+            }
+        }
+    }
 
     #[test]
     fn apply_patch_tool_uses_lark_envelope_grammar() {
@@ -906,5 +1051,104 @@ mod tests {
 
         assert_eq!(status.icon, glyph::ERROR);
         assert_eq!(status.text, "Workflow Activation Failed");
+    }
+
+    #[tokio::test]
+    async fn coding_focus_exposes_terminal_delegated_tools() {
+        let isolated = IsolatedTestContext::new(AppId::coding()).await;
+
+        let names = build_runtime_tool_specs(&isolated.context)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<HashSet<_>>();
+
+        assert!(names.contains("coding_open_project"));
+        assert!(names.contains("terminal_exec"));
+        assert!(names.contains("terminal_write_stdin"));
+        assert!(names.contains("terminal_terminate"));
+        assert!(!names.contains("browser_open_page"));
+    }
+
+    #[tokio::test]
+    async fn coding_focus_executes_terminal_owned_tool() {
+        let mut isolated = IsolatedTestContext::new(AppId::coding()).await;
+        let call = AgentToolCall {
+            id: "call_1".to_string(),
+            name: "terminal_exec".to_string(),
+            arguments: json!({
+                "command": "printf '%s\\n' delegated-terminal",
+                "yield_time_ms": 100,
+            }),
+        };
+
+        let result = execute_agent_tool_call(&mut isolated.context, &call)
+            .await
+            .unwrap();
+
+        assert!(
+            result.model_content().contains("delegated-terminal"),
+            "model content was: {}",
+            result.model_content()
+        );
+        assert!(matches!(result.ui_event, ToolUiEvent::Terminal(_)));
+    }
+
+    #[tokio::test]
+    async fn coding_focus_renders_terminal_as_composed_app_segment() {
+        let mut isolated = IsolatedTestContext::new(AppId::coding()).await;
+        let call = AgentToolCall {
+            id: "call_1".to_string(),
+            name: "terminal_exec".to_string(),
+            arguments: json!({
+                "command": "printf '%s\\n' segmented-terminal-context",
+                "yield_time_ms": 100,
+            }),
+        };
+        execute_agent_tool_call(&mut isolated.context, &call)
+            .await
+            .unwrap();
+
+        let state = PreTurnState::new(&mut isolated.context).await;
+        let rendered = build_preturn_context_text(&isolated.context, &state);
+
+        assert!(rendered.contains("<focused_app>"), "{rendered}");
+        assert!(rendered.contains("<Coding>"), "{rendered}");
+        assert!(rendered.contains("<composed_apps>"), "{rendered}");
+        assert!(rendered.contains("<Terminal>"), "{rendered}");
+        assert!(rendered.contains("role: delegated_tools"), "{rendered}");
+        assert!(
+            rendered.contains("exposed_scopes: [Terminal]"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "exposed_tools: [terminal_exec, terminal_write_stdin, terminal_terminate]"
+            ),
+            "{rendered}"
+        );
+        assert!(rendered.contains("kind=terminal"), "{rendered}");
+        assert!(
+            rendered.contains("segmented-terminal-context"),
+            "{rendered}"
+        );
+        assert!(
+            rendered
+                .contains("Use only `terminal_exec / terminal_write_stdin / terminal_terminate`"),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_focus_does_not_expose_coding_tools() {
+        let isolated = IsolatedTestContext::new(AppId::terminal()).await;
+
+        let names = build_runtime_tool_specs(&isolated.context)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<HashSet<_>>();
+
+        assert!(names.contains("terminal_exec"));
+        assert!(!names.contains("coding_open_project"));
+        assert!(!names.contains("browser_open_page"));
     }
 }

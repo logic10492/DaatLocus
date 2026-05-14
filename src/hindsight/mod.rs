@@ -376,6 +376,18 @@ struct HindsightOperationStatusResponse {
 }
 
 impl HindsightClient {
+    #[cfg(test)]
+    pub(crate) fn test_client(config: &HindsightConfig) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            config: config.clone(),
+            retain_api: HindsightRetainApi::MemoriesEndpoint,
+            supports_update_mode_append: false,
+            restart_support: None,
+            _llm_proxy: None,
+        }
+    }
+
     pub async fn connect(config: &HindsightConfig) -> Result<Self> {
         if config.bank_id.trim().is_empty() {
             return Err(miette!("hindsight bank_id must not be empty"));

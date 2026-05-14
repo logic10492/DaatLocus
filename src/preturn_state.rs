@@ -69,7 +69,12 @@ impl PreTurnState {
     }
 
     pub fn app_state_entries(&self) -> Vec<PreTurnAppStateEntry> {
-        self.apps.app_state_entries(PRETURN_APP_LINES_PER_APP)
+        self.apps
+            .focused_app_state_entries(PRETURN_APP_LINES_PER_APP)
+    }
+
+    pub fn full_app_state_entry(&self, app_id: &AppId) -> Option<PreTurnAppStateEntry> {
+        self.apps.app_state_entry(app_id, None)
     }
 }
 
@@ -161,24 +166,34 @@ impl AppPreTurnState {
         }
     }
 
-    fn app_state_entries(&self, max_lines_per_device: usize) -> Vec<PreTurnAppStateEntry> {
+    fn focused_app_state_entries(&self, max_lines_per_device: usize) -> Vec<PreTurnAppStateEntry> {
         let Some(focused) = self.focused_app.as_ref() else {
             return Vec::new();
         };
 
+        self.app_state_entry(focused, Some(max_lines_per_device))
+            .into_iter()
+            .collect()
+    }
+
+    fn app_state_entry(
+        &self,
+        app_id: &AppId,
+        max_lines: Option<usize>,
+    ) -> Option<PreTurnAppStateEntry> {
         self.states
             .iter()
-            .filter(|(id, _)| id == focused)
+            .find(|(id, _)| id == app_id)
             .map(|(id, state)| {
-                let mut lines = state
-                    .lines
-                    .iter()
-                    .take(max_lines_per_device)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let omitted = state.lines.len().saturating_sub(max_lines_per_device);
-                if omitted > 0 {
-                    lines.push(format!("... {omitted} more line(s) omitted"));
+                let mut lines = match max_lines {
+                    Some(limit) => state.lines.iter().take(limit).cloned().collect::<Vec<_>>(),
+                    None => state.lines.clone(),
+                };
+                if let Some(limit) = max_lines {
+                    let omitted = state.lines.len().saturating_sub(limit);
+                    if omitted > 0 {
+                        lines.push(format!("... {omitted} more line(s) omitted"));
+                    }
                 }
                 PreTurnAppStateEntry {
                     app_id: id.to_string(),
@@ -186,7 +201,6 @@ impl AppPreTurnState {
                     lines,
                 }
             })
-            .collect()
     }
 }
 

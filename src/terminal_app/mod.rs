@@ -680,16 +680,19 @@ impl App for TerminalApp {
             AppToolSpec {
                 name: "terminal_exec".to_string(),
                 description: "Start a terminal command and return output after the current output window ends. If `session_id` is provided, reuse that session; otherwise create a new session. If the command is still running, the result keeps the session so later calls can continue with terminal_write_stdin.".to_string(),
+                scope: AppToolScope::Terminal,
                 input_schema: serde_json::to_value(schema_for!(TerminalExecArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "terminal_write_stdin".to_string(),
                 description: "Continue a running terminal session. Send text to write stdin; send empty text to only wait for the next output chunk.".to_string(),
+                scope: AppToolScope::Terminal,
                 input_schema: serde_json::to_value(schema_for!(TerminalWriteStdinArgs)).unwrap(),
             },
             AppToolSpec {
                 name: "terminal_terminate".to_string(),
                 description: "Terminate the current foreground process in the specified terminal session and return the updated session state.".to_string(),
+                scope: AppToolScope::Terminal,
                 input_schema: serde_json::to_value(schema_for!(TerminalTerminateArgs)).unwrap(),
             },
         ])
