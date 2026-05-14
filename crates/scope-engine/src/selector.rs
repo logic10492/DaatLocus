@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+type OptionalLineRangeSuffix<'a> = (&'a str, Option<(usize, usize)>);
+
 /// A parsed SCOPE selector. The selector is a positioning DSL: it locates
 /// targets/ranges, but it does not encode operation semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,10 +173,10 @@ impl std::fmt::Display for SymbolKind {
 /// Returns an error string if the input is missing `::`, has an empty file path,
 /// or has an empty symbol name.
 pub fn parse_selector(input: &str) -> Result<ParsedSelector, String> {
-    if !input.contains("::") {
-        if let Some((file_part, suffix)) = input.split_once('#') {
-            return parse_hash_selector(file_part, suffix, input);
-        }
+    if !input.contains("::")
+        && let Some((file_part, suffix)) = input.split_once('#')
+    {
+        return parse_hash_selector(file_part, suffix, input);
     }
 
     // Split on the first `::`
@@ -246,7 +248,7 @@ fn parse_hash_selector(
 }
 
 /// Parse an optional `#Lstart-Lend` line-range disambiguator suffix.
-fn parse_line_range_suffix(expr: &str) -> Result<(&str, Option<(usize, usize)>), String> {
+fn parse_line_range_suffix(expr: &str) -> Result<OptionalLineRangeSuffix<'_>, String> {
     let Some((symbol_expr, range_expr)) = expr.rsplit_once("#L") else {
         return Ok((expr, None));
     };

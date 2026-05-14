@@ -6,6 +6,8 @@ use crate::api::{PropagationResult, PropagationSource};
 use crate::treesitter::{SymbolMatch, TreeSitterAnalyzer};
 use std::sync::Mutex;
 
+type HunkHeader = (Option<usize>, Option<usize>, Option<usize>, Option<usize>);
+
 /// A single hunk inside a stripped v4a patch.
 #[derive(Debug, Clone)]
 pub(crate) struct Hunk {
@@ -62,8 +64,7 @@ pub fn apply_stripped_v4a_patch(original: &str, patch: &str) -> Result<String, S
 pub(crate) fn parse_stripped_v4a_hunks(patch: &str) -> Result<Vec<Hunk>, String> {
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut current_lines: Vec<HunkLine> = Vec::new();
-    let mut current_header: Option<(Option<usize>, Option<usize>, Option<usize>, Option<usize>)> =
-        None;
+    let mut current_header: Option<HunkHeader> = None;
 
     for line in patch.lines() {
         let trimmed = line.trim();
@@ -136,9 +137,7 @@ fn is_hunk_body_line(line: &str) -> bool {
 
 /// Parse `@@`, `@@ -OldStart +NewStart @@`, or
 /// `@@ -OldStart,OldCount +NewStart,NewCount @@`.
-fn parse_hunk_header(
-    line: &str,
-) -> Result<(Option<usize>, Option<usize>, Option<usize>, Option<usize>), String> {
+fn parse_hunk_header(line: &str) -> Result<HunkHeader, String> {
     // Remove @@ markers and split
     let inner = line.trim_start_matches("@@").trim_end_matches("@@").trim();
     if inner.is_empty() {

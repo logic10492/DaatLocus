@@ -379,10 +379,10 @@ fn search_project(
     for entry in project_files(project_root, target)? {
         let path = entry.path();
         let relative = relative_file_path(project_root, path);
-        if let Some(include) = include.as_ref() {
-            if !include.is_match(&relative) {
-                continue;
-            }
+        if let Some(include) = include.as_ref()
+            && !include.is_match(&relative)
+        {
+            continue;
         }
 
         let Ok(content) = fs::read_to_string(path) else {

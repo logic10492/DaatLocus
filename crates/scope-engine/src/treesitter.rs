@@ -186,18 +186,18 @@ impl TreeSitterAnalyzer {
         symbols: &mut Vec<SymbolMatch>,
     ) {
         let kind = node.kind();
-        if is_definition_kind(kind) {
-            if let Some(name) = self.extract_def_name(node, source) {
-                let start_line = node.start_position().row + 1;
-                let end_line = node.end_position().row + 1;
-                symbols.push(SymbolMatch {
-                    name,
-                    kind: SymbolKind::from_ts_node_kind(kind),
-                    kind_prefix: kind_prefix(kind),
-                    start_line,
-                    end_line,
-                });
-            }
+        if is_definition_kind(kind)
+            && let Some(name) = self.extract_def_name(node, source)
+        {
+            let start_line = node.start_position().row + 1;
+            let end_line = node.end_position().row + 1;
+            symbols.push(SymbolMatch {
+                name,
+                kind: SymbolKind::from_ts_node_kind(kind),
+                kind_prefix: kind_prefix(kind),
+                start_line,
+                end_line,
+            });
         }
 
         for i in 0..node.child_count() {
