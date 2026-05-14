@@ -9,6 +9,22 @@ use std::sync::Mutex;
 /// A single hunk inside a stripped v4a patch.
 #[derive(Debug, Clone)]
 pub(crate) struct Hunk {
+    /// Old starting line (1-based). For selector-scoped edits this is
+    /// selector-relative until resolved.
+    old_start: Option<usize>,
+    /// Number of lines in old hunk. Missing counts are inferred from hunk body.
+    old_count: Option<usize>,
+    /// New starting line (1-based). For selector-scoped edits this is
+    /// selector-relative until resolved.
+    _new_start: Option<usize>,
+    /// Number of lines in new hunk. Missing counts are inferred from hunk body.
+    _new_count: Option<usize>,
+    /// Lines: ` ` for context, `+` for added, `-` for removed.
+    lines: Vec<HunkLine>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedHunk {
     /// Old file starting line (1-based).
     old_start: usize,
     /// Number of lines in old file hunk.
@@ -38,14 +54,16 @@ pub fn apply_stripped_v4a_patch(original: &str, patch: &str) -> Result<String, S
     if hunks.is_empty() {
         return Err("no hunks found in patch".to_string());
     }
-    apply_hunks(original, &hunks)
+    let resolved = resolve_hunks(original, &hunks, 1, None)?;
+    apply_hunks(original, &resolved)
 }
 
 /// Parse the stripped v4a hunk-only format.
 pub(crate) fn parse_stripped_v4a_hunks(patch: &str) -> Result<Vec<Hunk>, String> {
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut current_lines: Vec<HunkLine> = Vec::new();
-    let mut current_header: Option<(usize, usize, usize, usize)> = None;
+    let mut current_header: Option<(Option<usize>, Option<usize>, Option<usize>, Option<usize>)> =
+        None;
 
     for line in patch.lines() {
         let trimmed = line.trim();
@@ -64,20 +82,28 @@ pub(crate) fn parse_stripped_v4a_hunks(patch: &str) -> Result<Vec<Hunk>, String>
                     lines: std::mem::take(&mut current_lines),
                 });
             }
-            // Parse header: @@ -OldStart,OldCount +NewStart,NewCount @@
+            // Parse header: @@, @@ -OldStart +NewStart @@, or
+            // @@ -OldStart,OldCount +NewStart,NewCount @@.
             let header = parse_hunk_header(trimmed)?;
             current_header = Some(header);
-        } else if current_header.is_some() {
-            // Inside a hunk body
-            if line.is_empty() {
-                // Empty lines are context
-                current_lines.push(HunkLine::Context(String::new()));
-            } else if let Some(stripped) = line.strip_prefix('+') {
-                current_lines.push(HunkLine::Added(stripped.to_string()));
-            } else if let Some(stripped) = line.strip_prefix('-') {
-                current_lines.push(HunkLine::Removed(stripped.to_string()));
-            } else if let Some(stripped) = line.strip_prefix(' ') {
-                current_lines.push(HunkLine::Context(stripped.to_string()));
+        } else {
+            if current_header.is_none() && is_hunk_body_line(line) {
+                // Headerless stripped hunks are resolved later from their body.
+                current_header = Some((None, None, None, None));
+            }
+
+            if current_header.is_some() {
+                // Inside a hunk body
+                if line.is_empty() {
+                    // Empty lines are context
+                    current_lines.push(HunkLine::Context(String::new()));
+                } else if let Some(stripped) = line.strip_prefix('+') {
+                    current_lines.push(HunkLine::Added(stripped.to_string()));
+                } else if let Some(stripped) = line.strip_prefix('-') {
+                    current_lines.push(HunkLine::Removed(stripped.to_string()));
+                } else if let Some(stripped) = line.strip_prefix(' ') {
+                    current_lines.push(HunkLine::Context(stripped.to_string()));
+                }
             }
             // Ignore lines that don't start with +, -, or space outside hunks
         }
@@ -104,26 +130,44 @@ pub(crate) fn parse_stripped_v4a_hunks(patch: &str) -> Result<Vec<Hunk>, String>
     Ok(hunks)
 }
 
-/// Parse `@@ -OldStart,OldCount +NewStart,NewCount @@` or `@@ -OldStart +NewStart @@`
-fn parse_hunk_header(line: &str) -> Result<(usize, usize, usize, usize), String> {
+fn is_hunk_body_line(line: &str) -> bool {
+    line.starts_with('+') || line.starts_with('-') || line.starts_with(' ')
+}
+
+/// Parse `@@`, `@@ -OldStart +NewStart @@`, or
+/// `@@ -OldStart,OldCount +NewStart,NewCount @@`.
+fn parse_hunk_header(
+    line: &str,
+) -> Result<(Option<usize>, Option<usize>, Option<usize>, Option<usize>), String> {
     // Remove @@ markers and split
     let inner = line.trim_start_matches("@@").trim_end_matches("@@").trim();
+    if inner.is_empty() {
+        return Ok((None, None, None, None));
+    }
 
     let parts: Vec<&str> = inner.split_whitespace().collect();
-    if parts.len() < 2 {
+    if parts.is_empty() || parts.len() > 2 {
         return Err(format!("invalid hunk header: {line}"));
     }
 
-    let old_part = parts[0].trim_start_matches('-');
-    let new_part = parts[1].trim_start_matches('+');
-
+    let old_part = parts[0]
+        .strip_prefix('-')
+        .ok_or_else(|| format!("invalid hunk header: {line}"))?;
     let (old_start, old_count) = parse_hunk_range(old_part)?;
-    let (_new_start, _new_count) = parse_hunk_range(new_part)?;
+
+    let (_new_start, _new_count) = if let Some(new_part) = parts.get(1) {
+        let new_part = new_part
+            .strip_prefix('+')
+            .ok_or_else(|| format!("invalid hunk header: {line}"))?;
+        parse_hunk_range(new_part)?
+    } else {
+        (None, None)
+    };
 
     Ok((old_start, old_count, _new_start, _new_count))
 }
 
-fn parse_hunk_range(s: &str) -> Result<(usize, usize), String> {
+fn parse_hunk_range(s: &str) -> Result<(Option<usize>, Option<usize>), String> {
     if let Some((start_str, count_str)) = s.split_once(',') {
         let start = start_str
             .parse::<usize>()
@@ -131,20 +175,124 @@ fn parse_hunk_range(s: &str) -> Result<(usize, usize), String> {
         let count = count_str
             .parse::<usize>()
             .map_err(|_| format!("bad count: {s}"))?;
-        Ok((start, count))
+        Ok((Some(start), Some(count)))
     } else {
         let start = s.parse::<usize>().map_err(|_| format!("bad range: {s}"))?;
-        Ok((start, 1))
+        Ok((Some(start), None))
+    }
+}
+
+fn infer_old_count(lines: &[HunkLine]) -> usize {
+    lines
+        .iter()
+        .filter(|line| matches!(line, HunkLine::Context(_) | HunkLine::Removed(_)))
+        .count()
+}
+
+fn infer_new_count(lines: &[HunkLine]) -> usize {
+    lines
+        .iter()
+        .filter(|line| matches!(line, HunkLine::Context(_) | HunkLine::Added(_)))
+        .count()
+}
+
+fn old_lines_for_hunk(lines: &[HunkLine]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|line| match line {
+            HunkLine::Context(text) | HunkLine::Removed(text) => Some(text.clone()),
+            HunkLine::Added(_) => None,
+        })
+        .collect()
+}
+
+fn resolve_hunks(
+    original: &str,
+    hunks: &[Hunk],
+    selector_start_line: usize,
+    selector_end_line: Option<usize>,
+) -> Result<Vec<ResolvedHunk>, String> {
+    let original_lines = original.lines().map(str::to_string).collect::<Vec<_>>();
+    let mut search_offset = selector_start_line.saturating_sub(1);
+    let selector_end_idx = selector_end_line
+        .unwrap_or(original_lines.len())
+        .min(original_lines.len());
+    let mut resolved = Vec::with_capacity(hunks.len());
+
+    for hunk in hunks {
+        let old_count = hunk
+            .old_count
+            .unwrap_or_else(|| infer_old_count(&hunk.lines));
+        let _new_count = hunk
+            ._new_count
+            .unwrap_or_else(|| infer_new_count(&hunk.lines));
+        let relative_new_start = hunk._new_start.or(hunk.old_start).unwrap_or(1);
+        let _new_start = selector_start_line + relative_new_start.saturating_sub(1);
+        let old_start = if let Some(relative_old_start) = hunk.old_start {
+            selector_start_line + relative_old_start.saturating_sub(1)
+        } else {
+            let old_lines = old_lines_for_hunk(&hunk.lines);
+            let found = find_hunk_start_in_range(
+                &original_lines,
+                &old_lines,
+                search_offset,
+                selector_end_idx,
+                selector_start_line == 1
+                    && selector_end_line.unwrap_or(original_lines.len()) >= original_lines.len(),
+            )?;
+            search_offset = found + old_count.max(1);
+            found + 1
+        };
+
+        resolved.push(ResolvedHunk {
+            old_start,
+            old_count,
+            _new_start,
+            _new_count,
+            lines: hunk.lines.clone(),
+        });
+    }
+
+    Ok(resolved)
+}
+
+fn find_hunk_start_in_range(
+    haystack: &[String],
+    needle: &[String],
+    start_idx: usize,
+    end_idx: usize,
+    require_unique: bool,
+) -> Result<usize, String> {
+    if needle.is_empty() {
+        return Ok(start_idx.min(end_idx));
+    }
+    if needle.len() > haystack.len() || start_idx >= end_idx || needle.len() > end_idx - start_idx {
+        return Err("hunk old text not found in selector range".to_string());
+    }
+
+    let mut matches = Vec::new();
+    let last_start = end_idx - needle.len();
+    for index in start_idx..=last_start {
+        if haystack[index..index + needle.len()] == needle[..] {
+            matches.push(index);
+        }
+    }
+
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err("hunk old text not found in selector range".to_string()),
+        [index, ..] if !require_unique => Ok(*index),
+        _ => Err("hunk old text matched multiple locations in selector range; provide a hunk header or more context".to_string()),
     }
 }
 
 /// Apply parsed hunks to original content. Hunks must be sorted by old_start
 /// (ascending) and non-overlapping, which is the standard unified diff format.
-fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, String> {
+fn apply_hunks(original: &str, hunks: &[ResolvedHunk]) -> Result<String, String> {
     let original_lines: Vec<&str> = original.lines().collect();
 
     // Sort hunks by old_start; reverse apply so indices stay stable
-    let mut sorted: Vec<&Hunk> = hunks.iter().collect();
+    let mut sorted: Vec<&ResolvedHunk> = hunks.iter().collect();
     sorted.sort_by_key(|h| h.old_start);
 
     // Validate hunks don't overlap
@@ -269,7 +417,14 @@ pub fn edit_code_apply(
         .map_err(|e| format!("cannot read {}: {e}", full_path.display()))?;
 
     // ── Apply the patch first ──
-    let new_content = apply_stripped_v4a_patch(&original, patch)?;
+    let hunks = parse_stripped_v4a_hunks(patch)?;
+    let resolved_hunks = resolve_hunks(
+        &original,
+        &hunks,
+        selector_match.start_line,
+        Some(selector_match.end_line),
+    )?;
+    let new_content = apply_hunks(&original, &resolved_hunks)?;
 
     // ── Validate: tree-sitter must be able to parse the new content ──
     let analyzer = TreeSitterAnalyzer::new();
@@ -293,14 +448,13 @@ pub fn edit_code_apply(
     }
 
     // ── Propagation: map modified lines → symbol names → LSP or open-ended ──
-    let hunks = parse_stripped_v4a_hunks(patch)?;
     let mut results: Vec<PropagationResult> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut modified_symbol_names = HashSet::new();
     modified_symbol_names.insert(selector_match.name.clone());
 
     // Step 1: collect all symbol names that were modified
-    for hunk in &hunks {
+    for hunk in &resolved_hunks {
         let line = hunk.old_start;
         if let Some(sel) = analyzer.find_containing_symbol(&full_path, line, project_root) {
             // Parse the selector to extract the symbol name
@@ -322,7 +476,7 @@ pub fn edit_code_apply(
             // Search for the symbol name in the modified content
             let (line, character) =
                 find_symbol_position(&new_content, sym_name).unwrap_or_else(|| {
-                    let hint_line = hunks.first().map(|h| h.old_start).unwrap_or(1);
+                    let hint_line = resolved_hunks.first().map(|h| h.old_start).unwrap_or(1);
                     (hint_line, 0)
                 });
             lsp_refs = lsp.find_references_for_symbol(&full_path, line, character, project_root);
@@ -341,7 +495,7 @@ pub fn edit_code_apply(
             if seen.insert(selector.clone()) {
                 // Build a snippet of the modification context
                 // Use the first hunk's position to give context around the change
-                let first_line = hunks.first().map(|h| h.old_start).unwrap_or(1);
+                let first_line = resolved_hunks.first().map(|h| h.old_start).unwrap_or(1);
                 let file_snippet = original
                     .lines()
                     .skip(first_line.saturating_sub(3))
@@ -584,6 +738,25 @@ mod tests {
     }
 
     #[test]
+    fn bare_hunk_header_is_inferred_from_context() {
+        let patch = "@@\n pub fn old() {\n-    let a = 1;\n+    let a = 77;\n     let b = 2;\n }\n";
+        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap();
+
+        assert!(result.contains("let a = 77;"));
+        assert!(!result.contains("let a = 1;"));
+        assert!(result.contains("pub fn other()"));
+    }
+
+    #[test]
+    fn headerless_hunk_is_inferred_from_context() {
+        let patch = " pub fn old() {\n-    let a = 1;\n+    let a = 88;\n     let b = 2;\n }\n";
+        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap();
+
+        assert!(result.contains("let a = 88;"));
+        assert!(!result.contains("let a = 1;"));
+    }
+
+    #[test]
     fn remove_symbol_range_works() {
         let content = "line 1\nline 2\ntarget line here\nline 4\nline 5\n";
         let result = remove_symbol_range(content, 2, 4);
@@ -617,7 +790,7 @@ mod e2e_tests {
         write_rust_file(dir.path(), "lib.rs", rust_code);
 
         let selector = "src/lib.rs::fn hello()";
-        let patch = "@@ -2,1 +2,1 @@\n-    println!(\"hello\");\n+    println!(\"hello world\");\n";
+        let patch = "@@ -1,3 +1,3 @@\n pub fn hello() {\n-    println!(\"hello\");\n+    println!(\"hello world\");\n }\n";
 
         let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
         let result = edit_code_apply(selector, patch, dir.path(), &lsp);
@@ -637,6 +810,58 @@ mod e2e_tests {
             !modified.contains("\"hello\""),
             "File should not contain old content"
         );
+    }
+
+    #[test]
+    fn edit_code_apply_accepts_selector_relative_line_numbers() {
+        let dir = setup_temp_rust_project();
+        let rust_code = "pub fn before() {\n    println!(\"before\");\n}\n\npub fn hello() {\n    println!(\"hello\");\n}\n\npub fn after() {\n    println!(\"after\");\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        let selector = "src/lib.rs::fn hello()";
+        let patch = "@@ -1,3 +1,3 @@\n pub fn hello() {\n-    println!(\"hello\");\n+    println!(\"selector relative\");\n }\n";
+
+        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
+
+        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        assert!(modified.contains("selector relative"));
+        assert!(modified.contains("println!(\"before\")"));
+        assert!(modified.contains("println!(\"after\")"));
+    }
+
+    #[test]
+    fn edit_code_apply_accepts_bare_hunk_header() {
+        let dir = setup_temp_rust_project();
+        let rust_code = "pub fn duplicated() {\n    println!(\"same\");\n}\n\npub fn target() {\n    println!(\"same\");\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        let selector = "src/lib.rs::fn target()";
+        let patch = "@@\n pub fn target() {\n-    println!(\"same\");\n+    println!(\"target only\");\n }\n";
+
+        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
+
+        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        assert!(modified.contains("println!(\"target only\")"));
+        assert!(modified.contains("pub fn duplicated() {\n    println!(\"same\");"));
+    }
+
+    #[test]
+    fn edit_code_apply_accepts_headerless_hunk_body() {
+        let dir = setup_temp_rust_project();
+        let rust_code = "pub fn target() {\n    let value = 1;\n    println!(\"{}\", value);\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        let selector = "src/lib.rs::fn target()";
+        let patch = " pub fn target() {\n-    let value = 1;\n+    let value = 2;\n     println!(\"{}\", value);\n }\n";
+
+        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
+
+        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        assert!(modified.contains("let value = 2;"));
+        assert!(!modified.contains("let value = 1;"));
     }
 
     #[test]
