@@ -13,7 +13,6 @@ use crate::{
 const PRETURN_SENSORY_MAX_TOKENS: usize = 400;
 const PRETURN_PLAN_MAX_TOKENS: usize = 1_600;
 const PRETURN_PLAN_MAX_ITEMS: usize = 8;
-const PRETURN_APP_LINES_PER_APP: usize = 8;
 
 /// Current execution state that is injected before each model turn.
 pub struct PreTurnState {
@@ -69,12 +68,11 @@ impl PreTurnState {
     }
 
     pub fn app_state_entries(&self) -> Vec<PreTurnAppStateEntry> {
-        self.apps
-            .focused_app_state_entries(PRETURN_APP_LINES_PER_APP)
+        self.apps.focused_app_state_entries()
     }
 
     pub fn full_app_state_entry(&self, app_id: &AppId) -> Option<PreTurnAppStateEntry> {
-        self.apps.app_state_entry(app_id, None)
+        self.apps.app_state_entry(app_id)
     }
 }
 
@@ -166,40 +164,22 @@ impl AppPreTurnState {
         }
     }
 
-    fn focused_app_state_entries(&self, max_lines_per_device: usize) -> Vec<PreTurnAppStateEntry> {
+    fn focused_app_state_entries(&self) -> Vec<PreTurnAppStateEntry> {
         let Some(focused) = self.focused_app.as_ref() else {
             return Vec::new();
         };
 
-        self.app_state_entry(focused, Some(max_lines_per_device))
-            .into_iter()
-            .collect()
+        self.app_state_entry(focused).into_iter().collect()
     }
 
-    fn app_state_entry(
-        &self,
-        app_id: &AppId,
-        max_lines: Option<usize>,
-    ) -> Option<PreTurnAppStateEntry> {
+    fn app_state_entry(&self, app_id: &AppId) -> Option<PreTurnAppStateEntry> {
         self.states
             .iter()
             .find(|(id, _)| id == app_id)
-            .map(|(id, state)| {
-                let mut lines = match max_lines {
-                    Some(limit) => state.lines.iter().take(limit).cloned().collect::<Vec<_>>(),
-                    None => state.lines.clone(),
-                };
-                if let Some(limit) = max_lines {
-                    let omitted = state.lines.len().saturating_sub(limit);
-                    if omitted > 0 {
-                        lines.push(format!("... {omitted} more line(s) omitted"));
-                    }
-                }
-                PreTurnAppStateEntry {
-                    app_id: id.to_string(),
-                    title: state.title.clone(),
-                    lines,
-                }
+            .map(|(id, state)| PreTurnAppStateEntry {
+                app_id: id.to_string(),
+                title: state.title.clone(),
+                lines: state.lines.clone(),
             })
     }
 }

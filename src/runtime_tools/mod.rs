@@ -388,6 +388,7 @@ impl RuntimeTool for AppRuntimeTool {
                 .main_model_config()
                 .tool_output_max_tokens
                 .max(1),
+            turn_epoch: context.runtime_turn_epoch,
         };
         let result = context
             .apps
@@ -891,6 +892,7 @@ mod tests {
                 active_runtime_turn: false,
                 active_runtime_phase: None,
                 runtime_turn_started_at: None,
+                runtime_turn_epoch: 0,
                 active_app_notices: HashMap::new(),
                 runtime_overflow_failures: std::sync::Arc::new(parking_lot::Mutex::new(
                     HashMap::new(),

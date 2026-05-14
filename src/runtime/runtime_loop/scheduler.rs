@@ -154,6 +154,7 @@ pub(crate) async fn daat_locus_loop(
         .wait_until_settled(Duration::from_secs(1), Duration::from_secs(3))
         .await;
     context.active_runtime_turn = true;
+    context.runtime_turn_epoch = context.runtime_turn_epoch.wrapping_add(1);
     context.runtime_turn_started_at = Some(std::time::Instant::now());
     context.set_runtime_phase(Some(RuntimeTurnPhase::PreflightMemory));
     sync_dashboard_state(

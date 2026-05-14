@@ -1,10 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use async_trait::async_trait;
 use miette::{Result, miette};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::{
     app::{
@@ -35,6 +40,9 @@ After each edit, the tool automatically evaluates the impact of your changes and
 SCOPE engine configuration hints are returned by `coding_open_project` and retained in Coding app state, including available tree-sitter languages plus visible per-language `lsp_setup_hint` lines for LSP language/server setup guidance."#;
 const CODING_TOOL_SCOPES: &[AppToolScope] = &[AppToolScope::Coding, AppToolScope::Terminal];
 const MAX_RENDERED_LSP_SETUP_HINTS: usize = 5;
+const PROJECT_INSTRUCTION_FILENAMES: &[&str] =
+    &["AGENTS.override.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"];
+const MAX_PROJECT_INSTRUCTION_BYTES: u64 = 32 * 1024;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CodingOpenProjectArgs {
@@ -73,6 +81,22 @@ pub struct CodingDeleteCodeArgs {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CodingNextReviewArgs {}
+
+#[derive(Debug, Clone)]
+struct ProjectInstructionDocument {
+    path: PathBuf,
+    scope_dir: PathBuf,
+    name: String,
+    content: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct DeliveredProjectInstructionKey {
+    turn_epoch: u64,
+    scope_dir: PathBuf,
+    sha256: String,
+}
 
 #[derive(Debug, Clone)]
 struct CodingConfigHintSummary {
@@ -202,6 +226,85 @@ fn json_string(entry: &Value, key: &str) -> String {
         .to_string()
 }
 
+fn load_instruction_documents_in_dir(dir: &Path) -> Result<Vec<ProjectInstructionDocument>> {
+    let mut documents = Vec::new();
+    for name in PROJECT_INSTRUCTION_FILENAMES {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let metadata = fs::metadata(&path).map_err(|err| {
+            miette!(
+                "failed to read project instruction metadata {}: {err}",
+                path.display()
+            )
+        })?;
+        if metadata.len() > MAX_PROJECT_INSTRUCTION_BYTES {
+            return Err(miette!(
+                "project instruction file is too large: {} ({} bytes; max {} bytes)",
+                path.display(),
+                metadata.len(),
+                MAX_PROJECT_INSTRUCTION_BYTES
+            ));
+        }
+        let content = fs::read_to_string(&path).map_err(|err| {
+            miette!(
+                "failed to read project instruction file {}: {err}",
+                path.display()
+            )
+        })?;
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        let sha256 = format!("{:x}", hasher.finalize());
+        documents.push(ProjectInstructionDocument {
+            path,
+            scope_dir: dir.to_path_buf(),
+            name: (*name).to_string(),
+            content,
+            sha256,
+        });
+    }
+    Ok(documents)
+}
+
+fn instruction_payload(instruction: &ProjectInstructionDocument) -> Value {
+    json!({
+        "path": instruction.path,
+        "scope_dir": instruction.scope_dir,
+        "name": instruction.name,
+        "sha256": instruction.sha256,
+        "content": instruction.content,
+    })
+}
+
+fn short_hash(hash: &str) -> &str {
+    hash.get(..12).unwrap_or(hash)
+}
+
+fn render_project_instructions(label: &str, instructions: &[ProjectInstructionDocument]) -> String {
+    let mut rendered = Vec::new();
+    rendered.push(format!("<{label}>"));
+    for instruction in instructions {
+        rendered.push(format!(
+            "<instruction file=\"{}\" scope_dir=\"{}\" sha256=\"{}\">",
+            instruction.path.display(),
+            instruction.scope_dir.display(),
+            instruction.sha256
+        ));
+        rendered.push(instruction.content.clone());
+        rendered.push("</instruction>".to_string());
+    }
+    rendered.push(format!("</{label}>"));
+    rendered.join("\n")
+}
+
+fn selector_path(selector: &str) -> &str {
+    selector
+        .split_once("::")
+        .map(|(path, _)| path)
+        .unwrap_or(selector)
+}
+
 fn format_install_command(value: Option<&Value>) -> Option<String> {
     let command = value?.get("command")?.as_str()?;
     let args = value
@@ -226,6 +329,8 @@ pub struct CodingApp {
     project_root: Option<PathBuf>,
     language: Option<String>,
     config_hint_summary: Option<CodingConfigHintSummary>,
+    root_instructions: Vec<ProjectInstructionDocument>,
+    delivered_scoped_instructions: HashSet<DeliveredProjectInstructionKey>,
     last_action: Option<String>,
 }
 
@@ -236,6 +341,8 @@ impl CodingApp {
             project_root: None,
             language: None,
             config_hint_summary: None,
+            root_instructions: Vec::new(),
+            delivered_scoped_instructions: HashSet::new(),
             last_action: None,
         }
     }
@@ -286,17 +393,35 @@ impl CodingApp {
             .unwrap_or(serde_json::Value::Null);
         let config_hint_summary = CodingConfigHintSummary::from_hints(&config_hints);
 
+        let root_instructions = load_instruction_documents_in_dir(&project_root)?;
+
         self.project_root = Some(project_root.clone());
         self.language = args.language.clone();
         self.config_hint_summary = Some(config_hint_summary.clone());
+        self.root_instructions = root_instructions.clone();
+        self.delivered_scoped_instructions.clear();
         self.last_action = Some("opened project".to_string());
 
+        let mut model_parts = vec![config_hint_summary.model_content()];
+        if !root_instructions.is_empty() {
+            model_parts.push(render_project_instructions(
+                "root_project_instructions",
+                &root_instructions,
+            ));
+        }
         let model_content = truncate_text_to_token_budget(
-            &config_hint_summary.model_content(),
+            &model_parts.join("\n\n"),
             context.tool_output_max_tokens,
         );
         let mut ui_lines = vec![format!("project_root={}", project_root.display())];
         ui_lines.extend(config_hint_summary.state_lines());
+        ui_lines.extend(root_instructions.iter().map(|instruction| {
+            format!(
+                "root_instruction file={} sha256={}",
+                instruction.path.display(),
+                short_hash(&instruction.sha256)
+            )
+        }));
 
         Ok(AppToolExecutionResult {
             summary: format!("opened coding project {}", project_root.display()),
@@ -305,11 +430,116 @@ impl CodingApp {
                 "language": args.language,
                 "scope_response": response.result,
                 "config_hints": config_hints,
+                "root_project_instructions": root_instructions.iter().map(instruction_payload).collect::<Vec<_>>(),
             }),
             model_content: Some(model_content),
             ui_event: ToolUiEvent::app("coding_open_project", ui_lines),
             turn_boundary_reason: None,
         })
+    }
+
+    fn scoped_instructions_for_path_once_per_turn(
+        &mut self,
+        relative_or_absolute_path: &str,
+        turn_epoch: u64,
+    ) -> Result<Vec<ProjectInstructionDocument>> {
+        let Some(project_root) = self.project_root.clone() else {
+            return Ok(Vec::new());
+        };
+        let candidate = Path::new(relative_or_absolute_path);
+        if candidate
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Ok(Vec::new());
+        }
+        let full_path = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            project_root.join(candidate)
+        };
+        let mut current_dir = if full_path.is_dir() {
+            full_path.as_path()
+        } else {
+            full_path.parent().unwrap_or(project_root.as_path())
+        };
+        let mut scope_dirs = Vec::new();
+        loop {
+            if current_dir == project_root {
+                break;
+            }
+            if !current_dir.starts_with(&project_root) {
+                break;
+            }
+            scope_dirs.push(current_dir.to_path_buf());
+            let Some(parent) = current_dir.parent() else {
+                break;
+            };
+            current_dir = parent;
+        }
+        scope_dirs.reverse();
+        let mut scoped = Vec::new();
+        for scope_dir in scope_dirs {
+            scoped.extend(load_instruction_documents_in_dir(&scope_dir)?);
+        }
+        let mut newly_delivered = Vec::new();
+        for instruction in scoped {
+            let key = DeliveredProjectInstructionKey {
+                turn_epoch,
+                scope_dir: instruction.scope_dir.clone(),
+                sha256: instruction.sha256.clone(),
+            };
+            if self.delivered_scoped_instructions.insert(key) {
+                newly_delivered.push(instruction);
+            }
+        }
+        Ok(newly_delivered)
+    }
+
+    fn append_scoped_instructions_to_result(
+        &mut self,
+        result: &mut AppToolExecutionResult,
+        path: &str,
+        context: &AppToolExecutionContext,
+    ) -> Result<()> {
+        let scoped_instructions =
+            self.scoped_instructions_for_path_once_per_turn(path, context.turn_epoch)?;
+        if scoped_instructions.is_empty() {
+            return Ok(());
+        }
+        let rendered =
+            render_project_instructions("scoped_project_instructions", &scoped_instructions);
+        let content = match result.model_content.take() {
+            Some(existing) if !existing.trim().is_empty() => format!("{rendered}\n\n{existing}"),
+            _ => rendered,
+        };
+        result.model_content = Some(truncate_text_to_token_budget(
+            &content,
+            context.tool_output_max_tokens,
+        ));
+        if let Some(payload_object) = result.payload.as_object_mut() {
+            payload_object.insert(
+                "scoped_project_instructions".to_string(),
+                Value::Array(
+                    scoped_instructions
+                        .iter()
+                        .map(instruction_payload)
+                        .collect(),
+                ),
+            );
+        }
+        if let ToolUiEvent::App(ui_data) = &mut result.ui_event {
+            ui_data
+                .body_lines
+                .extend(scoped_instructions.iter().map(|instruction| {
+                    format!(
+                        "scoped_instruction file={} sha256={}",
+                        instruction.path.display(),
+                        short_hash(&instruction.sha256)
+                    )
+                }));
+        }
+        Ok(())
     }
 
     fn require_project(&self) -> Result<()> {
@@ -348,6 +578,13 @@ impl App for CodingApp {
         }
         if let Some(summary) = self.config_hint_summary.as_ref() {
             lines.extend(summary.state_lines());
+        }
+        if !self.root_instructions.is_empty() {
+            lines.extend(
+                render_project_instructions("root_project_instructions", &self.root_instructions)
+                    .lines()
+                    .map(ToString::to_string),
+            );
         }
         if let Some(last_action) = self.last_action.as_ref() {
             lines.push(format!("last_action={last_action}"));
@@ -498,7 +735,7 @@ impl App for CodingApp {
                     result.language,
                     truncate_text_to_token_budget(&result.content, context.tool_output_max_tokens)
                 );
-                Ok(AppToolExecutionResult {
+                let mut output = AppToolExecutionResult {
                     summary: format!("read code {}", result.selector),
                     payload: serde_json::to_value(&result).unwrap(),
                     model_content: Some(model_content),
@@ -510,7 +747,13 @@ impl App for CodingApp {
                         ],
                     ),
                     turn_boundary_reason: None,
-                })
+                };
+                self.append_scoped_instructions_to_result(
+                    &mut output,
+                    selector_path(&args.selector),
+                    context,
+                )?;
+                Ok(output)
             }
             "grep" => {
                 self.require_project()?;
@@ -521,7 +764,7 @@ impl App for CodingApp {
                     args.include.as_deref(),
                 )?;
                 self.last_action = Some(format!("searched {}", args.pattern));
-                Ok(AppToolExecutionResult {
+                let mut output = AppToolExecutionResult {
                     summary: format!("found {} matches", result.matches.len()),
                     payload: serde_json::to_value(&result).unwrap(),
                     model_content: Some(truncate_text_to_token_budget(
@@ -533,14 +776,18 @@ impl App for CodingApp {
                         vec![format!("matches={}", result.matches.len())],
                     ),
                     turn_boundary_reason: None,
-                })
+                };
+                if let Some(path) = args.path.as_deref() {
+                    self.append_scoped_instructions_to_result(&mut output, path, context)?;
+                }
+                Ok(output)
             }
             "glob" => {
                 self.require_project()?;
                 let args: CodingGlobArgs = parse_coding_tool_args(call)?;
                 let result = self.scope.glob_files(&args.pattern, args.path.as_deref())?;
                 self.last_action = Some(format!("globbed {}", args.pattern));
-                Ok(AppToolExecutionResult {
+                let mut output = AppToolExecutionResult {
                     summary: format!("found {} files", result.files.len()),
                     payload: serde_json::to_value(&result).unwrap(),
                     model_content: Some(truncate_text_to_token_budget(
@@ -552,7 +799,11 @@ impl App for CodingApp {
                         vec![format!("files={}", result.files.len())],
                     ),
                     turn_boundary_reason: None,
-                })
+                };
+                if let Some(path) = args.path.as_deref() {
+                    self.append_scoped_instructions_to_result(&mut output, path, context)?;
+                }
+                Ok(output)
             }
             "coding_edit_code" => {
                 self.require_project()?;
@@ -564,7 +815,7 @@ impl App for CodingApp {
                     args.selector,
                     results.len()
                 );
-                Ok(AppToolExecutionResult {
+                let mut output = AppToolExecutionResult {
                     summary: summary.clone(),
                     payload: json!({ "propagation_results": results }),
                     model_content: None,
@@ -576,14 +827,20 @@ impl App for CodingApp {
                         ],
                     ),
                     turn_boundary_reason: None,
-                })
+                };
+                self.append_scoped_instructions_to_result(
+                    &mut output,
+                    selector_path(&args.selector),
+                    context,
+                )?;
+                Ok(output)
             }
             "coding_delete_code" => {
                 self.require_project()?;
                 let args: CodingDeleteCodeArgs = parse_coding_tool_args(call)?;
                 let results = self.scope.delete_code(&args.selector)?;
                 self.last_action = Some(format!("deleted {}", args.selector));
-                Ok(AppToolExecutionResult {
+                let mut output = AppToolExecutionResult {
                     summary: format!(
                         "deleted code {}; propagation_results={}",
                         args.selector,
@@ -599,7 +856,13 @@ impl App for CodingApp {
                         ],
                     ),
                     turn_boundary_reason: None,
-                })
+                };
+                self.append_scoped_instructions_to_result(
+                    &mut output,
+                    selector_path(&args.selector),
+                    context,
+                )?;
+                Ok(output)
             }
             "coding_next_review" => {
                 self.require_project()?;
@@ -752,5 +1015,58 @@ mod tests {
                 .model_content()
                 .contains("lsp_setup_hint language=lang5")
         );
+    }
+
+    #[test]
+    fn loads_project_instruction_documents_with_hash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("AGENTS.md"), "Root rule\n").expect("write agents");
+
+        let instructions =
+            load_instruction_documents_in_dir(temp.path()).expect("load instructions");
+
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0].name, "AGENTS.md");
+        assert_eq!(instructions[0].content, "Root rule\n");
+        assert_eq!(instructions[0].scope_dir, temp.path());
+        assert_eq!(instructions[0].sha256.len(), 64);
+        assert!(
+            render_project_instructions("root_project_instructions", &instructions)
+                .contains("Root rule")
+        );
+    }
+
+    #[test]
+    fn scoped_instructions_are_returned_once_per_turn_and_again_when_changed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nested = temp.path().join("src/nested");
+        std::fs::create_dir_all(&nested).expect("create nested");
+        std::fs::write(nested.join("AGENTS.md"), "Nested rule v1\n").expect("write agents");
+        let mut app = CodingApp::new();
+        app.project_root = Some(temp.path().to_path_buf());
+
+        let first = app
+            .scoped_instructions_for_path_once_per_turn("src/nested/file.rs", 7)
+            .expect("first load");
+        let second = app
+            .scoped_instructions_for_path_once_per_turn("src/nested/file.rs", 7)
+            .expect("second load");
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].content, "Nested rule v1\n");
+        assert!(second.is_empty());
+
+        std::fs::write(nested.join("AGENTS.md"), "Nested rule v2\n").expect("update agents");
+        let changed = app
+            .scoped_instructions_for_path_once_per_turn("src/nested/file.rs", 7)
+            .expect("changed load");
+        let next_turn = app
+            .scoped_instructions_for_path_once_per_turn("src/nested/file.rs", 8)
+            .expect("next turn load");
+
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].content, "Nested rule v2\n");
+        assert_eq!(next_turn.len(), 1);
+        assert_eq!(next_turn[0].content, "Nested rule v2\n");
     }
 }

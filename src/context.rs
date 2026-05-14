@@ -88,6 +88,7 @@ pub struct Context {
     pub active_runtime_turn: bool,
     pub active_runtime_phase: Option<RuntimeTurnPhase>,
     pub runtime_turn_started_at: Option<Instant>,
+    pub runtime_turn_epoch: u64,
     pub active_app_notices: HashMap<AppNoticeKey, ActiveAppNotice>,
     pub runtime_overflow_failures: Arc<Mutex<HashMap<String, usize>>>,
     pub suppressed_app_notices: Arc<Mutex<HashMap<AppNoticeKey, SuppressedAppNotice>>>,

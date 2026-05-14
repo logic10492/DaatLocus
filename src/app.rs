@@ -164,6 +164,7 @@ pub struct AppToolExecutionContext {
     pub sandbox_policy: RuntimeSandboxPolicy,
     pub dashboard_tx: Option<tokio::sync::watch::Sender<DashboardState>>,
     pub tool_output_max_tokens: usize,
+    pub turn_epoch: u64,
 }
 
 impl AppToolExecutionContext {
