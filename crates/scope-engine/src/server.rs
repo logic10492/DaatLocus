@@ -928,7 +928,7 @@ fn handle_edit_code(
         }
     };
 
-    match patch::edit_code_apply(&params.selector, &params.patch, project_root, lsp_analyzer) {
+    match patch::edit_code_apply(&params.diff, project_root, lsp_analyzer) {
         Ok(results) => {
             if !results.is_empty()
                 && let Ok(mut state) = propagation_state.lock()

@@ -30,7 +30,7 @@ const CODING_WHEN_TO_FOCUS: &[&str] = &[
     "When performing repository-level project edits rather than isolated file or shell operations.",
     "When source code should be read by selector rather than raw file slices.",
     "When code search results should include containing symbol selectors.",
-    "When hunk-only semantic edits, deletions, or propagation review are useful.",
+    "When selector-based SCOPE Diff edits, deletions, or propagation review are useful.",
 ];
 const CODING_HOW_TO_USE: &str = r#"Coding app is used to modify projects; think of it as a Coding Studio for the Agent.
 
@@ -74,8 +74,7 @@ pub struct CodingGlobArgs {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CodingEditCodeArgs {
-    pub selector: String,
-    pub patch: String,
+    pub diff: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -575,12 +574,11 @@ impl CodingApp {
         format!("coding-tools-{}", short_hash(&hash))
     }
 
-    fn coding_edit_stable_id(&self, selector: &str, patch: &str) -> String {
+    fn coding_edit_stable_id(&self, diff: &str) -> String {
         let project_root = self.project_root_display();
         let mut hasher = Sha256::new();
         hasher.update(project_root.as_bytes());
-        hasher.update(selector.as_bytes());
-        hasher.update(patch.as_bytes());
+        hasher.update(diff.as_bytes());
         let hash = format!("{:x}", hasher.finalize());
         format!("coding-edit-{}", short_hash(&hash))
     }
@@ -683,7 +681,7 @@ impl App for CodingApp {
             },
             AppToolSpec {
                 name: "coding_edit_code".to_string(),
-                description: "Apply a stripped v4a hunk-only patch to selector-resolved code and return propagation results.".to_string(),
+                description: "Apply a complete SCOPE Diff patch document and return propagation results.".to_string(),
                 scope: AppToolScope::Coding,
                 input_schema: serde_json::to_value(schema_for!(CodingEditCodeArgs)).unwrap(),
             },
@@ -720,11 +718,7 @@ impl App for CodingApp {
             }
             "coding_edit_code" => {
                 let args: CodingEditCodeArgs = parse_coding_tool_args(call)?;
-                format!(
-                    "selector={} patch_chars={}",
-                    summarize_coding_inline_text(&args.selector),
-                    args.patch.len()
-                )
+                format!("scope_diff_chars={}", args.diff.len())
             }
             "coding_next_review" => "next propagation review".to_string(),
             _ => return Err(miette!("unknown coding tool `{}`", call.name)),
@@ -863,9 +857,9 @@ impl App for CodingApp {
             "coding_edit_code" => {
                 self.require_project()?;
                 let args: CodingEditCodeArgs = parse_coding_tool_args(call)?;
-                let results = self.scope.edit_code(&args.selector, &args.patch)?;
-                self.last_action = Some(format!("edited {}", args.selector));
-                let diff_files = patch_ui_files_from_results(&results, &args.selector);
+                let results = self.scope.edit_code(&args.diff)?;
+                self.last_action = Some("edited SCOPE Diff".to_string());
+                let diff_files = scope_diff_ui_files(&args.diff, &results);
                 let added_lines = diff_files
                     .iter()
                     .map(|file| file.added_lines)
@@ -876,8 +870,7 @@ impl App for CodingApp {
                     .sum::<usize>();
                 let impact_lines = build_coding_edit_impact_lines(&results);
                 let summary = format!(
-                    "edited code {}; propagation_results={}",
-                    args.selector,
+                    "edited code via SCOPE Diff; propagation_results={}",
                     results.len()
                 );
                 let mut output = AppToolExecutionResult {
@@ -885,10 +878,10 @@ impl App for CodingApp {
                     payload: json!({ "propagation_results": results }),
                     model_content: None,
                     ui_event: ToolUiEvent::coding_edit(CodingEditUiData {
-                        stable_id: self.coding_edit_stable_id(&args.selector, &args.patch),
+                        stable_id: self.coding_edit_stable_id(&args.diff),
                         title: "Edited Code".to_string(),
-                        selector: args.selector.clone(),
-                        file: Some(selector_path(&args.selector).to_string()),
+                        selector: "SCOPE Diff".to_string(),
+                        file: first_scope_diff_path(&args.diff).map(str::to_string),
                         added_lines,
                         removed_lines,
                         propagation_count: results.len(),
@@ -899,7 +892,7 @@ impl App for CodingApp {
                 };
                 self.append_scoped_instructions_to_result(
                     &mut output,
-                    selector_path(&args.selector),
+                    first_scope_diff_path(&args.diff).unwrap_or_default(),
                     context,
                 )?;
                 Ok(output)
@@ -1007,27 +1000,47 @@ fn build_coding_edit_impact_lines(results: &[scope_engine::api::PropagationResul
         .collect()
 }
 
-fn patch_ui_files_from_results(
+fn first_scope_diff_path(diff: &str) -> Option<&str> {
+    diff.lines()
+        .find_map(scope_diff_action_selector)
+        .map(selector_path)
+        .filter(|path| !path.is_empty())
+}
+
+fn scope_diff_ui_files(
+    diff: &str,
     results: &[scope_engine::api::PropagationResult],
-    selector: &str,
 ) -> Vec<PatchFileUiData> {
-    results
-        .iter()
-        .map(|result| {
-            let path = selector_path(&result.selector).to_string();
-            let added_lines = result
-                .diff_summary
-                .as_deref()
-                .map(count_change_lines)
-                .unwrap_or(0);
+    let mut files = Vec::new();
+    let mut current: Option<(PatchFileOperation, String, Vec<String>)> = None;
+
+    for line in diff.lines() {
+        if line.trim_end() == "*** End Patch" {
+            if let Some((operation, selector, body)) = current.take() {
+                files.push(scope_diff_ui_file(operation, &selector, &body));
+            }
+            break;
+        }
+        if let Some((operation, selector)) = scope_diff_action_header(line) {
+            if let Some((prev_operation, prev_selector, body)) = current.take() {
+                files.push(scope_diff_ui_file(prev_operation, &prev_selector, &body));
+            }
+            current = Some((operation, selector.to_string(), Vec::new()));
+        } else if let Some((_, _, body)) = current.as_mut() {
+            body.push(line.to_string());
+        }
+    }
+
+    if files.is_empty() {
+        files.extend(results.iter().map(|result| {
             PatchFileUiData {
-                path: if path.is_empty() {
-                    selector_path(selector).to_string()
-                } else {
-                    path
-                },
+                path: selector_path(&result.selector).to_string(),
                 operation: PatchFileOperation::Update,
-                added_lines,
+                added_lines: result
+                    .diff_summary
+                    .as_deref()
+                    .map(count_change_lines)
+                    .unwrap_or(0),
                 removed_lines: 0,
                 diff_lines: result
                     .file_snippet
@@ -1045,8 +1058,67 @@ fn patch_ui_files_from_results(
                     })
                     .unwrap_or_default(),
             }
+        }));
+    }
+
+    files
+}
+
+fn scope_diff_ui_file(
+    operation: PatchFileOperation,
+    selector: &str,
+    body: &[String],
+) -> PatchFileUiData {
+    let mut added_lines = 0;
+    let mut removed_lines = 0;
+    let diff_lines = body
+        .iter()
+        .filter_map(|line| {
+            let (kind, text) = if let Some(text) = line.strip_prefix('+') {
+                added_lines += 1;
+                (PatchDiffLineKind::Add, text)
+            } else if let Some(text) = line.strip_prefix('-') {
+                removed_lines += 1;
+                (PatchDiffLineKind::Delete, text)
+            } else if let Some(text) = line.strip_prefix(' ') {
+                (PatchDiffLineKind::Context, text)
+            } else if line.starts_with("@@") {
+                (PatchDiffLineKind::Context, line.as_str())
+            } else {
+                return None;
+            };
+            Some(PatchDiffLineUiData {
+                kind,
+                old_lineno: None,
+                new_lineno: None,
+                text: text.to_string(),
+            })
         })
-        .collect()
+        .collect();
+
+    PatchFileUiData {
+        path: selector_path(selector).to_string(),
+        operation,
+        added_lines,
+        removed_lines,
+        diff_lines,
+    }
+}
+
+fn scope_diff_action_header(line: &str) -> Option<(PatchFileOperation, &str)> {
+    let (operation, selector) = if let Some(selector) = line.strip_prefix("*** Add: ") {
+        (PatchFileOperation::Add, selector)
+    } else if let Some(selector) = line.strip_prefix("*** Delete: ") {
+        (PatchFileOperation::Delete, selector)
+    } else {
+        let selector = line.strip_prefix("*** Update: ")?;
+        (PatchFileOperation::Update, selector)
+    };
+    Some((operation, selector.trim()))
+}
+
+fn scope_diff_action_selector(line: &str) -> Option<&str> {
+    scope_diff_action_header(line).map(|(_, selector)| selector)
 }
 
 fn count_change_lines(text: &str) -> usize {

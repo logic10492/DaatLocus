@@ -162,12 +162,11 @@ pub struct GlobFilesResponse {
     pub output: String,
 }
 
-/// edit_code parameters: selector + stripped v4a hunk-only patch
+/// edit_code parameters: complete SCOPE Diff patch document.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EditCodeRequest {
-    pub selector: String,
-    /// Stripped v4a patch (hunk-only, no file header)
-    pub patch: String,
+    /// Complete SCOPE Diff document wrapped in `*** Begin Patch` / `*** End Patch`.
+    pub diff: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

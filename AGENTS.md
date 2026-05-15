@@ -352,7 +352,7 @@ SCOPE (scope-engine) provides semantic code operations, but its modification cap
 | Symbol location | ✅ tree-sitter `find_containing_symbol` | — |
 | Read code | ✅ `read_code` (selector-based) | — |
 | Search code | ✅ `search_code` (ripgrep + symbol) | — |
-| Edit code | ⚠️ `edit_code` (stripped v4a patch) | Single-symbol hunks only; no cross-symbol refactoring |
+| Edit code | ⚠️ `edit_code` (SCOPE Diff) | Selector-based Add/Delete/Update; no semantic refactoring |
 | Rename | ❌ | Not implemented |
 | Extract/inline | ❌ | Not implemented |
 | File-level structure | ❌ | Cannot add imports, move files |

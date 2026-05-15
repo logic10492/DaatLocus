@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::analyzer::Analyzer;
@@ -6,11 +6,35 @@ use crate::api::{PropagationResult, PropagationSource};
 use crate::treesitter::{SymbolMatch, TreeSitterAnalyzer};
 use std::sync::Mutex;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeDiffActionKind {
+    Add,
+    Delete,
+    Update,
+}
+
+#[derive(Debug, Clone)]
+struct ScopeDiffAction {
+    kind: ScopeDiffActionKind,
+    selector: String,
+    body: String,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedEdit {
+    selector: String,
+    full_path: std::path::PathBuf,
+    start_line: usize,
+    old_count: usize,
+    replacement: Vec<String>,
+    primary_symbol: Option<SymbolMatch>,
+}
+
 type HunkHeader = (Option<usize>, Option<usize>, Option<usize>, Option<usize>);
 
-/// A single hunk inside a stripped v4a patch.
+/// A single hunk inside a selector-relative hunk patch.
 #[derive(Debug, Clone)]
-pub(crate) struct Hunk {
+struct Hunk {
     /// Old starting line (1-based). For selector-scoped edits this is
     /// selector-relative until resolved.
     old_start: Option<usize>,
@@ -46,13 +70,10 @@ enum HunkLine {
     Removed(String),
 }
 
-/// Parse a stripped v4a patch string (hunk-only, no file header)
-/// and apply it to the existing content, returning the new content.
-///
-/// Returns `Some(new_content)` on success, or `None` if any hunk
-/// fails to apply (context mismatch).
-pub fn apply_stripped_v4a_patch(original: &str, patch: &str) -> Result<String, String> {
-    let hunks = parse_stripped_v4a_hunks(patch)?;
+/// Parse a selector-relative hunk body and apply it to existing content.
+#[cfg(test)]
+fn apply_selector_hunk_patch(original: &str, patch: &str) -> Result<String, String> {
+    let hunks = parse_selector_hunks(patch)?;
     if hunks.is_empty() {
         return Err("no hunks found in patch".to_string());
     }
@@ -60,8 +81,8 @@ pub fn apply_stripped_v4a_patch(original: &str, patch: &str) -> Result<String, S
     apply_hunks(original, &resolved)
 }
 
-/// Parse the stripped v4a hunk-only format.
-pub(crate) fn parse_stripped_v4a_hunks(patch: &str) -> Result<Vec<Hunk>, String> {
+/// Parse the selector-relative hunk format.
+fn parse_selector_hunks(patch: &str) -> Result<Vec<Hunk>, String> {
     let mut hunks: Vec<Hunk> = Vec::new();
     let mut current_lines: Vec<HunkLine> = Vec::new();
     let mut current_header: Option<HunkHeader> = None;
@@ -89,7 +110,7 @@ pub(crate) fn parse_stripped_v4a_hunks(patch: &str) -> Result<Vec<Hunk>, String>
             current_header = Some(header);
         } else {
             if current_header.is_none() && is_hunk_body_line(line) {
-                // Headerless stripped hunks are resolved later from their body.
+                // Headerless selector hunks are resolved later from their body.
                 current_header = Some((None, None, None, None));
             }
 
@@ -133,6 +154,110 @@ pub(crate) fn parse_stripped_v4a_hunks(patch: &str) -> Result<Vec<Hunk>, String>
 
 fn is_hunk_body_line(line: &str) -> bool {
     line.starts_with('+') || line.starts_with('-') || line.starts_with(' ')
+}
+
+fn parse_scope_diff(diff: &str) -> Result<Vec<ScopeDiffAction>, String> {
+    let mut lines = diff.lines();
+    let first = lines
+        .next()
+        .ok_or_else(|| "SCOPE Diff is empty".to_string())?;
+    if first.trim_end() != "*** Begin Patch" {
+        return Err("SCOPE Diff must start with `*** Begin Patch`".to_string());
+    }
+
+    let mut actions = Vec::new();
+    let mut current: Option<(ScopeDiffActionKind, String, Vec<String>)> = None;
+    let mut saw_end = false;
+
+    for line in lines {
+        if line.trim_end() == "*** End Patch" {
+            if let Some((kind, selector, body_lines)) = current.take() {
+                actions.push(ScopeDiffAction {
+                    kind,
+                    selector,
+                    body: body_lines.join("\n"),
+                });
+            }
+            saw_end = true;
+            break;
+        }
+
+        if let Some((kind, selector)) = parse_scope_diff_action_header(line)? {
+            if let Some((prev_kind, prev_selector, body_lines)) = current.take() {
+                actions.push(ScopeDiffAction {
+                    kind: prev_kind,
+                    selector: prev_selector,
+                    body: body_lines.join("\n"),
+                });
+            }
+            current = Some((kind, selector, Vec::new()));
+        } else if let Some((_, _, body_lines)) = current.as_mut() {
+            body_lines.push(line.to_string());
+        } else if !line.trim().is_empty() {
+            return Err(format!(
+                "unexpected content before first SCOPE Diff action: {line}"
+            ));
+        }
+    }
+
+    if !saw_end {
+        return Err("SCOPE Diff must end with `*** End Patch`".to_string());
+    }
+    if actions.is_empty() {
+        return Err("SCOPE Diff contains no actions".to_string());
+    }
+    Ok(actions)
+}
+
+fn parse_scope_diff_action_header(
+    line: &str,
+) -> Result<Option<(ScopeDiffActionKind, String)>, String> {
+    let Some(rest) = line.strip_prefix("*** ") else {
+        return Ok(None);
+    };
+    let Some((name, selector)) = rest.split_once(": ") else {
+        return Ok(None);
+    };
+
+    let kind = match name {
+        "Add" => ScopeDiffActionKind::Add,
+        "Delete" => ScopeDiffActionKind::Delete,
+        "Update" => ScopeDiffActionKind::Update,
+        _ => return Ok(None),
+    };
+    let selector = selector.trim().to_string();
+    if selector.is_empty() {
+        return Err(format!("SCOPE Diff {name} action has empty selector"));
+    }
+    Ok(Some((kind, selector)))
+}
+
+fn parse_add_body(body: &str) -> Result<Vec<String>, String> {
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let Some(text) = line.strip_prefix('+') else {
+            return Err("SCOPE Diff Add body lines must start with `+`".to_string());
+        };
+        lines.push(text.to_string());
+    }
+    if lines.is_empty() {
+        return Err("SCOPE Diff Add action requires at least one body line".to_string());
+    }
+    Ok(lines)
+}
+
+fn parse_delete_guard(body: &str) -> Result<Option<Vec<String>>, String> {
+    if body.trim().is_empty() {
+        return Ok(None);
+    }
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let Some(text) = line.strip_prefix('-') else {
+            return Err("SCOPE Diff Delete body lines must start with `-`".to_string());
+        };
+        lines.push(text.to_string());
+    }
+    Ok(Some(lines))
 }
 
 /// Parse `@@`, `@@ -OldStart +NewStart @@`, or
@@ -315,6 +440,7 @@ fn find_hunk_start_in_range(
 
 /// Apply parsed hunks to original content. Hunks must be sorted by old_start
 /// (ascending) and non-overlapping, which is the standard unified diff format.
+#[cfg(test)]
 fn apply_hunks(original: &str, hunks: &[ResolvedHunk]) -> Result<String, String> {
     let original_lines: Vec<&str> = original.lines().collect();
 
@@ -526,110 +652,248 @@ fn clamp_edit_range(
     Ok((start_line, end_line.min(line_count)))
 }
 
-/// Apply an edit_code operation: parse selector, resolve file, apply patch, write back.
-pub fn edit_code_apply(
-    selector_str: &str,
-    patch: &str,
+fn plan_scope_diff_action(
+    action: &ScopeDiffAction,
     project_root: &Path,
-    lsp_analyzer: &Mutex<Option<Box<dyn Analyzer + Send>>>,
-) -> Result<Vec<PropagationResult>, String> {
-    let parsed =
-        crate::selector::parse_selector(selector_str).map_err(|e| format!("bad selector: {e}"))?;
-
+    analyzer: &TreeSitterAnalyzer,
+) -> Result<Vec<PlannedEdit>, String> {
+    let parsed = crate::selector::parse_selector(&action.selector)
+        .map_err(|e| format!("bad selector `{}`: {e}", action.selector))?;
     let full_path = if parsed.file_path.is_absolute() {
         parsed.file_path.clone()
     } else {
         project_root.join(&parsed.file_path)
     };
 
-    if !full_path.exists() {
-        // Create new file: ensure parent dirs exist, write patch as full content
-        if let Some(parent) = full_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("cannot create parent dirs for {}: {e}", full_path.display())
-            })?;
+    match action.kind {
+        ScopeDiffActionKind::Add => {
+            let replacement = parse_add_body(&action.body)?;
+            let (start_line, primary_symbol) = resolve_add_insertion(
+                &parsed,
+                &full_path,
+                project_root,
+                analyzer,
+                replacement.len(),
+            )?;
+            Ok(vec![PlannedEdit {
+                selector: action.selector.clone(),
+                full_path,
+                start_line,
+                old_count: 0,
+                replacement,
+                primary_symbol,
+            }])
         }
-        std::fs::write(&full_path, patch)
-            .map_err(|e| format!("cannot create {}: {e}", full_path.display()))?;
-        return Ok(vec![]);
+        ScopeDiffActionKind::Delete => {
+            let edit_target = resolve_edit_target(&parsed, project_root, analyzer)?;
+            let original = std::fs::read_to_string(&full_path)
+                .map_err(|e| format!("cannot read {}: {e}", full_path.display()))?;
+            if let Some(guard) = parse_delete_guard(&action.body)? {
+                let selected = original
+                    .lines()
+                    .skip(edit_target.start_line.saturating_sub(1))
+                    .take(edit_target.end_line - edit_target.start_line + 1)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                if selected != guard {
+                    return Err(format!(
+                        "delete guard does not match selected range for `{}`",
+                        action.selector
+                    ));
+                }
+            }
+            Ok(vec![PlannedEdit {
+                selector: action.selector.clone(),
+                full_path,
+                start_line: edit_target.start_line,
+                old_count: edit_target.end_line - edit_target.start_line + 1,
+                replacement: Vec::new(),
+                primary_symbol: edit_target.primary_symbol,
+            }])
+        }
+        ScopeDiffActionKind::Update => {
+            let edit_target = resolve_edit_target(&parsed, project_root, analyzer)?;
+            let original = std::fs::read_to_string(&full_path)
+                .map_err(|e| format!("cannot read {}: {e}", full_path.display()))?;
+            let hunks = parse_selector_hunks(&action.body)?;
+            let resolved_hunks = resolve_hunks(
+                &original,
+                &hunks,
+                edit_target.start_line,
+                Some(edit_target.end_line),
+            )?;
+            let edits = resolved_hunks
+                .into_iter()
+                .map(|hunk| {
+                    let replacement = hunk
+                        .lines
+                        .iter()
+                        .filter_map(|hl| match hl {
+                            HunkLine::Context(s) | HunkLine::Added(s) => Some(s.clone()),
+                            HunkLine::Removed(_) => None,
+                        })
+                        .collect::<Vec<_>>();
+                    PlannedEdit {
+                        selector: action.selector.clone(),
+                        full_path: full_path.clone(),
+                        start_line: hunk.old_start,
+                        old_count: hunk.old_count,
+                        replacement,
+                        primary_symbol: edit_target.primary_symbol.clone(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            if edits.is_empty() {
+                return Err(format!(
+                    "update action for `{}` has no hunks",
+                    action.selector
+                ));
+            }
+            Ok(edits)
+        }
+    }
+}
+
+fn resolve_add_insertion(
+    parsed: &crate::selector::ParsedSelector,
+    full_path: &Path,
+    project_root: &Path,
+    analyzer: &TreeSitterAnalyzer,
+    added_line_count: usize,
+) -> Result<(usize, Option<SymbolMatch>), String> {
+    match &parsed.target {
+        crate::selector::SelectorTarget::LineRange { start_line, .. } => {
+            let line_count = if full_path.exists() {
+                std::fs::read_to_string(full_path)
+                    .map_err(|e| format!("cannot read {}: {e}", full_path.display()))?
+                    .lines()
+                    .count()
+                    .max(1)
+            } else {
+                1
+            };
+            if *start_line == 0 || *start_line > line_count + 1 {
+                return Err(format!("add insertion line {} is outside file bounds", start_line));
+            }
+            let primary_symbol = if full_path.exists() {
+                analyzer.find_containing_symbol_match(full_path, *start_line)
+            } else {
+                None
+            };
+            Ok((*start_line, primary_symbol))
+        }
+        crate::selector::SelectorTarget::Symbol(_)
+        | crate::selector::SelectorTarget::Enclosing { .. }
+        | crate::selector::SelectorTarget::Match { around: None, .. } => {
+            let target = resolve_edit_target(parsed, project_root, analyzer)?;
+            Ok((
+                target.end_line + 1,
+                target.primary_symbol.or_else(|| {
+                    (added_line_count > 0)
+                        .then(|| analyzer.find_containing_symbol_match(full_path, target.start_line))
+                        .flatten()
+                }),
+            ))
+        }
+        crate::selector::SelectorTarget::AroundLine { .. }
+        | crate::selector::SelectorTarget::Match { around: Some(_), .. }
+        | crate::selector::SelectorTarget::Outline => Err(
+            "SCOPE Diff Add accepts symbol, file-range, enclosing, or unique match selectors; outline/context selectors are read-only"
+                .to_string(),
+        ),
+    }
+}
+
+fn apply_planned_edits_to_content(
+    original: &str,
+    edits: &[PlannedEdit],
+    file_display: &str,
+) -> Result<String, String> {
+    let mut sorted: Vec<&PlannedEdit> = edits.iter().collect();
+    sorted.sort_by_key(|edit| edit.start_line);
+    for pair in sorted.windows(2) {
+        let prev_end = pair[0].start_line + pair[0].old_count;
+        if pair[1].start_line < prev_end {
+            return Err(format!(
+                "overlapping SCOPE Diff edits in {}: `{}` overlaps `{}`",
+                file_display, pair[0].selector, pair[1].selector
+            ));
+        }
     }
 
-    let analyzer = TreeSitterAnalyzer::new();
-    let edit_target = resolve_edit_target(&parsed, project_root, &analyzer)?;
-
-    let original = std::fs::read_to_string(&full_path)
-        .map_err(|e| format!("cannot read {}: {e}", full_path.display()))?;
-
-    // ── Apply the patch first ──
-    let hunks = parse_stripped_v4a_hunks(patch)?;
-    let resolved_hunks = resolve_hunks(
-        &original,
-        &hunks,
-        edit_target.start_line,
-        Some(edit_target.end_line),
-    )?;
-    let new_content = apply_hunks(&original, &resolved_hunks)?;
-
-    // ── Validate: tree-sitter must be able to parse the new content ──
-    let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if !analyzer.can_parse(ext, &new_content) {
-        return Err(format!(
-            "edit rejected: tree-sitter cannot parse the result for {}",
-            full_path.display()
-        ));
+    let mut lines = original.lines().map(str::to_string).collect::<Vec<_>>();
+    for edit in sorted.iter().rev() {
+        let start_idx = edit.start_line.saturating_sub(1);
+        let end_idx = start_idx + edit.old_count;
+        if start_idx > lines.len() || end_idx > lines.len() {
+            return Err(format!(
+                "SCOPE Diff edit for `{}` exceeds file bounds in {}",
+                edit.selector, file_display
+            ));
+        }
+        lines.splice(start_idx..end_idx, edit.replacement.clone());
     }
 
-    // ── Write the file ──
-    std::fs::write(&full_path, &new_content)
-        .map_err(|e| format!("cannot write {}: {e}", full_path.display()))?;
-
-    // ── Notify LSP of the change ──
-    if let Ok(lsp_guard) = lsp_analyzer.lock()
-        && let Some(ref lsp) = *lsp_guard
-    {
-        lsp.notify_did_change(&full_path, 1, &new_content);
+    if lines.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(lines.join("\n") + "\n")
     }
+}
 
-    // ── Propagation: map modified lines → symbol names → LSP or open-ended ──
+struct PropagationCollectionContext<'a> {
+    full_path: &'a Path,
+    original: &'a str,
+    new_content: &'a str,
+    project_root: &'a Path,
+    lsp_analyzer: &'a Mutex<Option<Box<dyn Analyzer + Send>>>,
+    analyzer: &'a TreeSitterAnalyzer,
+    diff_summary: &'a str,
+}
+
+fn collect_propagation_results(
+    context: PropagationCollectionContext<'_>,
+    edits: &[PlannedEdit],
+) -> Vec<PropagationResult> {
+    let PropagationCollectionContext {
+        full_path,
+        original,
+        new_content,
+        project_root,
+        lsp_analyzer,
+        analyzer,
+        diff_summary,
+    } = context;
+
     let mut results: Vec<PropagationResult> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     let mut modified_symbol_names = HashSet::new();
-    if let Some(symbol) = edit_target.primary_symbol.as_ref() {
-        modified_symbol_names.insert(symbol.name.clone());
-    }
 
-    // Step 1: collect all symbol names that were modified
-    for hunk in &resolved_hunks {
-        let line = hunk.old_start;
-        if let Some(sel) = analyzer.find_containing_symbol(&full_path, line, project_root) {
-            // Parse the selector to extract the symbol name
-            if let Ok(parsed) = crate::selector::parse_selector(&sel)
-                && let Some(name) = parsed.name()
-            {
-                modified_symbol_names.insert(name.to_string());
-            }
+    for edit in edits {
+        if let Some(symbol) = edit.primary_symbol.as_ref() {
+            modified_symbol_names.insert(symbol.name.clone());
+        }
+        if let Some(sel) = analyzer.find_containing_symbol(full_path, edit.start_line, project_root)
+            && let Ok(parsed) = crate::selector::parse_selector(&sel)
+            && let Some(name) = parsed.name()
+        {
+            modified_symbol_names.insert(name.to_string());
         }
     }
 
-    // Step 2: for each modified symbol, query LSP for cross-file references
-    //         If LSP returns nothing (not available), produce an open-ended result
     for sym_name in &modified_symbol_names {
-        // Try to use the real LSP analyzer
         let mut lsp_refs: Vec<PropagationResult> = Vec::new();
         if let Ok(lsp_guard) = lsp_analyzer.lock()
             && let Some(ref lsp) = *lsp_guard
         {
-            // Find the symbol's precise position in the file for LSP query
-            // Search for the symbol name in the modified content
             let (line, character) =
-                find_symbol_position(&new_content, sym_name).unwrap_or_else(|| {
-                    let hint_line = resolved_hunks.first().map(|h| h.old_start).unwrap_or(1);
+                find_symbol_position(new_content, sym_name).unwrap_or_else(|| {
+                    let hint_line = edits.first().map(|edit| edit.start_line).unwrap_or(1);
                     (hint_line, 0)
                 });
-            lsp_refs = lsp.find_references_for_symbol(&full_path, line, character, project_root);
+            lsp_refs = lsp.find_references_for_symbol(full_path, line, character, project_root);
         }
         if lsp_refs.is_empty() {
-            // No LSP: generate an open-ended result so agent investigates on its own
             let selector = format!(
                 "{}::{}",
                 full_path
@@ -640,16 +904,13 @@ pub fn edit_code_apply(
                 sym_name
             );
             if seen.insert(selector.clone()) {
-                // Build a snippet of the modification context
-                // Use the first hunk's position to give context around the change
-                let first_line = resolved_hunks.first().map(|h| h.old_start).unwrap_or(1);
+                let first_line = edits.first().map(|edit| edit.start_line).unwrap_or(1);
                 let file_snippet = original
                     .lines()
                     .skip(first_line.saturating_sub(3))
                     .take(7)
                     .collect::<Vec<_>>()
                     .join("\n");
-                // Collect project files for agent investigation
                 let project_files = std::fs::read_dir(project_root)
                     .ok()
                     .map(|entries| {
@@ -680,7 +941,7 @@ pub fn edit_code_apply(
                     ),
                     source: PropagationSource::OpenEnded,
                     lsp_references: None,
-                    diff_summary: Some(patch.to_string()),
+                    diff_summary: Some(diff_summary.to_string()),
                     file_snippet: Some(file_snippet),
                     project_files: Some(project_files),
                 });
@@ -691,6 +952,97 @@ pub fn edit_code_apply(
                     results.push(r);
                 }
             }
+        }
+    }
+
+    results
+}
+
+fn find_symbol_position(content: &str, symbol_name: &str) -> Option<(usize, usize)> {
+    content.lines().enumerate().find_map(|(line_idx, line)| {
+        line.find(symbol_name)
+            .map(|character| (line_idx + 1, character))
+    })
+}
+
+/// Apply an edit_code operation: parse a SCOPE Diff, resolve selectors, apply edits, write back.
+pub fn edit_code_apply(
+    diff: &str,
+    project_root: &Path,
+    lsp_analyzer: &Mutex<Option<Box<dyn Analyzer + Send>>>,
+) -> Result<Vec<PropagationResult>, String> {
+    let actions = parse_scope_diff(diff)?;
+    let analyzer = TreeSitterAnalyzer::new();
+    let mut edits_by_file: HashMap<std::path::PathBuf, Vec<PlannedEdit>> = HashMap::new();
+
+    for action in &actions {
+        for planned in plan_scope_diff_action(action, project_root, &analyzer)? {
+            edits_by_file
+                .entry(planned.full_path.clone())
+                .or_default()
+                .push(planned);
+        }
+    }
+
+    let mut writes = Vec::new();
+    for (full_path, edits) in &edits_by_file {
+        let original = if full_path.exists() {
+            std::fs::read_to_string(full_path)
+                .map_err(|e| format!("cannot read {}: {e}", full_path.display()))?
+        } else {
+            if edits
+                .iter()
+                .any(|edit| edit.old_count != 0 || edit.start_line != 1)
+            {
+                return Err(format!(
+                    "only Add at line 1 can create a new file: {}",
+                    full_path.display()
+                ));
+            }
+            String::new()
+        };
+        let new_content =
+            apply_planned_edits_to_content(&original, edits, &full_path.to_string_lossy())?;
+        let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !ext.is_empty() && !new_content.is_empty() && !analyzer.can_parse(ext, &new_content) {
+            return Err(format!(
+                "edit rejected: tree-sitter cannot parse the result for {}",
+                full_path.display()
+            ));
+        }
+        writes.push((full_path.clone(), original, new_content));
+    }
+
+    for (full_path, _, new_content) in &writes {
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!("cannot create parent dirs for {}: {e}", full_path.display())
+            })?;
+        }
+        std::fs::write(full_path, new_content)
+            .map_err(|e| format!("cannot write {}: {e}", full_path.display()))?;
+        if let Ok(lsp_guard) = lsp_analyzer.lock()
+            && let Some(ref lsp) = *lsp_guard
+        {
+            lsp.notify_did_change(full_path, 1, new_content);
+        }
+    }
+
+    let mut results = Vec::new();
+    for (full_path, original, new_content) in &writes {
+        if let Some(edits) = edits_by_file.get(full_path) {
+            results.extend(collect_propagation_results(
+                PropagationCollectionContext {
+                    full_path,
+                    original,
+                    new_content,
+                    project_root,
+                    lsp_analyzer,
+                    analyzer: &analyzer,
+                    diff_summary: diff,
+                },
+                edits,
+            ));
         }
     }
 
@@ -706,7 +1058,7 @@ mod tests {
     #[test]
     fn apply_single_line_change() {
         let patch = "@@ -3,4 +3,4 @@\n pub fn old() {\n-    let a = 1;\n+    let a = 42;\n     let b = 2;\n }\n";
-        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap();
+        let result = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch).unwrap();
         assert!(result.contains("let a = 42;"));
         assert!(!result.contains("let a = 1;"));
         assert!(result.contains("pub fn old()"));
@@ -715,7 +1067,7 @@ mod tests {
     #[test]
     fn apply_removal() {
         let patch = "@@ -8,3 +8,0 @@\n-pub fn other() {\n-    let x = 3;\n-}\n";
-        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap();
+        let result = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch).unwrap();
         assert!(!result.contains("pub fn other()"));
     }
 
@@ -723,26 +1075,26 @@ mod tests {
     fn apply_addition() {
         // Add a line before `pub fn other() {`
         let patch = "@@ -8,0 +8,1 @@\n+    let z = 99;\n";
-        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap();
+        let result = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch).unwrap();
         assert!(result.contains("let z = 99;"));
     }
 
     #[test]
     fn empty_patch_returns_err() {
-        assert!(apply_stripped_v4a_patch(SAMPLE_ORIGINAL, "").is_err());
+        assert!(apply_selector_hunk_patch(SAMPLE_ORIGINAL, "").is_err());
     }
 
     #[test]
     fn context_mismatch_returns_err() {
         let patch = "@@ -3,4 +3,4 @@\n pub fn WRONG() {\n-    let a = 1;\n+    let a = 42;\n     let b = 2;\n }\n";
-        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch);
+        let result = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch);
         assert!(result.is_err());
     }
 
     #[test]
     fn parse_multiple_hunks() {
         let patch = "@@ -3,4 +3,4 @@\n pub fn old() {\n-    let a = 1;\n+    let a = 10;\n     let b = 2;\n }\n@@ -8,1 +8,1 @@\n-pub fn other() {\n+pub fn renamed() {\n";
-        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap();
+        let result = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch).unwrap();
         assert!(result.contains("let a = 10;"));
         assert!(result.contains("pub fn renamed()"));
         assert!(!result.contains("let a = 1;"));
@@ -752,7 +1104,7 @@ mod tests {
     #[test]
     fn bare_hunk_header_is_inferred_from_context() {
         let patch = "@@\n pub fn old() {\n-    let a = 1;\n+    let a = 77;\n     let b = 2;\n }\n";
-        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap();
+        let result = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch).unwrap();
 
         assert!(result.contains("let a = 77;"));
         assert!(!result.contains("let a = 1;"));
@@ -762,7 +1114,7 @@ mod tests {
     #[test]
     fn headerless_hunk_is_inferred_from_context() {
         let patch = " pub fn old() {\n-    let a = 1;\n+    let a = 88;\n     let b = 2;\n }\n";
-        let result = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap();
+        let result = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch).unwrap();
 
         assert!(result.contains("let a = 88;"));
         assert!(!result.contains("let a = 1;"));
@@ -771,7 +1123,7 @@ mod tests {
     #[test]
     fn bare_add_only_hunk_without_anchor_is_rejected() {
         let patch = "@@\n+    let z = 99;\n";
-        let err = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap_err();
+        let err = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch).unwrap_err();
 
         assert!(err.contains("cannot infer insertion point for add-only hunk"));
     }
@@ -779,7 +1131,7 @@ mod tests {
     #[test]
     fn headerless_add_only_hunk_without_anchor_is_rejected() {
         let patch = "+    let z = 99;\n";
-        let err = apply_stripped_v4a_patch(SAMPLE_ORIGINAL, patch).unwrap_err();
+        let err = apply_selector_hunk_patch(SAMPLE_ORIGINAL, patch).unwrap_err();
 
         assert!(err.contains("cannot infer insertion point for add-only hunk"));
     }
@@ -805,316 +1157,133 @@ mod e2e_tests {
     }
 
     #[test]
-    fn edit_code_apply_modifies_file_and_returns_open_ended_propagation() {
+    fn edit_code_apply_updates_via_scope_diff() {
         let dir = setup_temp_rust_project();
         let rust_code = "pub fn hello() {\n    println!(\"hello\");\n}\n\npub fn world() {\n    println!(\"world\");\n}\n";
         write_rust_file(dir.path(), "lib.rs", rust_code);
 
-        let selector = "src/lib.rs::fn hello()";
-        let patch = "@@ -1,3 +1,3 @@\n pub fn hello() {\n-    println!(\"hello\");\n+    println!(\"hello world\");\n }\n";
-
+        let diff = "*** Begin Patch\n*** Update: src/lib.rs::fn hello()\n@@ -1,3 +1,3 @@\n pub fn hello() {\n-    println!(\"hello\");\n+    println!(\"hello world\");\n }\n*** End Patch\n";
         let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let result = edit_code_apply(selector, patch, dir.path(), &lsp);
-        assert!(result.is_ok(), "edit_code_apply should succeed");
+        let propagation = edit_code_apply(diff, dir.path(), &lsp).unwrap();
 
-        let propagation = result.unwrap();
-        // Since LspAnalyzer is a placeholder, all propagation should be OpenEnded
         assert!(!propagation.is_empty(), "Should have propagation results");
-
-        // Verify the file was actually modified
         let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        assert!(modified.contains("hello world"));
+        assert!(!modified.contains("\"hello\""));
+    }
+
+    #[test]
+    fn edit_code_apply_accepts_multiple_hunks_in_scope_diff_action() {
+        let dir = setup_temp_rust_project();
+        let rust_code =
+            "pub fn target() {\n    let a = 1;\n    let b = 2;\n    println!(\"{}{}\", a, b);\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        let diff = "*** Begin Patch\n*** Update: src/lib.rs::fn target()\n@@ -2,1 +2,1 @@\n-    let a = 1;\n+    let a = 10;\n@@ -3,1 +3,1 @@\n-    let b = 2;\n+    let b = 20;\n*** End Patch\n";
+        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+        edit_code_apply(diff, dir.path(), &lsp).unwrap();
+
+        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        assert!(modified.contains("let a = 10;"));
+        assert!(modified.contains("let b = 20;"));
+    }
+
+    #[test]
+    fn edit_code_apply_adds_and_deletes_via_scope_diff() {
+        let dir = setup_temp_rust_project();
+        let rust_code = "pub fn keep() {\n    println!(\"keep\");\n}\n\npub fn remove_me() {\n    println!(\"remove\");\n}\n";
+        write_rust_file(dir.path(), "lib.rs", rust_code);
+
+        let diff = "*** Begin Patch\n*** Add: src/lib.rs#L1-L1\n+pub fn added() {\n+    println!(\"added\");\n+}\n+\n*** Delete: src/lib.rs::fn remove_me()\n-pub fn remove_me() {\n-    println!(\"remove\");\n-}\n*** End Patch\n";
+        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+        edit_code_apply(diff, dir.path(), &lsp).unwrap();
+
+        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        assert!(modified.contains("pub fn added()"));
+        assert!(modified.contains("pub fn keep()"));
+        assert!(!modified.contains("remove_me"));
+    }
+
+    #[test]
+    fn edit_code_apply_creates_new_file_from_scope_diff_add() {
+        let dir = setup_temp_rust_project();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+
+        let diff = "*** Begin Patch\n*** Add: src/new_file.rs#L1-L1\n+pub fn created() {\n+    println!(\"created\");\n+}\n*** End Patch\n";
+        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+        let result = edit_code_apply(diff, dir.path(), &lsp);
         assert!(
-            modified.contains("hello world"),
-            "File should contain the new content"
+            result.is_ok(),
+            "new file creation should succeed: {result:?}"
         );
-        assert!(
-            !modified.contains("\"hello\""),
-            "File should not contain old content"
-        );
+
+        let created = std::fs::read_to_string(dir.path().join("src/new_file.rs")).unwrap();
+        assert!(created.contains("pub fn created()"));
     }
 
     #[test]
-    fn edit_code_apply_accepts_selector_relative_line_numbers() {
+    fn edit_code_apply_rejects_delete_guard_mismatch() {
         let dir = setup_temp_rust_project();
-        let rust_code = "pub fn before() {\n    println!(\"before\");\n}\n\npub fn hello() {\n    println!(\"hello\");\n}\n\npub fn after() {\n    println!(\"after\");\n}\n";
+        let rust_code = "pub fn target() {\n    println!(\"current\");\n}\n";
         write_rust_file(dir.path(), "lib.rs", rust_code);
 
-        let selector = "src/lib.rs::fn hello()";
-        let patch = "@@ -1,3 +1,3 @@\n pub fn hello() {\n-    println!(\"hello\");\n+    println!(\"selector relative\");\n }\n";
-
+        let diff = "*** Begin Patch\n*** Delete: src/lib.rs::fn target()\n-pub fn target() {\n-    println!(\"stale\");\n-}\n*** End Patch\n";
         let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
+        let err = edit_code_apply(diff, dir.path(), &lsp).unwrap_err();
 
-        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert!(modified.contains("selector relative"));
-        assert!(modified.contains("println!(\"before\")"));
-        assert!(modified.contains("println!(\"after\")"));
-    }
-
-    #[test]
-    fn edit_code_apply_accepts_bare_hunk_header() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn duplicated() {\n    println!(\"same\");\n}\n\npub fn target() {\n    println!(\"same\");\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs::fn target()";
-        let patch = "@@\n pub fn target() {\n-    println!(\"same\");\n+    println!(\"target only\");\n }\n";
-
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
-
-        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert!(modified.contains("println!(\"target only\")"));
-        assert!(modified.contains("pub fn duplicated() {\n    println!(\"same\");"));
-    }
-
-    #[test]
-    fn edit_code_apply_accepts_headerless_hunk_body() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn target() {\n    let value = 1;\n    println!(\"{}\", value);\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs::fn target()";
-        let patch = " pub fn target() {\n-    let value = 1;\n+    let value = 2;\n     println!(\"{}\", value);\n }\n";
-
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
-
-        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert!(modified.contains("let value = 2;"));
-        assert!(!modified.contains("let value = 1;"));
-    }
-
-    #[test]
-    fn edit_code_apply_rejects_bare_add_only_hunk_without_anchor() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn alpha() -> i32 {\n    let base = 10;\n    base\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs::fn alpha()";
-        let patch = "@@\n+    let inserted = 123;\n";
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let err = edit_code_apply(selector, patch, dir.path(), &lsp).unwrap_err();
-
-        assert!(err.contains("cannot infer insertion point for add-only hunk"));
+        assert!(err.contains("delete guard does not match"));
         let unchanged = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
         assert_eq!(unchanged, rust_code);
     }
 
     #[test]
-    fn edit_code_apply_rejects_headerless_add_only_hunk_without_anchor() {
+    fn edit_code_apply_rejects_invalid_scope_diff_envelope() {
         let dir = setup_temp_rust_project();
-        let rust_code = "pub fn alpha() -> i32 {\n    let base = 10;\n    base\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs::fn alpha()";
-        let patch = "+    let inserted = 123;\n";
         let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let err = edit_code_apply(selector, patch, dir.path(), &lsp).unwrap_err();
+        let err = edit_code_apply("@@\n+not a scope diff\n", dir.path(), &lsp).unwrap_err();
 
-        assert!(err.contains("cannot infer insertion point for add-only hunk"));
-        let unchanged = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert_eq!(unchanged, rust_code);
-    }
-
-    #[test]
-    fn edit_code_apply_accepts_explicit_add_only_hunk() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn alpha() -> i32 {\n    let base = 10;\n    base\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs::fn alpha()";
-        let patch = "@@ -2,0 +2,1 @@\n+    let inserted = 123;\n";
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
-
-        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert!(
-            modified
-                .contains("pub fn alpha() -> i32 {\n    let inserted = 123;\n    let base = 10;")
-        );
-    }
-
-    #[test]
-    fn edit_code_apply_accepts_bare_add_only_hunk_with_context() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn alpha() -> i32 {\n    let base = 10;\n    base\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs::fn alpha()";
-        let patch = "@@\n pub fn alpha() -> i32 {\n+    let inserted = 123;\n     let base = 10;\n";
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
-
-        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert!(
-            modified
-                .contains("pub fn alpha() -> i32 {\n    let inserted = 123;\n    let base = 10;")
-        );
-    }
-
-    #[test]
-    fn edit_code_apply_accepts_file_range_selector_with_relative_hunk() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn before() {\n    println!(\"before\");\n}\n\npub fn target() {\n    let value = 1;\n    println!(\"{}\", value);\n}\n\npub fn after() {\n    println!(\"after\");\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs#L5-L8";
-        let patch = "@@ -2,1 +2,1 @@\n-    let value = 1;\n+    let value = 42;\n";
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let propagation = edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
-
-        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert!(modified.contains("let value = 42;"));
-        assert!(modified.contains("println!(\"before\")"));
-        assert!(modified.contains("println!(\"after\")"));
-        assert!(
-            propagation
-                .iter()
-                .any(|result| result.selector.contains("target")),
-            "file-range edit should report the affected containing symbol"
-        );
-    }
-
-    #[test]
-    fn edit_code_apply_rejects_file_range_hunk_outside_range() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn target() {\n    let value = 1;\n    println!(\"{}\", value);\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs#L2-L3";
-        let patch = "@@ -3,1 +3,1 @@\n-    println!(\"{}\", value);\n+    println!(\"changed {}\", value);\n";
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let err = edit_code_apply(selector, patch, dir.path(), &lsp).unwrap_err();
-
-        assert!(err.contains("outside selector range") || err.contains("exceeds selector range"));
-        let unchanged = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert_eq!(unchanged, rust_code);
-    }
-
-    #[test]
-    fn edit_code_apply_creates_new_file_when_not_exists() {
-        let dir = setup_temp_rust_project();
-        let new_content = "pub fn new_fn() -> i32 {\n    42\n}\n";
-
-        let selector = "src/new.rs::fn new_fn()";
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let result = edit_code_apply(selector, new_content, dir.path(), &lsp);
-        assert!(result.is_ok(), "Creating new file should succeed");
-
-        let propagation = result.unwrap();
-        assert!(
-            propagation.is_empty(),
-            "New file should have no propagation"
-        );
-
-        let created = std::fs::read_to_string(dir.path().join("src/new.rs")).unwrap();
-        assert!(created.contains("new_fn"));
-    }
-
-    #[test]
-    fn edit_code_apply_rejects_invalid_syntax() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn ok() {\n    let x = 1;\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        // This patch produces incomplete Rust that tree-sitter should reject
-        let selector = "src/lib.rs::fn ok()";
-        let bad_patch = "@@ -1,3 +1,1 @@\n-pub fn ok() {\n-    let x = 1;\n-}\n+pub fn BROKEN {\n";
-
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let result = edit_code_apply(selector, bad_patch, dir.path(), &lsp);
-        // tree-sitter may or may not catch this — it depends on the grammar.
-        // The important thing is the function doesn't panic.
-        // We just verify it returns either Ok or Err without crashing.
-        let _ = result;
+        assert!(err.contains("SCOPE Diff must start"));
     }
 
     #[test]
     fn edit_code_apply_rejects_tree_sitter_error_nodes_without_writing() {
         let dir = setup_temp_rust_project();
-        let rust_code = "pub fn ok() {\n    let x = 1;\n}\n";
+        let rust_code = "pub fn target() {\n    println!(\"ok\");\n}\n";
         write_rust_file(dir.path(), "lib.rs", rust_code);
 
-        let selector = "src/lib.rs::fn ok()";
-        let bad_patch = "@@ -1,3 +1,1 @@\n-pub fn ok() {\n-    let x = 1;\n-}\n+pub fn BROKEN {\n";
+        let diff = "*** Begin Patch\n*** Update: src/lib.rs::fn target()\n@@ -1,3 +1,2 @@\n-pub fn target() {\n-    println!(\"ok\");\n-}\n+pub fn target( {\n+    println!(\"broken\");\n*** End Patch\n";
         let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let err = edit_code_apply(selector, bad_patch, dir.path(), &lsp).unwrap_err();
-
+        let err = edit_code_apply(diff, dir.path(), &lsp).unwrap_err();
         assert!(err.contains("tree-sitter cannot parse"));
+
         let unchanged = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
         assert_eq!(unchanged, rust_code);
     }
 
     #[test]
-    fn edit_code_apply_propagation_includes_modified_symbol() {
-        let dir = setup_temp_rust_project();
-        let rust_code = "pub fn greet() {\n    println!(\"hi\");\n}\n\npub fn farewell() {\n    println!(\"bye\");\n}\n";
-        write_rust_file(dir.path(), "lib.rs", rust_code);
-
-        let selector = "src/lib.rs::fn greet()";
-        let patch = "@@ -2,1 +2,1 @@\n-    println!(\"hi\");\n+    println!(\"hello\");\n";
-
-        let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let result = edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
-        // Should have at least one OpenEnded result for the modified symbol
-        let has_greet = result
-            .iter()
-            .any(|r| r.selector.contains("greet") || r.reason.contains("greet"));
-        assert!(
-            has_greet,
-            "Propagation should mention the modified symbol 'greet'"
-        );
-    }
-
-    #[test]
-    #[test]
     fn edit_code_apply_accepts_enclosing_selector() {
         let dir = setup_temp_rust_project();
-        let rust_code = "pub fn hello() {\n    println!(\"hello\");\n}\n\npub fn world() {\n    println!(\"world\");\n}\n";
+        let rust_code = "pub fn target() {\n    let value = 1;\n    println!(\"{}\", value);\n}\n";
         write_rust_file(dir.path(), "lib.rs", rust_code);
 
-        let selector = "src/lib.rs#enclosing:L2";
-        let patch = "@@ -2,1 +2,1 @@\n-    println!(\"hello\");\n+    println!(\"hi\");\n";
-
+        let diff = "*** Begin Patch\n*** Update: src/lib.rs#enclosing:L2\n@@ -2,1 +2,1 @@\n-    let value = 1;\n+    let value = 9;\n*** End Patch\n";
         let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        edit_code_apply(selector, patch, dir.path(), &lsp).unwrap();
-        let updated = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
-        assert!(updated.contains("println!(\"hi\");"));
-        assert!(updated.contains("pub fn world()"));
+        edit_code_apply(diff, dir.path(), &lsp).unwrap();
+
+        let modified = std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+        assert!(modified.contains("let value = 9;"));
     }
 
     #[test]
     fn edit_code_apply_rejects_ambiguous_match_selector() {
         let dir = setup_temp_rust_project();
-        let rust_code = "pub fn hello() {\n    println!(\"same\");\n}\n\npub fn world() {\n    println!(\"same\");\n}\n";
+        let rust_code = "pub fn first() {\n    println!(\"dup\");\n}\n\npub fn second() {\n    println!(\"dup\");\n}\n";
         write_rust_file(dir.path(), "lib.rs", rust_code);
 
-        let selector = "src/lib.rs#match:/same/";
-        let patch = "@@ -2,1 +2,1 @@\n-    println!(\"same\");\n+    println!(\"other\");\n";
-
+        let diff = "*** Begin Patch\n*** Update: src/lib.rs#match:/dup/\n@@\n-    println!(\"dup\");\n+    println!(\"changed\");\n*** End Patch\n";
         let lsp: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-        let err = edit_code_apply(selector, patch, dir.path(), &lsp).unwrap_err();
-        assert!(err.contains("ambiguous"));
-        assert!(err.contains("candidate lines"));
-    }
-}
+        let err = edit_code_apply(diff, dir.path(), &lsp).unwrap_err();
 
-/// Find the (1-based line, 0-based character) position of a symbol name in source text.
-/// Searches for the first occurrence of `sym_name` as a word boundary match
-/// (e.g. "greet" should match "fn greet(" but not "greeting").
-fn find_symbol_position(content: &str, sym_name: &str) -> Option<(usize, usize)> {
-    for (line_idx, line) in content.lines().enumerate() {
-        if let Some(pos) = line.find(sym_name) {
-            // Check that this is a word boundary match
-            let before_ok = pos == 0 || !line.as_bytes()[pos - 1].is_ascii_alphanumeric();
-            let after_idx = pos + sym_name.len();
-            let after_ok =
-                after_idx >= line.len() || !line.as_bytes()[after_idx].is_ascii_alphanumeric();
-            if before_ok && after_ok {
-                return Some((line_idx + 1, pos)); // 1-based line, 0-based character
-            }
-        }
+        assert!(err.contains("ambiguous"));
     }
-    None
 }

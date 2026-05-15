@@ -16,13 +16,120 @@ SCOPE is the semantic code positioning and propagation engine behind the Coding 
 
 Read operations may accept broad selectors. `read_code` and future `read_selection`-style operations may support symbols, files, ranges, around contexts, matches, outlines, and enclosing symbols.
 
-Edit operations must be conservative:
+Edit operations use `coding_edit_code` with a single `diff` argument containing a complete SCOPE Diff document. Do not pass separate selector or patch fields to `coding_edit_code`.
 
-- Symbol selector: allow semantic edit and normal propagation analysis.
-- File range selector: allow patch, then run affected-symbol analysis.
+Selector support for SCOPE Diff actions:
+
+- Symbol selector: allow semantic edits and normal propagation analysis.
+- File range selector: allow patch actions, then run affected-symbol analysis.
 - Match selector: edit only when the match is unique; if multiple matches exist, return candidates instead of guessing.
 - Enclosing selector: resolve to the enclosing symbol first, then use symbol edit semantics.
 - Outline selector: read-only; never edit an outline.
+
+## SCOPE Diff format for `coding_edit_code`
+
+`coding_edit_code` takes exactly one argument:
+
+```json
+{ "diff": "*** Begin Patch\n*** Update: src/foo.rs::fn old()\n@@\n-old()\n+new()\n*** End Patch\n" }
+```
+
+The `diff` string is a selector-based patch wrapped in an explicit envelope:
+
+```text
+*** Begin Patch
+*** Add: <selector>
++new content
+
+*** Delete: <selector>
+-old content guard
+
+*** Update: <selector>
+@@
+ context
+-old content
++new content
+ context
+*** End Patch
+```
+
+Each action header is one of:
+
+```text
+*** Add: <selector>
+*** Delete: <selector>
+*** Update: <selector>
+```
+
+### Add
+
+`Add` inserts new text at the selector-designated insertion point.
+
+```text
+*** Begin Patch
+*** Add: src/user.rs#L1-L1
++use crate::display::DisplayName;
+*** End Patch
+```
+
+Rules:
+
+- Body lines must start with `+`.
+- The payload is the body with the leading `+` prefixes removed.
+- The selector must resolve to exactly one insertion point or creation target.
+- `Add` must not overwrite existing text. Use `Update` for replacement.
+
+### Delete
+
+`Delete` removes the selector-designated range.
+
+```text
+*** Begin Patch
+*** Delete: src/user.rs::fn legacy_name()
+-pub fn legacy_name(&self) -> &str {
+-    &self.name
+-}
+*** End Patch
+```
+
+Rules:
+
+- Body lines, when present, must start with `-`.
+- The old-side body is a guard and must match the selected range after removing leading `-` prefixes.
+- If the body is omitted, SCOPE deletes the full resolved selector range only for stable selectors such as unique symbols or exact line ranges.
+- If the selector is stale, ambiguous, or the guard does not match, the edit fails without modifying files.
+
+### Update
+
+`Update` applies one or more guarded hunks inside the selector-designated range.
+
+```text
+*** Begin Patch
+*** Update: src/user.rs::fn display_name()
+@@
+ pub fn display_name(&self) -> &str {
+-    &self.name
++    &self.display_name
+ }
+*** End Patch
+```
+
+Rules:
+
+- Hunks use selector-scoped unified-diff body lines:
+  - space-prefixed lines are context
+  - `-` lines are old text
+  - `+` lines are new text
+- A bare `@@` hunk header is allowed when the selector already narrows the target enough for unambiguous matching.
+- Numbered hunk headers are supported. Line numbers are relative to the resolved selector range.
+- Old-side text plus context must match exactly one location inside the resolved selector range.
+- `Update` can express replacement by deleting all old-side lines in the selected range and adding the new body.
+
+### Execution behavior
+
+SCOPE applies a diff by parsing the envelope, resolving every selector against the current project state, validating guards and hunk contexts, applying edits transactionally per call, reparsing modified files, and returning propagation results. The preferred failure mode is all-or-nothing: stale selectors, ambiguous matches, invalid syntax, read-only selectors, or guard mismatches reject the edit before writes complete.
+
+Use SCOPE Diff when the target is code and selector semantics help keep the edit anchored to symbols, unique matches, enclosing symbols, or explicit ranges. Use raw `apply_patch` only for non-source files or cases outside SCOPE engine responsibility.
 
 ## Grep bridge
 
