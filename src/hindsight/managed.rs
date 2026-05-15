@@ -46,8 +46,8 @@ const DAEMON_STOP_TIMEOUT_SECS: u64 = 20;
 const DAEMON_START_TIMEOUT_SECS: u64 = 660;
 const SIDECAR_METADATA_FILE: &str = "daat-locus-sidecar.json";
 const SIDECAR_TARGET: &str = env!("DAAT_LOCUS_BUILD_TARGET");
-const SIDECAR_DOWNLOAD_RELEASE_TAG: &str = "hindsight-sidecars-v0.5.5-1";
-const SIDECAR_DOWNLOAD_MANIFEST_URL: &str = "https://github.com/shadow3aaa/DaatLocus/releases/download/hindsight-sidecars-v0.5.5-1/manifest.toml";
+const SIDECAR_DOWNLOAD_RELEASE_TAG: &str = "hindsight-sidecars-v0.6.2-1";
+const SIDECAR_DOWNLOAD_MANIFEST_URL: &str = "https://github.com/shadow3aaa/DaatLocus/releases/download/hindsight-sidecars-v0.6.2-1/manifest.toml";
 const SIDECAR_DOWNLOAD_USER_AGENT: &str = concat!("daat-locus/", env!("CARGO_PKG_VERSION"));
 
 #[cfg(all(test, windows))]
@@ -1109,8 +1109,8 @@ exit 2
     fn selects_download_manifest_entry_for_target() {
         let manifest = r#"
 schema_version = 1
-release = "hindsight-sidecars-v0.5.5-1"
-hindsight_version = "0.5.5"
+release = "hindsight-sidecars-v0.6.2-1"
+hindsight_version = "0.6.2"
 
 [[sidecar]]
 target = "x86_64-unknown-linux-gnu"
@@ -1118,7 +1118,7 @@ archive = "x86_64-unknown-linux-gnu.tar.zst"
 archive_kind = "tar.zst"
 sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 entry = "bin/hindsight-embed"
-url = "https://github.com/shadow3aaa/DaatLocus/releases/download/hindsight-sidecars-v0.5.5-1/x86_64-unknown-linux-gnu.tar.zst"
+url = "https://github.com/shadow3aaa/DaatLocus/releases/download/hindsight-sidecars-v0.6.2-1/x86_64-unknown-linux-gnu.tar.zst"
 "#;
 
         let entry = select_sidecar_download_entry(manifest, "x86_64-unknown-linux-gnu")

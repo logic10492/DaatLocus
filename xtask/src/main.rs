@@ -20,9 +20,9 @@ const DEFAULT_DIST_NAME: &str = "hindsight-embed";
 const DEFAULT_RELEASE_OUT_DIR: &str = "dist";
 const HINDSIGHT_PYTHON: &str = "3.12";
 const HINDSIGHT_TORCH_BACKEND: &str = "cpu";
-const HINDSIGHT_EMBED_PACKAGE: &str = "hindsight-embed==0.5.5";
-const HINDSIGHT_API_PACKAGE: &str = "hindsight-api-slim[embedded-db,local-ml]==0.5.5";
-const HINDSIGHT_PACKAGE_VERSION: &str = "0.5.5";
+const HINDSIGHT_EMBED_PACKAGE: &str = "hindsight-embed==0.6.2";
+const HINDSIGHT_API_PACKAGE: &str = "hindsight-api-slim[embedded-db,local-ml]==0.6.2";
+const HINDSIGHT_PACKAGE_VERSION: &str = "0.6.2";
 
 fn main() -> ExitCode {
     match run() {

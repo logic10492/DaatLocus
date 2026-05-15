@@ -56,11 +56,12 @@ upload and `cargo-binstall`. Those binaries use runtime sidecar downloads.
 The `Hindsight Sidecars` workflow builds the same sidecar archives without
 embedding them into Daat Locus. It uploads the archives plus a generated
 `manifest.toml` to a dedicated GitHub Release such as
-`hindsight-sidecars-v0.5.5-1`. That release is the source for the downloadable
+`hindsight-sidecars-v0.6.2-1`. That release is the source for the downloadable
 sidecar runtime path.
 
-Hindsight 0.5.5 includes the Windows profile metadata locking fix that earlier
-local builds patched in the PyInstaller entrypoint.
+Hindsight 0.6.2 includes the Windows profile metadata locking fix that earlier
+local builds patched in the PyInstaller entrypoint, plus the current upstream
+sidecar fixes.
 
 Verify generated archives and manifest checksums:
 
