@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use tree_sitter::StreamingIterator;
+
 use crate::language::LanguageRegistry;
 use crate::selector::{ParsedSelector, SelectorTarget, SymbolKind, SymbolSelector};
 
@@ -165,6 +167,47 @@ impl TreeSitterAnalyzer {
         Ok(symbols)
     }
 
+    pub fn is_import_only_reference(&self, file_path: &Path, line_number: usize) -> bool {
+        let ext = match file_path.extension().and_then(|e| e.to_str()) {
+            Some(ext) => ext,
+            None => return false,
+        };
+        let Some(adapter) = self.registry.get(ext) else {
+            return false;
+        };
+        if adapter.language_name() != "rust" {
+            return false;
+        }
+
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(content) => content,
+            Err(_) => return false,
+        };
+        let mut parser = adapter.parser();
+        let Some(tree) = parser.parse(&content, None) else {
+            return false;
+        };
+
+        let query = match tree_sitter::Query::new(&adapter.language(), RUST_USE_IMPORT_QUERY) {
+            Ok(query) => query,
+            Err(_) => return false,
+        };
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+        while let Some(query_match) = matches.next() {
+            for capture in query_match.captures {
+                let node = capture.node;
+                let start = node.start_position().row + 1;
+                let end = node.end_position().row + 1;
+                if line_number >= start && line_number <= end {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     /// Validate that a file's content can be parsed by tree-sitter.
     /// Returns true if parsing succeeds (i.e. the file is syntactically valid
     /// for the given language), false otherwise.
@@ -282,6 +325,8 @@ fn node_has_parse_error(node: tree_sitter::Node<'_>) -> bool {
     node.children(&mut cursor).any(node_has_parse_error)
 }
 
+const RUST_USE_IMPORT_QUERY: &str = "(use_declaration) @import";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +437,24 @@ impl Hints for Beta {
         let analyzer = TreeSitterAnalyzer::new();
         let valid = "fn main() { println!(\"hello\"); }";
         assert!(analyzer.can_parse("rs", valid));
+    }
+
+    #[test]
+    fn rust_use_declaration_is_import_only_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = r#"use crate::parser::Parser;
+use crate::{engine::Engine, runtime};
+
+fn run() {
+    Parser::new();
+}
+"#;
+        let path = write_temp_rust_file(dir.path(), "imports.rs", code);
+        let analyzer = TreeSitterAnalyzer::new();
+
+        assert!(analyzer.is_import_only_reference(&path, 1));
+        assert!(analyzer.is_import_only_reference(&path, 2));
+        assert!(!analyzer.is_import_only_reference(&path, 5));
     }
 
     #[test]

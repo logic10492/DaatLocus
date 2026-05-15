@@ -184,7 +184,7 @@ This file tracks hardening work for making Daat Locus a reliable long-running lo
   - [x] 为 Assistant 消息 cell 添加 Rich / Raw 双模式支持。
   - [x] 加入 ReducedMotionIndicator 控制动画行为。
 
-- [ ] Filter import-only LSP review events from Coding propagation output
-  - [ ] Detect references whose only usage is an import/use statement and exclude them from review events.
-  - [ ] Keep semantic references such as call sites, parser entry points, and tests visible for propagation review.
-  - [ ] Add coverage for Rust `use` imports so TreeSitterAnalyzer imports do not dominate review output.
+- [x] Filter import-only LSP review events from Coding propagation output
+  - [x] Detect references whose only usage is an import/use statement and exclude them from review events.
+  - [x] Keep semantic references such as call sites, parser entry points, and tests visible for propagation review.
+  - [x] Add coverage for Rust `use` imports so TreeSitterAnalyzer imports do not dominate review output.

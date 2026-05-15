@@ -749,6 +749,10 @@ impl LspClient {
                 .and_then(|content| content.lines().nth(loc_line).map(|l| l.to_string()))
                 .unwrap_or_default();
 
+            if ts.is_import_only_reference(&loc_path, loc_line + 1) {
+                continue;
+            }
+
             let selector = ts
                 .find_containing_symbol(&loc_path, loc_line + 1, project_root)
                 .unwrap_or_else(|| format!("{rel_path}::line {}", loc_line + 1));
