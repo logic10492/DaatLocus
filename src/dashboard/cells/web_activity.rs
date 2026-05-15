@@ -683,22 +683,6 @@ fn apply_coding_review_cell(item: &mut WebActivityItem, cell: &CodingReviewActiv
         exit_code: None,
         affected_files: Vec::new(),
     });
-    item.blocks = vec![WebActivityBlock::Kv {
-        entries: vec![
-            WebActivityKvEntry {
-                key: "Review".to_string(),
-                value: cell.summary.clone(),
-            },
-            WebActivityKvEntry {
-                key: "Status".to_string(),
-                value: if cell.review_pending {
-                    "pending impact review".to_string()
-                } else {
-                    "no pending review".to_string()
-                },
-            },
-        ],
-    }];
 }
 
 fn apply_coding_open_project_cell(

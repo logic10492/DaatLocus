@@ -268,7 +268,7 @@ impl Renderable for ActivityCell {
             ActivityCell::CodingEdit(c) => {
                 6 + (c.impact_lines.len() as u16).min(8) + (c.diff_files.len() as u16).min(4) * 4
             }
-            ActivityCell::CodingReview(_) => 3,
+            ActivityCell::CodingReview(_) => 1,
             ActivityCell::GenericApp(c) => 3 + (c.body_lines.len() as u16).min(10),
             ActivityCell::TerminalWait(c) => 3 + (c.body_lines.len() as u16).min(10),
             ActivityCell::Error(c) => 3 + (c.body_lines.len() as u16).min(10),
@@ -1221,36 +1221,21 @@ fn render_coding_review_cell_lines(cell: &CodingReviewActivityCell) -> Vec<Line<
     } else {
         cell.title.clone()
     };
-    let status = if cell.review_pending {
-        "pending impact review"
-    } else {
-        "no pending review"
-    };
-    vec![
-        Line::from(vec![
-            Span::styled(
-                glyph::CODING.to_string(),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                title,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::raw("   "),
-            Span::styled(cell.summary.clone(), Style::default().fg(Color::Gray)),
-        ]),
-        Line::from(vec![
-            Span::raw("   "),
-            Span::styled(status, Style::default().fg(Color::DarkGray)),
-        ]),
-    ]
+    vec![Line::from(vec![
+        Span::styled(
+            glyph::CODING.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])]
 }
 
 fn render_patch_file_header(file: &PatchFileUiData) -> Line<'static> {

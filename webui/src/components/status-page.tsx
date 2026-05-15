@@ -2997,8 +2997,12 @@ function agentChatActivityStatusClass(status: string, live?: boolean) {
 }
 
 function agentChatActivitySubtitle(bubble: AgentChatBubble) {
+  const primaryLabel = bubble.appName === "Coding"
+    ? null
+    : bubble.appName || bubble.toolName || bubble.kind;
+
   return [
-    bubble.appName || bubble.toolName || bubble.kind,
+    primaryLabel,
     bubble.sourceLabel,
   ]
     .filter(Boolean)
