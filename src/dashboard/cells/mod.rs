@@ -19,6 +19,8 @@ use crate::{
 
 use super::DashboardState;
 use apps::{AppAttentionActivityCell, BrowserActivityCell, LiveBrowserActivityCell};
+#[cfg(test)]
+pub(crate) use common::CodingToolCallActivityCell;
 use common::thinking_cell;
 use common::{
     AssistantActivityCell, ErrorActivityCell, GenericAppActivityCell, MessageImageAttachment,
@@ -487,14 +489,8 @@ fn coalesce_activity_cells(cells: Vec<ActivityCell>) -> Vec<ActivityCell> {
     let mut merged: Vec<ActivityCell> = Vec::new();
     for cell in cells {
         if let ActivityCell::CodingToolGroup(new_group) = &cell
-            && let Some(ActivityCell::CodingToolGroup(existing_group)) =
-                merged.iter_mut().find(|existing| {
-                    matches!(
-                        existing,
-                        ActivityCell::CodingToolGroup(existing_group)
-                            if existing_group.stable_id == new_group.stable_id
-                    )
-                })
+            && let Some(ActivityCell::CodingToolGroup(existing_group)) = merged.last_mut()
+            && existing_group.stable_id == new_group.stable_id
         {
             existing_group.title = new_group.title.clone();
             existing_group.calls = new_group.calls.clone();
@@ -626,6 +622,46 @@ mod tests {
             activity_cell_from_tool_ui_event(ToolUiEvent::Plan(PlanUiData { steps: Vec::new() }));
 
         assert!(cell.is_none());
+    }
+
+    #[test]
+    fn coding_tool_groups_only_merge_while_contiguous() {
+        let first_group = ActivityCell::CodingToolGroup(CodingToolGroupActivityCell {
+            stable_id: "coding-tools-project".to_string(),
+            title: "Explored".to_string(),
+            calls: vec![CodingToolCallActivityCell {
+                tool_name: "grep".to_string(),
+                summary: "first".to_string(),
+                detail_lines: Vec::new(),
+                detail_title: None,
+            }],
+        });
+        let updated_group = ActivityCell::CodingToolGroup(CodingToolGroupActivityCell {
+            stable_id: "coding-tools-project".to_string(),
+            title: "Explored".to_string(),
+            calls: vec![CodingToolCallActivityCell {
+                tool_name: "coding_read_code".to_string(),
+                summary: "second".to_string(),
+                detail_lines: Vec::new(),
+                detail_title: None,
+            }],
+        });
+        let boundary = ActivityCell::Assistant(AssistantActivityCell {
+            title: "boundary".to_string(),
+            body_lines: Vec::new(),
+            full_body: None,
+            rich_mode: true,
+        });
+
+        let contiguous = coalesce_activity_cells(vec![first_group.clone(), updated_group.clone()]);
+        assert_eq!(contiguous.len(), 1);
+        match &contiguous[0] {
+            ActivityCell::CodingToolGroup(group) => assert_eq!(group.calls[0].summary, "second"),
+            _ => panic!("expected coding group"),
+        }
+
+        let separated = coalesce_activity_cells(vec![first_group, boundary, updated_group]);
+        assert_eq!(separated.len(), 3);
     }
 
     #[test]

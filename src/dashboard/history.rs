@@ -37,7 +37,10 @@ impl DashboardActivityHistoryWindow {
         }
 
         let mut items = std::mem::take(&mut self.items);
-        items.extend(incoming);
+        for mut item in incoming {
+            assign_window_coding_tool_group_item_id(&mut item, &items);
+            items.push(item);
+        }
         self.items = dedupe_activity_items_keep_latest(items);
         if self.items.len() > DASHBOARD_ACTIVITY_HISTORY_INITIAL_LIMIT {
             let drop_count = self.items.len() - DASHBOARD_ACTIVITY_HISTORY_INITIAL_LIMIT;
@@ -211,6 +214,7 @@ impl DashboardActivityHistoryStore {
             .transaction()
             .into_diagnostic()
             .wrap_err("begin dashboard activity history transaction failed")?;
+        let mut existing_items = load_all_history_items(&transaction)?;
         {
             let mut statement = transaction
                 .prepare(
@@ -225,7 +229,9 @@ impl DashboardActivityHistoryStore {
                 .wrap_err("prepare dashboard activity history insert failed")?;
 
             for item in items {
-                let item_json = serde_json::to_string(item)
+                let mut item = item.clone();
+                assign_window_coding_tool_group_item_id(&mut item, &existing_items);
+                let item_json = serde_json::to_string(&item)
                     .into_diagnostic()
                     .wrap_err("encode dashboard activity item failed")?;
                 statement
@@ -237,6 +243,14 @@ impl DashboardActivityHistoryStore {
                     ])
                     .into_diagnostic()
                     .wrap_err("insert dashboard activity item failed")?;
+                if let Some(existing) = existing_items
+                    .iter_mut()
+                    .find(|existing| existing.id == item.id)
+                {
+                    *existing = item;
+                } else {
+                    existing_items.push(item);
+                }
             }
         }
         transaction
@@ -346,6 +360,70 @@ fn decode_history_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, WebActi
     Ok((seq, item))
 }
 
+fn load_all_history_items(transaction: &rusqlite::Transaction<'_>) -> Result<Vec<WebActivityItem>> {
+    let mut statement = transaction
+        .prepare("SELECT item_json FROM dashboard_activity ORDER BY seq ASC")
+        .into_diagnostic()
+        .wrap_err("prepare dashboard activity history scan failed")?;
+    let rows = statement
+        .query_map([], |row| {
+            let item_json: String = row.get(0)?;
+            Ok(serde_json::from_str::<WebActivityItem>(&item_json).ok())
+        })
+        .into_diagnostic()
+        .wrap_err("query dashboard activity history scan failed")?;
+
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .into_diagnostic()
+        .wrap_err("decode dashboard activity history scan failed")
+        .map(|items| items.into_iter().flatten().collect())
+}
+
+fn assign_window_coding_tool_group_item_id(
+    item: &mut WebActivityItem,
+    existing_items: &[WebActivityItem],
+) {
+    let Some(group_stable_id) = coding_tool_group_stable_id(item) else {
+        return;
+    };
+
+    if let Some(active_group_item) = existing_items.last().and_then(|item| {
+        (coding_tool_group_stable_id(item) == Some(group_stable_id)).then_some(item)
+    }) {
+        item.id = active_group_item.id.clone();
+        return;
+    }
+
+    if !existing_items
+        .iter()
+        .any(|item| coding_tool_group_stable_id(item) == Some(group_stable_id))
+    {
+        return;
+    }
+
+    let segment = existing_items
+        .iter()
+        .filter(|item| coding_tool_group_stable_id(item) == Some(group_stable_id))
+        .filter_map(|item| coding_tool_group_segment(&item.id))
+        .max()
+        .unwrap_or(0)
+        + 1;
+    item.id = format!("{}-segment-{segment}", item.id);
+}
+
+fn coding_tool_group_stable_id(item: &WebActivityItem) -> Option<&str> {
+    match item.cell.as_ref()? {
+        crate::dashboard::ActivityCell::CodingToolGroup(group) => Some(group.stable_id.as_str()),
+        _ => None,
+    }
+}
+
+fn coding_tool_group_segment(item_id: &str) -> Option<usize> {
+    item_id
+        .rsplit_once("-segment-")
+        .and_then(|(_, segment)| segment.parse::<usize>().ok())
+}
+
 fn dedupe_activity_items_keep_latest(items: Vec<WebActivityItem>) -> Vec<WebActivityItem> {
     let mut deduped: Vec<WebActivityItem> = Vec::new();
     for item in items {
@@ -356,4 +434,77 @@ fn dedupe_activity_items_keep_latest(items: Vec<WebActivityItem>) -> Vec<WebActi
         }
     }
     deduped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dashboard::cells::{ActivityCell, WebActivityKind, WebActivityStatus};
+    use crate::tool_ui::{CodingToolCallUiData, CodingToolGroupUiData};
+
+    fn activity_item(id: &str, cell: Option<ActivityCell>) -> WebActivityItem {
+        WebActivityItem {
+            web_activity_version: default_web_activity_version(),
+            id: id.to_string(),
+            kind: WebActivityKind::Unknown,
+            status: WebActivityStatus::Completed,
+            ui_hint: None,
+            title: "Activity".to_string(),
+            actor: None,
+            created_at: 0,
+            updated_at: 0,
+            source: None,
+            tool: None,
+            blocks: Vec::new(),
+            detail_blocks: Vec::new(),
+            error: None,
+            metadata: None,
+            cell,
+        }
+    }
+
+    fn coding_group(stable_id: &str, summary: &str) -> ActivityCell {
+        ActivityCell::CodingToolGroup(
+            CodingToolGroupUiData {
+                stable_id: stable_id.to_string(),
+                title: "Explored".to_string(),
+                calls: vec![CodingToolCallUiData {
+                    tool_name: "grep".to_string(),
+                    summary: summary.to_string(),
+                    detail_lines: Vec::new(),
+                }],
+            }
+            .into(),
+        )
+    }
+
+    #[test]
+    fn coding_tool_group_item_ids_follow_contiguous_segments() {
+        let mut window = DashboardActivityHistoryWindow::default();
+        window.merge_new_items(vec![activity_item(
+            "activity-coding-tools-project",
+            Some(coding_group("coding-tools-project", "first")),
+        )]);
+        window.merge_new_items(vec![activity_item(
+            "activity-coding-tools-project",
+            Some(coding_group("coding-tools-project", "second")),
+        )]);
+
+        assert_eq!(window.items.len(), 1);
+        assert_eq!(window.items[0].id, "activity-coding-tools-project");
+
+        window.merge_new_items(vec![activity_item("activity-boundary", None)]);
+        window.merge_new_items(vec![activity_item(
+            "activity-coding-tools-project",
+            Some(coding_group("coding-tools-project", "third")),
+        )]);
+
+        assert_eq!(window.items.len(), 3);
+        assert_eq!(window.items[0].id, "activity-coding-tools-project");
+        assert_eq!(window.items[1].id, "activity-boundary");
+        assert_eq!(
+            window.items[2].id,
+            "activity-coding-tools-project-segment-1"
+        );
+    }
 }
