@@ -10,8 +10,8 @@ use super::{
     apps::{BrowserActivityCell, LiveBrowserActivityCell},
     common::{
         AssistantActivityCell, CodingEditActivityCell, CodingOpenProjectActivityCell,
-        CodingToolGroupActivityCell, ErrorActivityCell, GenericAppActivityCell,
-        TerminalWaitActivityCell, ThinkingActivityCell, UserActivityCell,
+        CodingReviewActivityCell, CodingToolGroupActivityCell, ErrorActivityCell,
+        GenericAppActivityCell, TerminalWaitActivityCell, ThinkingActivityCell, UserActivityCell,
     },
     exec::{ExecResultActivityCell, LiveExecActivityCell},
     messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell},
@@ -262,6 +262,7 @@ pub fn web_activity_item_from_cell(cell: &ActivityCell, id: &str, live: bool) ->
         ActivityCell::CodingOpenProject(cell) => apply_coding_open_project_cell(&mut item, cell),
         ActivityCell::CodingToolGroup(cell) => apply_coding_tool_group_cell(&mut item, cell),
         ActivityCell::CodingEdit(cell) => apply_coding_edit_cell(&mut item, cell),
+        ActivityCell::CodingReview(cell) => apply_coding_review_cell(&mut item, cell),
         ActivityCell::GenericApp(cell) => apply_generic_app_cell(&mut item, cell),
         ActivityCell::PlanResult(cell) => apply_plan_cell(&mut item, cell),
         ActivityCell::CreateWorkflowResult(cell) => apply_create_workflow_cell(&mut item, cell),
@@ -294,6 +295,7 @@ fn activity_cell_variant_name(cell: &ActivityCell) -> &'static str {
         ActivityCell::CodingOpenProject(_) => "CodingOpenProject",
         ActivityCell::CodingToolGroup(_) => "CodingToolGroup",
         ActivityCell::CodingEdit(_) => "CodingEdit",
+        ActivityCell::CodingReview(_) => "CodingReview",
         ActivityCell::GenericApp(_) => "GenericApp",
         ActivityCell::PlanResult(_) => "PlanResult",
         ActivityCell::CreateWorkflowResult(_) => "CreateWorkflowResult",
@@ -659,6 +661,44 @@ fn apply_coding_edit_cell(item: &mut WebActivityItem, cell: &CodingEditActivityC
             items: cell.impact_lines.clone(),
         }]
     };
+}
+
+fn apply_coding_review_cell(item: &mut WebActivityItem, cell: &CodingReviewActivityCell) {
+    item.kind = WebActivityKind::Tool;
+    item.actor = Some(WebActivityActor::Tool);
+    item.ui_hint = Some("coding-review propagation-review".to_string());
+    item.title = cell.title.clone();
+    item.metadata = Some(serde_json::json!({
+        "kind": "coding-review",
+        "category": "propagation-review",
+        "review_pending": cell.review_pending,
+    }));
+    item.tool = Some(WebActivityTool {
+        name: "coding_next_review".to_string(),
+        app: Some("Coding".to_string()),
+        input_preview: None,
+        output_preview: Some(cell.summary.clone()),
+        output_ref: None,
+        duration_ms: None,
+        exit_code: None,
+        affected_files: Vec::new(),
+    });
+    item.blocks = vec![WebActivityBlock::Kv {
+        entries: vec![
+            WebActivityKvEntry {
+                key: "Review".to_string(),
+                value: cell.summary.clone(),
+            },
+            WebActivityKvEntry {
+                key: "Status".to_string(),
+                value: if cell.review_pending {
+                    "pending impact review".to_string()
+                } else {
+                    "no pending review".to_string()
+                },
+            },
+        ],
+    }];
 }
 
 fn apply_coding_open_project_cell(

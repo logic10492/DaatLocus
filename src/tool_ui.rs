@@ -22,6 +22,7 @@ pub enum ToolUiEvent {
     CodingOpenProject(CodingOpenProjectUiData),
     CodingToolGroup(CodingToolGroupUiData),
     CodingEdit(CodingEditUiData),
+    CodingReview(CodingReviewUiData),
     Browser(BrowserUiData),
     Patch(PatchUiData),
     Telegram(TelegramUiData),
@@ -121,6 +122,13 @@ pub struct CodingEditUiData {
     pub impact_lines: Vec<String>,
     #[serde(default)]
     pub diff_files: Vec<PatchFileUiData>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodingReviewUiData {
+    pub title: String,
+    pub summary: String,
+    pub review_pending: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -325,6 +333,18 @@ impl ToolUiEvent {
 
     pub fn coding_edit(data: CodingEditUiData) -> Self {
         Self::CodingEdit(data)
+    }
+
+    pub fn coding_review(
+        title: impl Into<String>,
+        summary: impl Into<String>,
+        review_pending: bool,
+    ) -> Self {
+        Self::CodingReview(CodingReviewUiData {
+            title: title.into(),
+            summary: summary.into(),
+            review_pending,
+        })
     }
 
     pub fn plan(steps: Vec<PlanStepUiData>) -> Self {

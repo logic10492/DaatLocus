@@ -1269,6 +1269,7 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
             data.removed_lines,
             data.propagation_count
         ),
+        ToolUiEvent::CodingReview(data) => summarize_runtime_inline_text(&data.title),
         ToolUiEvent::Browser(crate::tool_ui::BrowserUiData { title, .. }) => {
             summarize_runtime_inline_text(title)
         }
@@ -1597,6 +1598,7 @@ fn tool_event_is_workspace_signal(event: &ToolUiEvent) -> bool {
             | ToolUiEvent::CodingOpenProject(_)
             | ToolUiEvent::CodingToolGroup(_)
             | ToolUiEvent::CodingEdit(_)
+            | ToolUiEvent::CodingReview(_)
             | ToolUiEvent::Browser(_)
             | ToolUiEvent::Patch(_)
             | ToolUiEvent::App(_)

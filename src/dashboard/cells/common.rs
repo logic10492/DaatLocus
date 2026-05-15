@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::tool_ui::{CodingEditUiData, CodingToolGroupUiData, PatchFileUiData, ToolUiData};
+use crate::tool_ui::{
+    CodingEditUiData, CodingReviewUiData, CodingToolGroupUiData, PatchFileUiData, ToolUiData,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AssistantActivityCell {
@@ -90,6 +92,13 @@ pub struct CodingEditActivityCell {
     pub propagation_count: usize,
     pub impact_lines: Vec<String>,
     pub diff_files: Vec<PatchFileUiData>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodingReviewActivityCell {
+    pub title: String,
+    pub summary: String,
+    pub review_pending: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -220,6 +229,16 @@ impl From<CodingEditUiData> for CodingEditActivityCell {
             propagation_count: data.propagation_count,
             impact_lines: data.impact_lines,
             diff_files: data.diff_files,
+        }
+    }
+}
+
+impl From<CodingReviewUiData> for CodingReviewActivityCell {
+    fn from(data: CodingReviewUiData) -> Self {
+        Self {
+            title: data.title,
+            summary: data.summary,
+            review_pending: data.review_pending,
         }
     }
 }

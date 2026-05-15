@@ -14,8 +14,8 @@ use super::{
     apps::{AppAttentionActivityCell, BrowserActivityCell, LiveBrowserActivityCell},
     common::{
         AssistantActivityCell, CodingEditActivityCell, CodingOpenProjectActivityCell,
-        CodingToolGroupActivityCell, ErrorActivityCell, GenericAppActivityCell,
-        TerminalWaitActivityCell, ThinkingActivityCell, UserActivityCell,
+        CodingReviewActivityCell, CodingToolGroupActivityCell, ErrorActivityCell,
+        GenericAppActivityCell, TerminalWaitActivityCell, ThinkingActivityCell, UserActivityCell,
     },
     exec::{ExecResultActivityCell, LiveExecActivityCell},
     highlight::{DiffScopeBackgrounds, diff_scope_backgrounds, highlight_patch_lines},
@@ -268,6 +268,7 @@ impl Renderable for ActivityCell {
             ActivityCell::CodingEdit(c) => {
                 6 + (c.impact_lines.len() as u16).min(8) + (c.diff_files.len() as u16).min(4) * 4
             }
+            ActivityCell::CodingReview(_) => 3,
             ActivityCell::GenericApp(c) => 3 + (c.body_lines.len() as u16).min(10),
             ActivityCell::TerminalWait(c) => 3 + (c.body_lines.len() as u16).min(10),
             ActivityCell::Error(c) => 3 + (c.body_lines.len() as u16).min(10),
@@ -300,6 +301,7 @@ fn render_activity_cell_lines(cell: &ActivityCell, max_width: u16) -> Vec<Line<'
         ActivityCell::CodingOpenProject(cell) => render_coding_open_project_cell_lines(cell),
         ActivityCell::CodingToolGroup(cell) => render_coding_tool_group_cell_lines(cell),
         ActivityCell::CodingEdit(cell) => render_coding_edit_cell_lines(cell),
+        ActivityCell::CodingReview(cell) => render_coding_review_cell_lines(cell),
         ActivityCell::GenericApp(cell) => render_generic_app_cell_lines(cell),
         ActivityCell::PlanResult(cell) => render_plan_cell_lines(cell),
         ActivityCell::CreateWorkflowResult(cell) => render_create_workflow_cell_lines(cell),
@@ -1211,6 +1213,44 @@ fn limit_patch_files(files: &[PatchFileUiData], limit: usize) -> Vec<PatchFileUi
         return files.to_vec();
     }
     files.iter().take(limit).cloned().collect()
+}
+
+fn render_coding_review_cell_lines(cell: &CodingReviewActivityCell) -> Vec<Line<'static>> {
+    let title = if cell.title.trim().is_empty() {
+        "Review".to_string()
+    } else {
+        cell.title.clone()
+    };
+    let status = if cell.review_pending {
+        "pending impact review"
+    } else {
+        "no pending review"
+    };
+    vec![
+        Line::from(vec![
+            Span::styled(
+                glyph::CODING.to_string(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled(cell.summary.clone(), Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled(status, Style::default().fg(Color::DarkGray)),
+        ]),
+    ]
 }
 
 fn render_patch_file_header(file: &PatchFileUiData) -> Line<'static> {

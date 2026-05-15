@@ -26,8 +26,8 @@ use common::{
     terminal_wait_cell, user_cell,
 };
 use common::{
-    CodingEditActivityCell, CodingOpenProjectActivityCell, CodingToolGroupActivityCell,
-    ThinkingActivityCell,
+    CodingEditActivityCell, CodingOpenProjectActivityCell, CodingReviewActivityCell,
+    CodingToolGroupActivityCell, ThinkingActivityCell,
 };
 use exec::{ExecResultActivityCell, LiveExecActivityCell, live_exec_cell};
 use messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell};
@@ -59,6 +59,7 @@ pub enum ActivityCell {
     CodingOpenProject(CodingOpenProjectActivityCell),
     CodingToolGroup(CodingToolGroupActivityCell),
     CodingEdit(CodingEditActivityCell),
+    CodingReview(CodingReviewActivityCell),
     #[serde(alias = "ToolResult")]
     GenericApp(GenericAppActivityCell),
     PlanResult(PlanActivityCell),
@@ -252,6 +253,7 @@ pub fn activity_cell_from_tool_ui_event(ui_event: ToolUiEvent) -> Option<Activit
         }
         ToolUiEvent::CodingToolGroup(event) => Some(ActivityCell::CodingToolGroup(event.into())),
         ToolUiEvent::CodingEdit(event) => Some(ActivityCell::CodingEdit(event.into())),
+        ToolUiEvent::CodingReview(event) => Some(ActivityCell::CodingReview(event.into())),
         ToolUiEvent::Patch(event) => Some(ActivityCell::Patch(event.into())),
         ToolUiEvent::Telegram(event) => Some(ActivityCell::Telegram(event.into())),
         ToolUiEvent::Reply(event) => Some(ActivityCell::Reply(event.into())),

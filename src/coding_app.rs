@@ -937,7 +937,11 @@ impl App for CodingApp {
                     },
                     payload: json!({ "review": review }),
                     model_content: None,
-                    ui_event: ToolUiEvent::app(review_title, vec![review_summary.to_string()]),
+                    ui_event: ToolUiEvent::coding_review(
+                        review_title,
+                        review_summary,
+                        review_present,
+                    ),
                     turn_boundary_reason: None,
                 })
             }
