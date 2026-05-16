@@ -2809,7 +2809,6 @@ pub async fn run_config_menu() -> Result<()> {
         }
 
         let items = [
-            crate::tr!(locale, "config.show_details"),
             crate::tr!(locale, "config.add_provider"),
             crate::tr!(locale, "config.add_model"),
             crate::tr!(locale, "config.change_main_model"),
@@ -2834,19 +2833,6 @@ pub async fn run_config_menu() -> Result<()> {
         let action_result: Result<()> = async {
             match idx {
                 0 => {
-                    match crate::config::load_config().await {
-                        Ok(cfg) => ui.detail(
-                            &crate::tr!(locale, "config.details_title"),
-                            &render_config_summary_lines(&cfg, locale),
-                        )?,
-                        Err(e) => ui.detail(
-                            &crate::tr!(locale, "config.details_title"),
-                            &[crate::tr!(locale, "common.config_load_failed", error = e)],
-                        )?,
-                    }
-                    Ok(())
-                }
-                1 => {
                     let mut config = crate::config::load_config().await.map_err(|e| {
                         miette!(
                             "{}",
@@ -2868,7 +2854,7 @@ pub async fn run_config_menu() -> Result<()> {
                         Ok(())
                     }
                 }
-                2 => {
+                1 => {
                     let mut config = crate::config::load_config().await.map_err(|e| {
                         miette!(
                             "{}",
@@ -2912,7 +2898,7 @@ pub async fn run_config_menu() -> Result<()> {
                         Ok(())
                     }
                 }
-                3 => {
+                2 => {
                     let mut config = crate::config::load_config().await.map_err(|e| {
                         miette!(
                             "{}",
@@ -2937,7 +2923,7 @@ pub async fn run_config_menu() -> Result<()> {
                     write_config(&config).await?;
                     Ok(())
                 }
-                4 => {
+                3 => {
                     let mut config = crate::config::load_config().await.map_err(|e| {
                         miette!(
                             "{}",
@@ -2962,7 +2948,7 @@ pub async fn run_config_menu() -> Result<()> {
                     write_config(&config).await?;
                     Ok(())
                 }
-                5 => {
+                4 => {
                     let mut config = crate::config::load_config().await.map_err(|e| {
                         miette!(
                             "{}",
