@@ -206,6 +206,18 @@ fn execute_put_away_app_tool<'a>(
     })
 }
 
+async fn put_away_focused_app_after_work_completion(context: &mut Context) -> Option<String> {
+    let focused = context.apps.focused()?;
+    if let Err(err) = context.apps.put_away().await {
+        tracing::warn!(
+            app = %focused,
+            "failed to automatically put away focused app after work completion: {err:?}"
+        );
+        return None;
+    }
+    Some(focused.to_string())
+}
+
 fn summarize_event_resolve_tool(call: &AgentToolCall) -> Result<EpisodeActionRecord> {
     let args: EventResolveArgs = parse_tool_args(call)?;
     let reply_summary = args
@@ -310,6 +322,7 @@ fn execute_event_resolve_tool<'a>(
         };
         context.queue_active_workflow_run_for_flush(WorkflowRunOutcome::Completed);
         context.bound_workflow_id = None;
+        let auto_put_away_app = put_away_focused_app_after_work_completion(context).await;
         let reply_lines = reply_message
             .as_deref()
             .map(|message| {
@@ -326,6 +339,7 @@ fn execute_event_resolve_tool<'a>(
             "disposition": event_disposition_kind(args.disposition),
             "reply_message": reply_message.clone(),
             "note": args.note.clone(),
+            "auto_put_away_app": auto_put_away_app,
         });
         Ok(ToolExecutionResult::new(
             summary.clone(),
@@ -392,6 +406,7 @@ fn execute_notice_resolved_tool<'a>(
 
         context.queue_active_workflow_run_for_flush(WorkflowRunOutcome::Completed);
         context.bound_workflow_id = None;
+        let auto_put_away_app = put_away_focused_app_after_work_completion(context).await;
         let result_lines = vec![
             format!("App notice resolved: {}", key.app),
             format!("Reason: {}", summarize_inline_text(&key.reason)),
@@ -402,6 +417,7 @@ fn execute_notice_resolved_tool<'a>(
                 "app": key.app,
                 "reason": key.reason,
                 "note": args.note,
+                "auto_put_away_app": auto_put_away_app,
             }),
             ToolUiEvent::notice_reply(ReplyDisposition::Resolved, result_lines),
         ))
