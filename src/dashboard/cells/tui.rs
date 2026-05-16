@@ -366,7 +366,56 @@ fn render_assistant_cell_lines(cell: &AssistantActivityCell) -> Vec<Line<'static
     )
 }
 
-fn render_thinking_cell_lines(cell: &ThinkingActivityCell, _max_width: u16) -> Vec<Line<'static>> {
+fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Vec<Line<'static>> {
+    fn prefixed_wrapped_markdown_lines(
+        md_line: Line<'static>,
+        prefix: &[Span<'static>],
+        content_width: usize,
+    ) -> Vec<Line<'static>> {
+        let line_style = md_line.style;
+        let mut wrapped = Vec::new();
+        let mut current_spans = prefix.to_vec();
+        let mut current_width = 0usize;
+        let mut has_content = false;
+
+        for span in md_line.spans {
+            let style = span.style;
+            let mut chunk = String::new();
+            let mut chunk_width = 0usize;
+
+            for ch in span.content.chars() {
+                if current_width + chunk_width >= content_width {
+                    if !chunk.is_empty() {
+                        current_spans.push(Span::styled(std::mem::take(&mut chunk), style));
+                        chunk_width = 0;
+                    }
+                    let mut line =
+                        Line::from(std::mem::replace(&mut current_spans, prefix.to_vec()));
+                    line.style = line_style;
+                    wrapped.push(line);
+                    current_width = 0;
+                }
+
+                chunk.push(ch);
+                chunk_width += 1;
+                has_content = true;
+            }
+
+            if !chunk.is_empty() {
+                current_width += chunk_width;
+                current_spans.push(Span::styled(chunk, style));
+            }
+        }
+
+        if !has_content || current_spans.len() > prefix.len() {
+            let mut line = Line::from(current_spans);
+            line.style = line_style;
+            wrapped.push(line);
+        }
+
+        wrapped
+    }
+
     let bar = Span::styled("│", Style::default().fg(Color::DarkGray));
     let mut lines = Vec::new();
 
@@ -402,12 +451,14 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell, _max_width: u16) -> V
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let prefix = vec![bar.clone(), Span::raw(" ")];
+    let content_width = max_width.saturating_sub(2).max(1) as usize;
     for md_line in render_markdown(&body_text, Color::Gray) {
-        let mut spans = vec![bar.clone(), Span::raw(" ")];
-        spans.extend(md_line.spans);
-        let mut line = Line::from(spans);
-        line.style = md_line.style;
-        lines.push(line);
+        lines.extend(prefixed_wrapped_markdown_lines(
+            md_line,
+            &prefix,
+            content_width,
+        ));
     }
     lines
 }
@@ -1554,6 +1605,41 @@ That's it.";
             !expanded_rendered
                 .iter()
                 .any(|line| line.contains("Preview only"))
+        );
+    }
+
+    #[test]
+    fn thinking_cell_wraps_multiline_body_with_bar_prefix() {
+        let cell = ThinkingActivityCell {
+            title: "Thinking".to_string(),
+            body_lines: vec![
+                "Planning code reviews".to_string(),
+                String::new(),
+                "I need to keep going and review the events before finalizing everything. I should probably run git status, and then commit and push.".to_string(),
+            ],
+            full_body: None,
+            expanded: false,
+        };
+
+        let rendered = render_thinking_cell_lines(&cell, 34)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered.len() > 4,
+            "long thinking body should be pre-wrapped into multiple prefixed lines: {rendered:?}"
+        );
+        assert!(
+            rendered.iter().skip(1).all(|line| line.starts_with("│ ")),
+            "every body and continuation line should keep the thinking bar prefix: {rendered:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .skip(1)
+                .all(|line| line.chars().count() <= 34),
+            "pre-wrapped thinking lines should fit the requested width: {rendered:?}"
         );
     }
 
