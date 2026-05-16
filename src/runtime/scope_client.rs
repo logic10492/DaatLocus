@@ -198,6 +198,17 @@ impl ScopeClient {
         Ok(results)
     }
 
+    /// Return whether SCOPE owns semantic source operations for a path.
+    #[allow(dead_code)]
+    pub fn is_responsible_source(&self, path: &Path) -> Result<api::IsResponsibleSourceResponse> {
+        let result = self.dispatch(
+            "is_responsible_source",
+            serde_json::json!({ "path": path.to_string_lossy() }),
+        )?;
+        serde_json::from_value(result)
+            .map_err(|err| miette!("invalid is_responsible_source response: {err}"))
+    }
+
     /// Count accumulated propagation review events.
     #[allow(dead_code)]
     pub fn pending_review_count(&self) -> usize {

@@ -222,6 +222,23 @@ impl TreeSitterAnalyzer {
             .is_some_and(|tree| !node_has_parse_error(tree.root_node()))
     }
 
+    /// Return the SCOPE language adapter that owns semantic source operations
+    /// for the given extension.
+    pub fn responsible_language_for_extension(&self, ext: &str) -> Option<&'static str> {
+        self.registry
+            .get(ext)
+            .map(|adapter| adapter.language_name())
+    }
+
+    /// Return true when SCOPE owns semantic source operations for this path.
+    pub fn is_responsible_source_path(&self, file_path: &Path) -> bool {
+        file_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .and_then(|ext| self.responsible_language_for_extension(ext))
+            .is_some()
+    }
+
     fn collect_symbols(
         &self,
         node: tree_sitter::Node,
@@ -539,6 +556,19 @@ fn run() {
         assert!(analyzer.can_parse("php", php_code));
     }
 
+    #[test]
+    fn responsible_source_path_matches_registered_languages() {
+        let analyzer = TreeSitterAnalyzer::new();
+        assert!(analyzer.is_responsible_source_path(Path::new("src/lib.rs")));
+        assert!(analyzer.is_responsible_source_path(Path::new("script.py")));
+        assert!(!analyzer.is_responsible_source_path(Path::new("README.md")));
+        assert!(!analyzer.is_responsible_source_path(Path::new("Makefile")));
+        assert_eq!(
+            analyzer.responsible_language_for_extension("rs"),
+            Some("rust")
+        );
+        assert_eq!(analyzer.responsible_language_for_extension("md"), None);
+    }
     #[test]
     fn test_language_registry_has_all_languages() {
         let registry = LanguageRegistry::new();

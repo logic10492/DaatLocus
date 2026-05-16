@@ -169,6 +169,28 @@ pub struct EditCodeRequest {
     pub diff: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct IsResponsibleSourceRequest {
+    /// Project-relative or absolute file path to classify.
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IsResponsibleSourceResponse {
+    /// True when SCOPE owns semantic source-code operations for this path.
+    pub is_responsible: bool,
+    /// Normalized project-relative path when the input is inside the project root.
+    pub path: String,
+    /// File extension used for the decision, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension: Option<String>,
+    /// SCOPE language adapter name that owns the path, when recognized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Human-readable reason for diagnostics and policy errors.
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScopeUsageResponse {
     pub usage_markdown: String,

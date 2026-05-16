@@ -16,6 +16,7 @@ use crate::{
         App, AppHowToUse, AppId, AppStateRender, AppToolExecutionContext, AppToolExecutionResult,
         AppToolScope, AppToolSpec, AppUsage,
     },
+    apply_patch::{PatchOp, parse_apply_patch},
     context_budget::truncate_text_to_token_budget,
     reasoning::{episode::EpisodeActionRecord, runtime::AgentToolCall},
     runtime::scope_client::ScopeClient,
@@ -37,7 +38,7 @@ const CODING_HOW_TO_USE: &str = r#"Coding app is used to modify projects; think 
 
 First, if the project you need to edit is not open yet, use `coding_open_project` to open it.
 
-When editing source code, always prefer Coding app tools such as `coding_edit_code`, `coding_read_code`, `grep`, and `glob` instead of substituting terminal commands. Important: except for configuration, generated assets, or other non-source areas outside SCOPE engine responsibility, or cases where these tools genuinely cannot complete the task, do not use other tools or shell commands to edit source code.
+When editing source code, always prefer Coding app tools such as `coding_edit_code`, `coding_read_code`, `grep`, and `glob` instead of substituting terminal commands. Important: except for configuration, generated assets, or other non-source areas outside SCOPE engine responsibility, or cases where these tools genuinely cannot complete the task, do not use other tools or shell commands to edit source code. When Coding is focused, `apply_patch` is rejected for source files that SCOPE says it is responsible for; use `coding_edit_code`/SCOPE Diff for those files.
 
 After each edit, the tool automatically evaluates the impact of your changes and accumulates pending review events. You can also see the current number of pending review events in Coding app state. You do not need to handle them immediately. However, after you finish a series of edits (usually when a plan step is complete, or when you judge that too many review events have accumulated), call `coding_next_review` to acknowledge and claim review events, then follow their instructions to inspect the impact of your changes. This must always be done before reporting back to the user.
 
@@ -591,6 +592,33 @@ impl Default for CodingApp {
     }
 }
 
+impl CodingApp {
+    fn reject_scope_owned_apply_patch(&self, call: &AgentToolCall) -> Result<()> {
+        self.require_project()?;
+        let patch_text = extract_coding_apply_patch_text(call)?;
+        let ops = parse_apply_patch(&patch_text)?;
+        let mut blocked = Vec::new();
+        for op in ops {
+            let path = match op {
+                PatchOp::Add { path, .. }
+                | PatchOp::Delete { path }
+                | PatchOp::Update { path, .. } => path,
+            };
+            let response = self.scope.is_responsible_source(Path::new(&path))?;
+            if response.is_responsible {
+                blocked.push(format!("{} ({})", response.path, response.reason));
+            }
+        }
+        if blocked.is_empty() {
+            return Ok(());
+        }
+        Err(miette!(
+            "apply_patch is forbidden for SCOPE-owned source files while Coding is focused. Use coding_edit_code/SCOPE Diff instead. Blocked file(s): {}",
+            blocked.join(", ")
+        ))
+    }
+}
+
 #[async_trait]
 impl App for CodingApp {
     fn id(&self) -> AppId {
@@ -687,6 +715,19 @@ impl App for CodingApp {
                 input_schema: serde_json::to_value(schema_for!(CodingEditCodeArgs)).unwrap(),
             },
             AppToolSpec {
+                name: "apply_patch".to_string(),
+                description: "Policy guard for raw patch edits while Coding is focused; rejects SCOPE-owned source files before the raw patch tool runs.".to_string(),
+                scope: AppToolScope::Terminal,
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "input": { "type": "string" },
+                        "patch": { "type": "string" }
+                    },
+                    "additionalProperties": true
+                }),
+            },
+            AppToolSpec {
                 name: "coding_next_review".to_string(),
                 description: "Acknowledge and return the next accumulated scope-engine propagation review event, if any.".to_string(),
                 scope: AppToolScope::Coding,
@@ -743,6 +784,19 @@ impl App for CodingApp {
         context: &AppToolExecutionContext,
     ) -> Result<AppToolExecutionResult> {
         match call.name.as_str() {
+            "apply_patch" => {
+                self.reject_scope_owned_apply_patch(call)?;
+                Ok(AppToolExecutionResult {
+                    summary: "apply_patch may proceed outside SCOPE source ownership".to_string(),
+                    payload: json!({ "allowed": true }),
+                    model_content: None,
+                    ui_event: ToolUiEvent::app(
+                        "apply_patch policy".to_string(),
+                        vec!["allowed outside SCOPE-owned source".to_string()],
+                    ),
+                    turn_boundary_reason: None,
+                })
+            }
             "coding_open_project" => {
                 let args: CodingOpenProjectArgs = parse_coding_tool_args(call)?;
                 self.open_project(args, context)
@@ -942,6 +996,31 @@ impl App for CodingApp {
             _ => Err(miette!("unknown coding tool `{}`", call.name)),
         }
     }
+}
+
+fn extract_coding_apply_patch_text(call: &AgentToolCall) -> Result<String> {
+    if let Some(input) = call
+        .arguments
+        .as_object()
+        .and_then(|value| value.get("input"))
+        && let Some(text) = input.as_str()
+    {
+        return Ok(text.to_string());
+    }
+    if let Some(patch) = call
+        .arguments
+        .as_object()
+        .and_then(|value| value.get("patch"))
+        && let Some(text) = patch.as_str()
+    {
+        return Ok(text.to_string());
+    }
+    if let Some(text) = call.arguments.as_str() {
+        return Ok(text.to_string());
+    }
+    Err(miette!(
+        "invalid arguments for tool `apply_patch`: expected a patch string in `input`"
+    ))
 }
 
 fn parse_coding_tool_args<T: for<'de> Deserialize<'de>>(call: &AgentToolCall) -> Result<T> {

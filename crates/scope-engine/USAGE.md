@@ -129,7 +129,7 @@ Rules:
 
 SCOPE applies a diff by parsing the envelope, resolving every selector against the current project state, validating guards and hunk contexts, applying edits transactionally per call, reparsing modified files, and returning propagation results. The preferred failure mode is all-or-nothing: stale selectors, ambiguous matches, invalid syntax, read-only selectors, or guard mismatches reject the edit before writes complete.
 
-Use SCOPE Diff when the target is code and selector semantics help keep the edit anchored to symbols, unique matches, enclosing symbols, or explicit ranges. Use raw `apply_patch` only for non-source files or cases outside SCOPE engine responsibility.
+Use SCOPE Diff when the target is code and selector semantics help keep the edit anchored to symbols, unique matches, enclosing symbols, or explicit ranges. Use raw `apply_patch` only for non-source files or cases outside SCOPE engine responsibility. SCOPE exposes `is_responsible_source` so callers can ask whether a path is source code owned by SCOPE before allowing raw file edits.
 
 ## Grep bridge
 

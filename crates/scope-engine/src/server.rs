@@ -182,6 +182,20 @@ pub fn dispatch(
             };
             handle_glob_files(req, &params, project_root)
         }
+        "is_responsible_source" => {
+            let params: IsResponsibleSourceRequest =
+                match serde_json::from_value(req.params.clone()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return JsonRpcResponse::err(
+                            req.id.clone(),
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        );
+                    }
+                };
+            handle_is_responsible_source(req, &params, project_root)
+        }
         "edit_code" => {
             let params: EditCodeRequest = match serde_json::from_value(req.params.clone()) {
                 Ok(p) => p,
@@ -342,6 +356,66 @@ pub fn glob_files(
         files,
         truncated,
         output,
+    })
+}
+
+fn handle_is_responsible_source(
+    req: &JsonRpcRequest,
+    params: &IsResponsibleSourceRequest,
+    project_root: Option<&Path>,
+) -> JsonRpcResponse {
+    let project_root = match project_root {
+        Some(r) => r,
+        None => {
+            return JsonRpcResponse::err(
+                req.id.clone(),
+                -32000,
+                "No project open; call open_project first",
+            );
+        }
+    };
+
+    match is_responsible_source(project_root, params) {
+        Ok(response) => {
+            JsonRpcResponse::ok(req.id.clone(), serde_json::to_value(response).unwrap())
+        }
+        Err(e) => JsonRpcResponse::err(req.id.clone(), -32001, e),
+    }
+}
+
+pub fn is_responsible_source(
+    project_root: &Path,
+    params: &IsResponsibleSourceRequest,
+) -> Result<IsResponsibleSourceResponse, String> {
+    let relative = project_relative_arg(project_root, Some(&params.path))?
+        .ok_or_else(|| "path is required".to_string())?;
+    let path = project_root.join(&relative);
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_string);
+    let analyzer = TreeSitterAnalyzer::new();
+    let language = extension
+        .as_deref()
+        .and_then(|ext| analyzer.responsible_language_for_extension(ext))
+        .map(str::to_string);
+    let is_responsible = language.is_some();
+    let reason = match (&extension, &language) {
+        (Some(extension), Some(language)) => {
+            format!("SCOPE recognizes .{extension} as {language} source")
+        }
+        (Some(extension), None) => {
+            format!("SCOPE has no source adapter for .{extension}")
+        }
+        (None, _) => "path has no file extension for SCOPE source ownership".to_string(),
+    };
+
+    Ok(IsResponsibleSourceResponse {
+        is_responsible,
+        path: relative,
+        extension,
+        language,
+        reason,
     })
 }
 
@@ -1339,5 +1413,59 @@ mod tests {
                 .iter()
                 .any(|kind| kind["kind"] == "outline" && kind["edit"] == false)
         );
+    }
+
+    #[test]
+    fn is_responsible_source_reports_scope_owned_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let propagation_state = Mutex::new(PropagationState::new());
+        let lsp_analyzer = Mutex::new(None);
+        let req = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            method: "is_responsible_source".to_string(),
+            params: serde_json::json!({ "path": "src/lib.rs" }),
+        };
+
+        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
+
+        assert!(
+            response.error.is_none(),
+            "unexpected error: {:?}",
+            response.error
+        );
+        let result: IsResponsibleSourceResponse =
+            serde_json::from_value(response.result.unwrap()).unwrap();
+        assert!(result.is_responsible);
+        assert_eq!(result.path, "src/lib.rs");
+        assert_eq!(result.extension.as_deref(), Some("rs"));
+        assert_eq!(result.language.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn is_responsible_source_reports_non_source_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let propagation_state = Mutex::new(PropagationState::new());
+        let lsp_analyzer = Mutex::new(None);
+        let req = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            method: "is_responsible_source".to_string(),
+            params: serde_json::json!({ "path": "README.md" }),
+        };
+
+        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
+
+        assert!(
+            response.error.is_none(),
+            "unexpected error: {:?}",
+            response.error
+        );
+        let result: IsResponsibleSourceResponse =
+            serde_json::from_value(response.result.unwrap()).unwrap();
+        assert!(!result.is_responsible);
+        assert_eq!(result.path, "README.md");
+        assert_eq!(result.extension.as_deref(), Some("md"));
+        assert_eq!(result.language, None);
     }
 }

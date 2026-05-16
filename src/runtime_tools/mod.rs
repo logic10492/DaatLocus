@@ -334,6 +334,23 @@ LF: /\n/"#
         context: &mut Context,
         call: &AgentToolCall,
     ) -> miette::Result<ToolExecutionResult> {
+        if context.apps.tool_scope_is_focused(AppToolScope::Coding) {
+            let app_context = AppToolExecutionContext {
+                execution_cwd: context.execution_cwd.clone(),
+                sandbox_policy: context.sandbox_policy.clone(),
+                dashboard_tx: context.dashboard_tx.clone(),
+                tool_output_max_tokens: context
+                    .config
+                    .main_model_config()
+                    .tool_output_max_tokens
+                    .max(1),
+                turn_epoch: context.runtime_turn_epoch,
+            };
+            let _ = context
+                .apps
+                .execute_tool_for_app(&AppId::coding(), call, &app_context)
+                .await?;
+        }
         work::execute_apply_patch_runtime_tool(context, call).await
     }
 }
@@ -1054,6 +1071,84 @@ mod tests {
             result.model_content()
         );
         assert!(matches!(result.ui_event, ToolUiEvent::Terminal(_)));
+    }
+
+    #[tokio::test]
+    async fn coding_focus_rejects_apply_patch_for_scope_owned_source() {
+        let mut isolated = IsolatedTestContext::new(AppId::coding()).await;
+        let root = isolated.context.execution_cwd.clone();
+        std::fs::write(root.join("lib.rs"), "pub fn value() -> i32 {\n    1\n}\n")
+            .expect("write rust fixture");
+
+        let open_call = AgentToolCall {
+            id: "call_open".to_string(),
+            name: "coding_open_project".to_string(),
+            arguments: json!({
+                "project_root": root,
+                "language": "rust",
+            }),
+        };
+        execute_agent_tool_call(&mut isolated.context, &open_call)
+            .await
+            .expect("open project");
+
+        let patch_call = AgentToolCall {
+            id: "call_patch".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({
+                "input": "*** Begin Patch\n*** Update File: lib.rs\n@@\n-    1\n+    2\n*** End Patch\n",
+            }),
+        };
+
+        let err = execute_agent_tool_call(&mut isolated.context, &patch_call)
+            .await
+            .expect_err("SCOPE-owned source patch should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("apply_patch is forbidden for SCOPE-owned source files"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("lib.rs")).expect("read rust fixture"),
+            "pub fn value() -> i32 {\n    1\n}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn coding_focus_allows_apply_patch_for_non_scope_file() {
+        let mut isolated = IsolatedTestContext::new(AppId::coding()).await;
+        let root = isolated.context.execution_cwd.clone();
+        std::fs::write(root.join("README.md"), "old\n").expect("write markdown fixture");
+
+        let open_call = AgentToolCall {
+            id: "call_open".to_string(),
+            name: "coding_open_project".to_string(),
+            arguments: json!({
+                "project_root": root,
+                "language": "rust",
+            }),
+        };
+        execute_agent_tool_call(&mut isolated.context, &open_call)
+            .await
+            .expect("open project");
+
+        let patch_call = AgentToolCall {
+            id: "call_patch".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: json!({
+                "input": "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch\n",
+            }),
+        };
+
+        execute_agent_tool_call(&mut isolated.context, &patch_call)
+            .await
+            .expect("non-SCOPE patch should be allowed");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("README.md")).expect("read markdown fixture"),
+            "new\n"
+        );
     }
 
     #[tokio::test]
