@@ -366,7 +366,7 @@ fn render_assistant_cell_lines(cell: &AssistantActivityCell) -> Vec<Line<'static
     )
 }
 
-fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_thinking_cell_lines(cell: &ThinkingActivityCell, _max_width: u16) -> Vec<Line<'static>> {
     let bar = Span::styled("│", Style::default().fg(Color::DarkGray));
     let mut lines = Vec::new();
 
@@ -390,34 +390,24 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Ve
     }
     lines.push(Line::from(title_spans));
 
-    // Body lines: │ content
-    let content_width = (max_width.saturating_sub(2)).max(20) as usize;
-    if cell.expanded {
-        // Expanded: show full reasoning content
-        if let Some(ref full) = cell.full_body {
-            for body_line in full.lines() {
-                let wrapped = textwrap::wrap(body_line, content_width);
-                for sub_line in &wrapped {
-                    lines.push(Line::from(vec![
-                        bar.clone(),
-                        Span::raw(" "),
-                        Span::styled(sub_line.to_string(), Style::default().fg(Color::Gray)),
-                    ]));
-                }
-            }
-        }
+    let body_text = if cell.expanded {
+        cell.full_body
+            .clone()
+            .unwrap_or_else(|| cell.body_lines.join("\n"))
     } else {
-        // Collapsed: show truncated preview (first 5 lines)
-        for body_line in cell.body_lines.iter().take(5) {
-            let wrapped = textwrap::wrap(body_line, content_width);
-            for sub_line in &wrapped {
-                lines.push(Line::from(vec![
-                    bar.clone(),
-                    Span::raw(" "),
-                    Span::styled(sub_line.to_string(), Style::default().fg(Color::Gray)),
-                ]));
-            }
-        }
+        cell.body_lines
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for md_line in render_markdown(&body_text, Color::Gray) {
+        let mut spans = vec![bar.clone(), Span::raw(" ")];
+        spans.extend(md_line.spans);
+        let mut line = Line::from(spans);
+        line.style = md_line.style;
+        lines.push(line);
     }
     lines
 }
@@ -1521,6 +1511,49 @@ That's it.";
             plain_text,
             Some(Color::White),
             "plain text should have White fg (base_color)"
+        );
+    }
+
+    #[test]
+    fn thinking_cell_renders_body_as_markdown() {
+        let collapsed = ThinkingActivityCell {
+            title: "Thinking".to_string(),
+            body_lines: vec!["Some `code` and **bold** text".to_string()],
+            full_body: Some("Full body with `details`".to_string()),
+            expanded: false,
+        };
+        let collapsed_lines = render_thinking_cell_lines(&collapsed, 80);
+        let code_span = collapsed_lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "code")
+            .expect("inline code should be rendered as a separate markdown span");
+        assert_eq!(code_span.style.fg, Some(Color::Yellow));
+        assert!(collapsed_lines.iter().skip(1).all(|line| {
+            line.spans
+                .first()
+                .is_some_and(|span| span.content.as_ref() == "│")
+        }));
+
+        let expanded = ThinkingActivityCell {
+            title: "Thinking".to_string(),
+            body_lines: vec!["Preview only".to_string()],
+            full_body: Some("Expanded body with `details`".to_string()),
+            expanded: true,
+        };
+        let expanded_rendered = render_thinking_cell_lines(&expanded, 80)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+        assert!(
+            expanded_rendered
+                .iter()
+                .any(|line| line.contains("Expanded body with details"))
+        );
+        assert!(
+            !expanded_rendered
+                .iter()
+                .any(|line| line.contains("Preview only"))
         );
     }
 
