@@ -15,7 +15,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
-    config::{ModelConfig, ThinkingBudget, redact_secret_text},
+    config::{ModelConfig, redact_secret_text},
     context::Context,
     context_budget::{
         ContextBudgetExceededError, RequestBudgetLimits, estimate_agent_turn_request,
@@ -23,6 +23,7 @@ use crate::{
     },
     core::{Llm, TokenUsage, TokenUsageInfo},
     persistence::{PersistenceFileMode, PersistenceStore, write_bytes_atomic},
+    providers::thinking::codex_reasoning_effort,
     reasoning::runtime::{
         AgentContent, AgentContentPart, AgentMessage, AgentToolCall, AgentToolInputSpec,
         AgentTurnItem, AgentTurnRequest, AgentTurnStreamResult, HistoryMessage, PromptRequest,
@@ -63,7 +64,7 @@ struct CodexResponsesClient {
     base_url: String,
     extra_headers: reqwest::header::HeaderMap,
     model: String,
-    thinking_budget: Option<ThinkingBudget>,
+    thinking_budget: Option<String>,
     rpm: Option<usize>,
     stream_idle_timeout: Duration,
     context_window_tokens: usize,
@@ -157,7 +158,9 @@ impl CodexResponsesClient {
             base_url: base_url.clone(),
             extra_headers: reqwest::header::HeaderMap::new(),
             model: model_config.model_id.clone(),
-            thinking_budget: model_config.thinking_budget(),
+            thinking_budget: model_config
+                .thinking_budget()
+                .map(|budget| budget.as_str().to_string()),
             rpm: model_config.rpm(),
             stream_idle_timeout,
             context_window_tokens,
@@ -829,8 +832,8 @@ fn base_responses_payload(
             "x-codex-installation-id": client.installation_id,
         },
     });
-    if let Some(budget) = client.thinking_budget {
-        payload["reasoning"] = json!({ "effort": budget.as_codex_reasoning_effort() });
+    if let Some(budget) = client.thinking_budget.as_deref() {
+        payload["reasoning"] = json!({ "effort": codex_reasoning_effort(budget) });
     }
     payload
 }
@@ -1462,7 +1465,7 @@ mod tests {
             &ModelConfig {
                 model_id: "gpt-5.4".to_string(),
                 provider: "codex-oauth".to_string(),
-                thinking_budget: Some(ThinkingBudget::Max),
+                thinking_budget: Some(ThinkingBudget::new("max")),
                 ..ModelConfig::default()
             },
         );

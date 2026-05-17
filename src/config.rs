@@ -79,54 +79,17 @@ pub enum ProviderConfig {
 // Model capabilities
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ThinkingBudget {
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    Max,
-}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ThinkingBudget(String);
 
 impl ThinkingBudget {
-    pub fn as_chat_reasoning_effort(self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::Minimal => Some("minimal"),
-            Self::Low => Some("low"),
-            Self::Medium => Some("medium"),
-            Self::High => Some("high"),
-            Self::Max => Some("max"),
-        }
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
     }
 
-    pub fn as_codex_reasoning_effort(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Minimal => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Max => "xhigh",
-        }
-    }
-
-    pub fn deepseek_thinking_type(self) -> &'static str {
-        match self {
-            Self::None => "disabled",
-            _ => "enabled",
-        }
-    }
-
-    pub fn deepseek_reasoning_effort(self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::Max => Some("max"),
-            // DeepSeek currently accepts high/max. Treat generic non-max budgets as high.
-            _ => Some("high"),
-        }
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
@@ -178,8 +141,8 @@ impl Default for ModelConfig {
 }
 
 impl ModelConfig {
-    pub fn thinking_budget(&self) -> Option<ThinkingBudget> {
-        self.thinking_budget
+    pub fn thinking_budget(&self) -> Option<&ThinkingBudget> {
+        self.thinking_budget.as_ref()
     }
 
     pub fn rpm(&self) -> Option<usize> {
@@ -752,7 +715,7 @@ enabled = false
     }
 
     #[test]
-    fn thinking_budget_parses_as_fixed_enum() {
+    fn thinking_budget_preserves_configured_string() {
         let config: Config = toml::from_str(
             r#"
 main_model = "default"
@@ -770,14 +733,16 @@ thinking_budget = "max"
         .expect("parse config");
 
         assert_eq!(
-            config.models["default"].thinking_budget(),
-            Some(ThinkingBudget::Max)
+            config.models["default"]
+                .thinking_budget()
+                .map(ThinkingBudget::as_str),
+            Some("max")
         );
     }
 
     #[test]
-    fn thinking_budget_rejects_unknown_values() {
-        let result = toml::from_str::<Config>(
+    fn thinking_budget_accepts_custom_values() {
+        let config: Config = toml::from_str(
             r#"
 main_model = "default"
 
@@ -790,10 +755,15 @@ provider = "openai"
 model_id = "gpt-4.1"
 thinking_budget = "xhigh"
 "#,
-        );
+        )
+        .expect("parse config");
 
-        let err = result.err().expect("unknown thinking_budget must fail");
-        assert!(err.to_string().contains("unknown variant"));
+        assert_eq!(
+            config.models["default"]
+                .thinking_budget()
+                .map(ThinkingBudget::as_str),
+            Some("xhigh")
+        );
     }
 
     #[cfg(unix)]

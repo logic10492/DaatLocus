@@ -42,7 +42,7 @@ use tokio::{
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::{
-    config::{Config, ModelConfig, ProviderConfig, ThinkingBudget, load_config},
+    config::{Config, ModelConfig, ProviderConfig, load_config},
     daat_locus_paths::{daat_locus_paths, daat_locus_paths_sync},
     dashboard::{
         DashboardActivityHistoryPage, DashboardActivityHistoryStore, DashboardCommandRunner,
@@ -260,7 +260,7 @@ pub struct SettingsModelSummary {
     pub is_main: bool,
     pub is_judge: bool,
     pub temperature: f64,
-    pub thinking_budget: Option<&'static str>,
+    pub thinking_budget: Option<String>,
     pub rpm: Option<u32>,
     pub request_timeout_secs: u64,
     pub stream_idle_timeout_secs: u64,
@@ -1179,7 +1179,9 @@ fn settings_model_summary(
         is_main: name == main_model,
         is_judge: name == judge_model,
         temperature: model.temperature,
-        thinking_budget: model.thinking_budget().map(thinking_budget_label),
+        thinking_budget: model
+            .thinking_budget()
+            .map(|budget| budget.as_str().to_string()),
         rpm: model.rpm,
         request_timeout_secs: model.request_timeout_secs(),
         stream_idle_timeout_secs: model.stream_idle_timeout_secs(),
@@ -1265,17 +1267,6 @@ fn is_valid_env_reference_name(name: &str) -> bool {
         _ => return false,
     }
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-fn thinking_budget_label(value: ThinkingBudget) -> &'static str {
-    match value {
-        ThinkingBudget::None => "none",
-        ThinkingBudget::Minimal => "minimal",
-        ThinkingBudget::Low => "low",
-        ThinkingBudget::Medium => "medium",
-        ThinkingBudget::High => "high",
-        ThinkingBudget::Max => "max",
-    }
 }
 
 fn strong_filesystem_mode_label(value: StrongFilesystemSandboxMode) -> &'static str {

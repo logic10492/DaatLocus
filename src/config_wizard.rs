@@ -2731,7 +2731,8 @@ fn render_config_summary_lines(config: &Config, locale: Locale) -> Vec<String> {
             "thinking_budget",
             model
                 .thinking_budget
-                .map(|budget| format!("{budget:?}").to_lowercase())
+                .as_ref()
+                .map(|budget| budget.as_str().to_string())
                 .unwrap_or_else(|| "default".to_string()),
         );
         push_config_subfield(

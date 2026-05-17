@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::{
-    config::{ModelConfig, ThinkingBudget},
+    config::ModelConfig,
     context::Context,
     context_budget::{
         ContextBudgetExceededError, RequestBudgetLimits, estimate_agent_turn_request,
@@ -27,6 +27,7 @@ use crate::{
         should_retry_request_without_thinking_budget, summarize_agent_turn_request,
         summarize_prompt_request, truncate_for_error,
     },
+    providers::thinking::thinking_budget_is_none,
     reasoning::runtime::{
         AgentContent, AgentContentPart, AgentMessage, AgentToolCall, AgentToolInputSpec,
         AgentTurnItem, AgentTurnRequest, AgentTurnStreamResult, PromptRequest,
@@ -124,7 +125,7 @@ pub struct OllamaClient {
     api_key: Option<String>,
     model: String,
     temperature: f64,
-    thinking_budget: Option<ThinkingBudget>,
+    thinking_budget: Option<String>,
     thinking_mode: Mutex<OllamaThinkingMode>,
     vision_mode: Mutex<OllamaVisionMode>,
     rpm: Option<usize>,
@@ -180,7 +181,9 @@ impl OllamaClient {
             api_key: api_key.map(|s| s.to_string()).filter(|s| !s.is_empty()),
             model: model_config.model_id.clone(),
             temperature: model_config.temperature,
-            thinking_budget: model_config.thinking_budget(),
+            thinking_budget: model_config
+                .thinking_budget()
+                .map(|budget| budget.as_str().to_string()),
             thinking_mode: Mutex::new(thinking_mode_initial),
             vision_mode: Mutex::new(vision_mode_initial),
             rpm: model_config.rpm(),
@@ -845,7 +848,7 @@ impl Llm for OllamaClient {
             payload["format"] = output_schema;
         }
 
-        if let Some(budget) = self.thinking_budget
+        if let Some(budget) = self.thinking_budget.as_deref()
             && self.should_inject_think()
         {
             inject_ollama_think(&mut payload, budget);
@@ -934,7 +937,7 @@ impl Llm for OllamaClient {
             "messages": messages,
             "stream": true,
         });
-        if let Some(budget) = self.thinking_budget
+        if let Some(budget) = self.thinking_budget.as_deref()
             && self.should_inject_think()
         {
             inject_ollama_think(&mut payload, budget);
@@ -968,14 +971,11 @@ fn build_ollama_options(temperature: f64, num_ctx: usize) -> Value {
     })
 }
 
-fn inject_ollama_think(payload: &mut Value, budget: ThinkingBudget) {
-    let think_value = match budget {
-        ThinkingBudget::Max | ThinkingBudget::High => json!("high"),
-        ThinkingBudget::Medium => json!("medium"),
-        ThinkingBudget::Low | ThinkingBudget::Minimal => json!("low"),
-        ThinkingBudget::None => return,
-    };
-    payload["think"] = think_value;
+fn inject_ollama_think(payload: &mut Value, budget: &str) {
+    if thinking_budget_is_none(budget) {
+        return;
+    }
+    payload["think"] = json!(budget);
 }
 
 fn agent_message_to_ollama_content(

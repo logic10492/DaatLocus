@@ -16,8 +16,7 @@ use tracing::warn;
 
 use crate::{
     config::{
-        Config, ModelConfig, ProviderConfig, ThinkingBudget, normalize_provider_base_url,
-        resolve_env_reference,
+        Config, ModelConfig, ProviderConfig, normalize_provider_base_url, resolve_env_reference,
     },
     context::Context,
     context_budget::{
@@ -60,7 +59,7 @@ pub struct OpenAIClient {
     extra_headers: reqwest::header::HeaderMap,
     model: String,
     temperature: f64,
-    thinking_budget: Option<ThinkingBudget>,
+    thinking_budget: Option<String>,
     rpm: Option<usize>,
     stream_idle_timeout: Duration,
     context_window_tokens: usize,
@@ -166,7 +165,9 @@ impl OpenAIClient {
             extra_headers: reqwest::header::HeaderMap::new(),
             model: model_config.model_id.clone(),
             temperature: model_config.temperature,
-            thinking_budget: model_config.thinking_budget(),
+            thinking_budget: model_config
+                .thinking_budget()
+                .map(|budget| budget.as_str().to_string()),
             rpm: model_config.rpm(),
             stream_idle_timeout,
             context_window_tokens,
@@ -914,7 +915,7 @@ impl ChatCompletionsAdapter for StandardChatCompletionsAdapter {
         apply_provider_thinking_config(
             &mut payload,
             client,
-            client.thinking_budget,
+            client.thinking_budget.as_deref(),
             client.adapter_state_guard().thinking_budget_mode,
         );
         payload
@@ -970,7 +971,7 @@ impl ChatCompletionsAdapter for CompatibleChatCompletionsAdapter {
         apply_provider_thinking_config(
             &mut payload,
             client,
-            client.thinking_budget,
+            client.thinking_budget.as_deref(),
             self.state.thinking_budget_mode,
         );
         payload
@@ -1210,6 +1211,7 @@ fn repair_dsml_in_stream_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ThinkingBudget;
     use crate::reasoning::runtime::{AgentToolCall, HistoryMessage};
     use serde_json::json;
 
@@ -1396,7 +1398,7 @@ mod tests {
     #[test]
     fn thinking_budget_is_injected_as_reasoning_effort_by_default() {
         let model_config = ModelConfig {
-            thinking_budget: Some(ThinkingBudget::Medium),
+            thinking_budget: Some(ThinkingBudget::new("medium")),
             ..Default::default()
         };
         let client = OpenAIClient::from_parts("test-key", "https://api.openai.com", &model_config);
@@ -1418,7 +1420,7 @@ mod tests {
     fn deepseek_thinking_budget_uses_thinking_and_reasoning_effort_parameters() {
         let model_config = ModelConfig {
             model_id: "deepseek-reasoner".to_string(),
-            thinking_budget: Some(ThinkingBudget::Medium),
+            thinking_budget: Some(ThinkingBudget::new("medium")),
             max_completion_tokens: 393_216,
             ..Default::default()
         };
@@ -1449,11 +1451,11 @@ mod tests {
         });
         apply_optional_thinking_budget(
             &mut payload,
-            Some(ThinkingBudget::High),
+            Some("xhigh"),
             ThinkingBudgetMode::NestedReasoningObject,
         );
 
-        assert_eq!(payload["reasoning"]["effort"], "high");
+        assert_eq!(payload["reasoning"]["effort"], "xhigh");
         assert!(payload.get("reasoning_effort").is_none());
     }
 
