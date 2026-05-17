@@ -19,7 +19,6 @@ prompt_ui:
   help_select: "↑↓ / j k 移动  Enter 确认  Esc 取消"
   help_text: "←→ 移动  Home/End 跳转  Backspace/Delete 编辑  Enter 确认  Esc 取消"
   help_detail: "↑↓ / j k 滚动  PgUp/PgDn 翻页  Home/End 跳转  Enter / Esc 返回"
-  value: "值"
   loading_body: "请稍候..."
   loading_help: "等待远端响应"
   non_negative_integer: "请输入非负整数"

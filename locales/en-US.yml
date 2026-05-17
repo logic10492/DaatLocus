@@ -19,7 +19,6 @@ prompt_ui:
   help_select: "↑↓ / j k move  Enter confirm  Esc cancel"
   help_text: "←→ move  Home/End jump  Backspace/Delete edit  Enter confirm  Esc cancel"
   help_detail: "↑↓ / j k scroll  PgUp/PgDn page  Home/End jump  Enter / Esc back"
-  value: "Value"
   loading_body: "Please wait..."
   loading_help: "Waiting for remote response"
   non_negative_integer: "Enter a non-negative integer"

@@ -916,12 +916,22 @@ impl PromptUi {
     ) -> Result<String> {
         let mut value = initial;
         let mut cursor = value.len();
+        let field_title = text_prompt_field_title(self.locale, prompt, secret, error.is_some());
 
         loop {
             let locale = self.locale;
             self.terminal_mut()?
                 .draw(|frame| {
-                    render_text_prompt(frame, locale, prompt, &value, cursor, secret, error)
+                    render_text_prompt(
+                        frame,
+                        locale,
+                        prompt,
+                        &field_title,
+                        &value,
+                        cursor,
+                        secret,
+                        error,
+                    )
                 })
                 .map_err(|e| {
                     miette!(
@@ -1152,6 +1162,36 @@ fn render_select_prompt_to_text<T: AsRef<str>>(
 
     buffer_to_text(terminal.backend().buffer())
 }
+#[cfg(test)]
+fn render_text_prompt_to_text(
+    locale: Locale,
+    prompt: &str,
+    value: &str,
+    secret: bool,
+    error: Option<&str>,
+) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let backend = TestBackend::new(80, PROMPT_VIEWPORT_HEIGHT);
+    let mut terminal = Terminal::new(backend).expect("test terminal initializes");
+    let field_title = text_prompt_field_title(locale, prompt, secret, error.is_some());
+    terminal
+        .draw(|frame| {
+            render_text_prompt(
+                frame,
+                locale,
+                prompt,
+                &field_title,
+                value,
+                value.len(),
+                secret,
+                error,
+            )
+        })
+        .expect("test text prompt renders");
+
+    buffer_to_text(terminal.backend().buffer())
+}
 
 #[cfg(test)]
 fn buffer_to_text(buffer: &ratatui::buffer::Buffer) -> String {
@@ -1170,10 +1210,84 @@ fn buffer_to_text(buffer: &ratatui::buffer::Buffer) -> String {
         .join("\n")
 }
 
+fn text_prompt_field_title(locale: Locale, prompt: &str, secret: bool, numeric: bool) -> String {
+    let prompt = prompt.to_lowercase();
+
+    if prompt.contains("environment variable name") || prompt.contains("变量名") {
+        return match locale {
+            Locale::ZhCn => "名称".to_string(),
+            Locale::EnUs => "Name".to_string(),
+        };
+    }
+    if prompt.contains("host") || prompt.contains("主机") {
+        return match locale {
+            Locale::ZhCn => "主机".to_string(),
+            Locale::EnUs => "Host".to_string(),
+        };
+    }
+    if prompt.contains("base url") || prompt.contains("url") || prompt.contains("地址") {
+        return "URL".to_string();
+    }
+    if numeric || prompt.contains("seconds") || prompt.contains("tokens") || prompt.contains("秒")
+    {
+        return match locale {
+            Locale::ZhCn => "数值".to_string(),
+            Locale::EnUs => "Number".to_string(),
+        };
+    }
+    if prompt.contains("名称") || prompt.contains("name") {
+        return match locale {
+            Locale::ZhCn => "名称".to_string(),
+            Locale::EnUs => "Name".to_string(),
+        };
+    }
+    if prompt.contains("token")
+        || prompt.contains("api key")
+        || prompt.contains("key")
+        || prompt.contains("密钥")
+    {
+        return match locale {
+            Locale::ZhCn => "密钥".to_string(),
+            Locale::EnUs => "Key".to_string(),
+        };
+    }
+    if prompt.contains("model id") || prompt.ends_with(" id") {
+        return "ID".to_string();
+    }
+    if prompt.contains("路径")
+        || prompt.contains("path")
+        || prompt.contains("文件")
+        || prompt.contains("file")
+    {
+        return match locale {
+            Locale::ZhCn => "路径".to_string(),
+            Locale::EnUs => "Path".to_string(),
+        };
+    }
+    if prompt.contains("duration") || prompt.contains("时长") {
+        return match locale {
+            Locale::ZhCn => "时长".to_string(),
+            Locale::EnUs => "Duration".to_string(),
+        };
+    }
+    if secret {
+        return match locale {
+            Locale::ZhCn => "密文".to_string(),
+            Locale::EnUs => "Secret".to_string(),
+        };
+    }
+
+    match locale {
+        Locale::ZhCn => "输入".to_string(),
+        Locale::EnUs => "Input".to_string(),
+    }
+}
+
 fn render_text_prompt(
     frame: &mut Frame,
     locale: Locale,
     prompt: &str,
+    field_title: &str,
     value: &str,
     cursor: usize,
     secret: bool,
@@ -1218,7 +1332,7 @@ fn render_text_prompt(
             Style::default().fg(Color::Cyan)
         })
         .title(Line::from(Span::styled(
-            crate::tr!(locale, "prompt_ui.value"),
+            field_title.to_string(),
             Style::default().fg(Color::DarkGray),
         )));
     let field_inner = field_block.inner(input_area);
@@ -3313,6 +3427,60 @@ mod tests {
         assert!(full_text.contains("Provider type"));
         assert!(!full_text.contains("3 option"));
         assert!(!full_text.contains("option(s)"));
+    }
+    #[test]
+    fn text_prompt_uses_semantic_field_titles() {
+        assert_eq!(
+            text_prompt_field_title(
+                Locale::ZhCn,
+                &crate::tr!(Locale::ZhCn, "config.provider_name"),
+                false,
+                false,
+            ),
+            "名称"
+        );
+        assert_eq!(
+            text_prompt_field_title(
+                Locale::ZhCn,
+                &crate::tr!(Locale::ZhCn, "config.openai_api_key"),
+                true,
+                false,
+            ),
+            "密钥"
+        );
+        assert_eq!(
+            text_prompt_field_title(Locale::EnUs, "Context window tokens", false, false),
+            "Number"
+        );
+        assert_eq!(
+            text_prompt_field_title(
+                Locale::ZhCn,
+                &crate::tr!(Locale::ZhCn, "config.ollama_host"),
+                false,
+                false,
+            ),
+            "主机"
+        );
+
+        let provider_name = render_text_prompt_to_text(
+            Locale::ZhCn,
+            &crate::tr!(Locale::ZhCn, "config.provider_name"),
+            "openai",
+            false,
+            None,
+        );
+        let api_key = render_text_prompt_to_text(
+            Locale::ZhCn,
+            &crate::tr!(Locale::ZhCn, "config.openai_api_key"),
+            "sk-test",
+            true,
+            None,
+        );
+
+        assert!(provider_name.contains("称"));
+        assert!(api_key.contains("钥"));
+        assert!(!provider_name.contains("┌值"));
+        assert!(!provider_name.contains("Value"));
     }
 
     #[test]
