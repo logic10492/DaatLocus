@@ -248,6 +248,14 @@ pub trait App: Send + Sync {
         }))
     }
 
+    fn before_runtime_tool_call(
+        &self,
+        _call: &AgentToolCall,
+        _context: &AppToolExecutionContext,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     async fn execute_tool(
         &mut self,
         call: &AgentToolCall,
@@ -458,6 +466,20 @@ impl AppManager {
             }
         }
         tools
+    }
+
+    pub fn before_runtime_tool_call(
+        &self,
+        call: &AgentToolCall,
+        context: &AppToolExecutionContext,
+    ) -> Result<()> {
+        let Some(focused) = self.focused.as_ref() else {
+            return Ok(());
+        };
+        let Some(app) = self.apps.get(focused) else {
+            return Ok(());
+        };
+        app.before_runtime_tool_call(call, context)
     }
 
     pub fn summarize_tool_call(&self, call: &AgentToolCall) -> Result<EpisodeActionRecord> {

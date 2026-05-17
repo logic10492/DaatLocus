@@ -334,23 +334,6 @@ LF: /\n/"#
         context: &mut Context,
         call: &AgentToolCall,
     ) -> miette::Result<ToolExecutionResult> {
-        if context.apps.tool_scope_is_focused(AppToolScope::Coding) {
-            let app_context = AppToolExecutionContext {
-                execution_cwd: context.execution_cwd.clone(),
-                sandbox_policy: context.sandbox_policy.clone(),
-                dashboard_tx: context.dashboard_tx.clone(),
-                tool_output_max_tokens: context
-                    .config
-                    .main_model_config()
-                    .tool_output_max_tokens
-                    .max(1),
-                turn_epoch: context.runtime_turn_epoch,
-            };
-            let _ = context
-                .apps
-                .execute_tool_for_app(&AppId::coding(), call, &app_context)
-                .await?;
-        }
         work::execute_apply_patch_runtime_tool(context, call).await
     }
 }
@@ -774,6 +757,18 @@ pub async fn execute_agent_tool_call(
     if let Some((reason, allowed_next_action)) = runtime_availability_denial(context, tool) {
         return Ok(unavailable_tool_result(call, reason, allowed_next_action));
     }
+    let app_context = AppToolExecutionContext {
+        execution_cwd: context.execution_cwd.clone(),
+        sandbox_policy: context.sandbox_policy.clone(),
+        dashboard_tx: context.dashboard_tx.clone(),
+        tool_output_max_tokens: context
+            .config
+            .main_model_config()
+            .tool_output_max_tokens
+            .max(1),
+        turn_epoch: context.runtime_turn_epoch,
+    };
+    context.apps.before_runtime_tool_call(call, &app_context)?;
     let result = tool.execute(context, call).await?;
     Ok(result.ensure_model_content_with_budget(
         context
@@ -1037,7 +1032,15 @@ mod tests {
     async fn coding_focus_exposes_terminal_delegated_tools() {
         let isolated = IsolatedTestContext::new(AppId::coding()).await;
 
-        let names = build_runtime_tool_specs(&isolated.context)
+        let specs = build_runtime_tool_specs(&isolated.context);
+        assert_eq!(
+            specs
+                .iter()
+                .filter(|tool| tool.name == "apply_patch")
+                .count(),
+            1
+        );
+        let names = specs
             .into_iter()
             .map(|tool| tool.name)
             .collect::<HashSet<_>>();
@@ -1046,6 +1049,7 @@ mod tests {
         assert!(names.contains("terminal_exec"));
         assert!(names.contains("terminal_write_stdin"));
         assert!(names.contains("terminal_terminate"));
+        assert!(names.contains("apply_patch"));
         assert!(!names.contains("browser_open_page"));
     }
 

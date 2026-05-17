@@ -715,19 +715,6 @@ impl App for CodingApp {
                 input_schema: serde_json::to_value(schema_for!(CodingEditCodeArgs)).unwrap(),
             },
             AppToolSpec {
-                name: "apply_patch".to_string(),
-                description: "Policy guard for raw patch edits while Coding is focused; rejects SCOPE-owned source files before the raw patch tool runs.".to_string(),
-                scope: AppToolScope::Terminal,
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "input": { "type": "string" },
-                        "patch": { "type": "string" }
-                    },
-                    "additionalProperties": true
-                }),
-            },
-            AppToolSpec {
                 name: "coding_next_review".to_string(),
                 description: "Acknowledge and return the next accumulated scope-engine propagation review event, if any.".to_string(),
                 scope: AppToolScope::Coding,
@@ -778,25 +765,23 @@ impl App for CodingApp {
         ))
     }
 
+    fn before_runtime_tool_call(
+        &self,
+        call: &AgentToolCall,
+        _context: &AppToolExecutionContext,
+    ) -> Result<()> {
+        if call.name == "apply_patch" {
+            self.reject_scope_owned_apply_patch(call)?;
+        }
+        Ok(())
+    }
+
     async fn execute_tool(
         &mut self,
         call: &AgentToolCall,
         context: &AppToolExecutionContext,
     ) -> Result<AppToolExecutionResult> {
         match call.name.as_str() {
-            "apply_patch" => {
-                self.reject_scope_owned_apply_patch(call)?;
-                Ok(AppToolExecutionResult {
-                    summary: "apply_patch may proceed outside SCOPE source ownership".to_string(),
-                    payload: json!({ "allowed": true }),
-                    model_content: None,
-                    ui_event: ToolUiEvent::app(
-                        "apply_patch policy".to_string(),
-                        vec!["allowed outside SCOPE-owned source".to_string()],
-                    ),
-                    turn_boundary_reason: None,
-                })
-            }
             "coding_open_project" => {
                 let args: CodingOpenProjectArgs = parse_coding_tool_args(call)?;
                 self.open_project(args, context)
