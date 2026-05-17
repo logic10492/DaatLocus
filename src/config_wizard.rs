@@ -1097,19 +1097,12 @@ fn render_select_prompt<T: AsRef<str>>(
         let [prompt_area, list_area, help_area] = inner.layout(&layout);
 
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    prompt.to_string(),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  ·  "),
-                Span::styled(
-                    crate::tr!(locale, "prompt_ui.option_count", count = items.len()),
-                    Style::default().fg(Color::Gray),
-                ),
-            ])),
+            Paragraph::new(Line::from(vec![Span::styled(
+                prompt.to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )])),
             prompt_area,
         );
 
@@ -3295,26 +3288,31 @@ mod tests {
     }
 
     #[test]
-    fn compact_select_prompt_hides_heading_and_option_count() {
+    fn select_prompt_hides_option_count() {
         let items = [
             crate::tr!(Locale::EnUs, "config.show_details"),
             crate::tr!(Locale::EnUs, "config.add_provider"),
             crate::tr!(Locale::EnUs, "config.exit"),
         ];
-        let text = render_select_prompt_to_text(
+        let compact_text = render_select_prompt_to_text(
             Locale::EnUs,
             "Config management main_model=gpt-5.5 | providers=6 | models=12 | locale=English",
             &items,
             true,
         );
+        let full_text = render_select_prompt_to_text(Locale::EnUs, "Provider type", &items, false);
 
-        assert!(!text.contains("Config management main_model"));
-        assert!(!text.contains("Config inline"));
-        assert!(!text.contains("3 option"));
-        assert!(!text.contains("Select  Config management"));
-        assert!(!text.lines().any(|line| line.trim() == "Select"));
-        assert!(text.contains(&items[0]));
-        assert!(text.contains(&crate::tr!(Locale::EnUs, "prompt_ui.help_select")));
+        assert!(!compact_text.contains("Config management main_model"));
+        assert!(!compact_text.contains("Config inline"));
+        assert!(!compact_text.contains("3 option"));
+        assert!(!compact_text.contains("Select  Config management"));
+        assert!(!compact_text.lines().any(|line| line.trim() == "Select"));
+        assert!(compact_text.contains(&items[0]));
+        assert!(compact_text.contains(&crate::tr!(Locale::EnUs, "prompt_ui.help_select")));
+
+        assert!(full_text.contains("Provider type"));
+        assert!(!full_text.contains("3 option"));
+        assert!(!full_text.contains("option(s)"));
     }
 
     #[test]

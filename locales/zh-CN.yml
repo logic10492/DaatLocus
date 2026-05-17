@@ -15,7 +15,6 @@ prompt_ui:
   render_failed: "渲染终端 UI 失败: %{error}"
   init_failed: "初始化终端 UI 失败: %{error}"
   read_input_failed: "读取终端输入失败: %{error}"
-  option_count: "%{count} option(s)"
   line_count: "%{count} 行"
   help_select: "↑↓ / j k 移动  Enter 确认  Esc 取消"
   help_text: "←→ 移动  Home/End 跳转  Backspace/Delete 编辑  Enter 确认  Esc 取消"
