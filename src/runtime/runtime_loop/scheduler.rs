@@ -53,9 +53,8 @@ pub(crate) async fn daat_locus_loop(
                 .active_runtime_phase
                 .map(|phase| phase.label())
                 .unwrap_or("running");
-            set_runtime_status(
+            set_runtime_status_only(
                 Some(tx),
-                RuntimeStatusLevel::Info,
                 format!("processing: runtime turn running / {phase}"),
             );
             sync_dashboard_state(
@@ -76,9 +75,9 @@ pub(crate) async fn daat_locus_loop(
         if let Some(status) =
             maybe_start_idle_sleep(context, tx, sleep_result_tx, sleep_running, sleep_status).await
         {
-            set_runtime_status(Some(tx), RuntimeStatusLevel::Info, status);
+            set_runtime_status_only(Some(tx), status);
         } else if let Some(status) = forced_sleep_status {
-            set_runtime_status(Some(tx), RuntimeStatusLevel::Info, status);
+            set_runtime_status_only(Some(tx), status);
         } else {
             clear_runtime_status(Some(tx));
         }
@@ -97,7 +96,7 @@ pub(crate) async fn daat_locus_loop(
         status.push_str(" | ");
         status.push_str(forced_sleep_status);
     }
-    set_runtime_status(Some(tx), RuntimeStatusLevel::Info, status);
+    set_runtime_status_only(Some(tx), status);
     context
         .apps
         .wait_until_settled(Duration::from_secs(1), Duration::from_secs(3))

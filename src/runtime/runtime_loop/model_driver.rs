@@ -49,7 +49,7 @@ pub(super) async fn run_agent_turn_with_retry(
         .unwrap_or_else(|| context.config.main_model_config().model_id.clone());
     let mut attempt = 1usize;
     loop {
-        set_runtime_status(tx, RuntimeStatusLevel::Debug, "Working");
+        set_runtime_status_only(tx, "Working");
         let turn_result = tokio::time::timeout(
             request_timeout,
             context.llm.run_agent_turn(context, request.clone()),

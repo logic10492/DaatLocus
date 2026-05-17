@@ -14,11 +14,7 @@ fn enter_runtime_phase(
                 crate::dashboard::render::render_status_command_output_for_dashboard(context, &[]);
         });
     }
-    set_runtime_status(
-        tx,
-        RuntimeStatusLevel::Info,
-        format!("processing: runtime turn / {}", phase.label()),
-    );
+    set_runtime_status_only(tx, format!("processing: runtime turn / {}", phase.label()));
 }
 
 struct RuntimeTurnAbort<'a> {
@@ -225,14 +221,14 @@ pub(crate) async fn execute_agent_loop_step(
     let live_draft_session = maybe_start_telegram_live_draft_session(context, &claimed_event_views);
     enter_runtime_phase(context, tx, RuntimeTurnPhase::PreflightPreTurnContext);
     let preturn_started_at = std::time::Instant::now();
-    tracing::info!(
+    tracing::debug!(
         "runtime preflight stage started: {}",
         RuntimeTurnPhase::PreflightPreTurnContext.label()
     );
     let preturn_state =
         match tokio::time::timeout(preflight_timeout, PreTurnState::new(context)).await {
             Ok(preturn_state) => {
-                tracing::info!(
+                tracing::debug!(
                     elapsed_ms = preturn_started_at.elapsed().as_millis(),
                     "runtime preflight stage completed: {}",
                     RuntimeTurnPhase::PreflightPreTurnContext.label()
@@ -324,7 +320,7 @@ pub(crate) async fn execute_agent_loop_step(
     {
         enter_runtime_phase(context, tx, RuntimeTurnPhase::PreflightCompaction);
         let compaction_started_at = std::time::Instant::now();
-        tracing::info!(
+        tracing::debug!(
             "runtime preflight stage started: {}",
             RuntimeTurnPhase::PreflightCompaction.label()
         );
@@ -359,7 +355,7 @@ pub(crate) async fn execute_agent_loop_step(
         }
         match summary {
             Some(summary) => {
-                tracing::info!(
+                tracing::debug!(
                     elapsed_ms = compaction_started_at.elapsed().as_millis(),
                     "runtime preflight stage completed: {}",
                     RuntimeTurnPhase::PreflightCompaction.label()
@@ -458,7 +454,7 @@ pub(crate) async fn execute_agent_loop_step(
     let output = 'agent_loop: loop {
         let tools = build_runtime_tool_specs(context);
         if maybe_compact_runtime_messages(context, &mut runtime_step, &tools, false).await {
-            set_runtime_status(tx, RuntimeStatusLevel::Info, "Compacting runtime context");
+            set_runtime_status_only(tx, "Compacting runtime context");
             break 'agent_loop runtime_context_compacted_output(
                 "runtime context compacted before model request; starting a new turn",
             );

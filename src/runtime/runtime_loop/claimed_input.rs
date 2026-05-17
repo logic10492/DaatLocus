@@ -281,7 +281,7 @@ pub(super) fn finalize_claimed_runtime_events(
 
     if !requeued.is_empty() {
         let last_action = output.actions.last();
-        tracing::info!(
+        tracing::debug!(
             action_kind = last_action
                 .map(|action| action.kind.as_str())
                 .unwrap_or("none"),
@@ -417,7 +417,7 @@ pub(super) async fn finalize_claimed_runtime_app_notices(
     }
 
     if !resolved.is_empty() {
-        tracing::info!(
+        tracing::debug!(
             resolved_app_notice_drivers = resolved.len(),
             app_notices = resolved.join(","),
             "consumed explicitly resolved runtime app notice drivers",
@@ -435,7 +435,7 @@ pub(super) async fn finalize_claimed_runtime_app_notices(
 
     if !released.is_empty() {
         let last_action = output.actions.last();
-        tracing::info!(
+        tracing::debug!(
             action_kind = last_action
                 .map(|action| action.kind.as_str())
                 .unwrap_or("none"),

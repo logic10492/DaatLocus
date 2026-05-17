@@ -21,7 +21,7 @@ use crate::{
     },
     events::{EventPayload, EventStatus, EventView},
     logging::{
-        RuntimeStatusLevel, clear_runtime_status, set_runtime_status,
+        RuntimeStatusLevel, clear_runtime_status, set_runtime_status, set_runtime_status_only,
         write_current_turn_messages_dump, write_current_turn_response_dump,
         write_current_turn_response_error_dump,
     },

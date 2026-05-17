@@ -78,14 +78,36 @@ pub fn set_runtime_status(
         RuntimeStatusLevel::Warn => tracing::warn!("{message}"),
         RuntimeStatusLevel::Error => tracing::error!("{message}"),
     }
+    set_dashboard_runtime_status(tx, message);
+}
+
+pub fn set_runtime_status_only(tx: Option<&Sender<DashboardState>>, message: impl Into<String>) {
+    set_dashboard_runtime_status(tx, message.into());
+}
+
+fn set_dashboard_runtime_status(tx: Option<&Sender<DashboardState>>, message: String) {
     if let Some(tx) = tx {
-        tx.send_modify(|state| state.runtime_status = Some(message.clone()));
+        tx.send_if_modified(|state| {
+            if state.runtime_status.as_deref() == Some(message.as_str()) {
+                false
+            } else {
+                state.runtime_status = Some(message.clone());
+                true
+            }
+        });
     }
 }
 
 pub fn clear_runtime_status(tx: Option<&Sender<DashboardState>>) {
     if let Some(tx) = tx {
-        tx.send_modify(|state| state.runtime_status = None);
+        tx.send_if_modified(|state| {
+            if state.runtime_status.is_none() {
+                false
+            } else {
+                state.runtime_status = None;
+                true
+            }
+        });
     }
 }
 

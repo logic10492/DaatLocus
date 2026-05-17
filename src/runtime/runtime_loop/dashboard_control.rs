@@ -13,11 +13,7 @@ pub(crate) async fn handle_dashboard_control_command(
     match command {
         DashboardControlCommand::RunSleep => {
             if *sleep_running {
-                set_runtime_status(
-                    Some(tx),
-                    RuntimeStatusLevel::Info,
-                    "sleep is already running in the background",
-                );
+                set_runtime_status_only(Some(tx), "sleep is already running in the background");
                 sync_dashboard_state(context, tx, sleep_status, None);
                 return;
             }

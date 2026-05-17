@@ -97,7 +97,8 @@ pub(super) async fn start_background_sleep(
     if let Err(err) = persist_sleep_status_snapshot(sleep_status).await {
         tracing::warn!("failed to persist sleep status start: {err:?}");
     }
-    set_runtime_status(Some(tx), RuntimeStatusLevel::Info, status.to_string());
+    tracing::info!("{status}");
+    set_runtime_status_only(Some(tx), status.to_string());
     sync_dashboard_state(context, tx, sleep_status, None);
     let config = context.config.clone();
     let compiled_prompts = context.compiled_prompts.clone();
