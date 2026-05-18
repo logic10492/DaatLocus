@@ -799,9 +799,10 @@ fn execute_event_resolve_with_reply(
             Ok(())
         }
         EventPayload::TerminalIncoming(_) => {
-            context.events.set_status(
+            context.events.finish_with_reply(
                 event_id,
                 status_for_event_disposition(disposition),
+                reply_message,
                 note.filter(|_| matches!(disposition, EventDisposition::Failed)),
             )?;
             Ok(())

@@ -17,7 +17,7 @@ pub(super) fn runtime_work_origin(inputs: &[ClaimedRuntimeInput]) -> Option<Stri
 }
 
 pub(super) enum ClaimedRuntimeInput {
-    Event(EventView),
+    Event(Box<EventView>),
     AppNotice { app: AppId, reason: String },
 }
 
@@ -70,7 +70,9 @@ pub(super) fn claim_pending_runtime_inputs(
         match work {
             PendingWork::Event { event_id } => {
                 match context.events.claim_event_if_pending(event_id) {
-                    Ok(Some(event)) => claimed_inputs.push(ClaimedRuntimeInput::Event(event)),
+                    Ok(Some(event)) => {
+                        claimed_inputs.push(ClaimedRuntimeInput::Event(Box::new(event)));
+                    }
                     Ok(None) => {
                         if let Err(err) = context
                             .pending_work
@@ -523,7 +525,7 @@ pub(super) fn afterclaim_context_input_for_claimed_inputs(
     let mut context = AfterClaimContextInput::default();
     for input in inputs {
         match input {
-            ClaimedRuntimeInput::Event(event) => context.events.push(event.clone()),
+            ClaimedRuntimeInput::Event(event) => context.events.push((**event).clone()),
             ClaimedRuntimeInput::AppNotice { app, reason } => {
                 context.app_notices.push((app.clone(), reason.clone()));
             }

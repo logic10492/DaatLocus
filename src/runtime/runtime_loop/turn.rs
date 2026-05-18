@@ -214,7 +214,7 @@ pub(crate) async fn execute_agent_loop_step(
     let claimed_event_views = claimed_inputs
         .iter()
         .filter_map(|input| match input {
-            ClaimedRuntimeInput::Event(event) => Some(event.clone()),
+            ClaimedRuntimeInput::Event(event) => Some((**event).clone()),
             ClaimedRuntimeInput::AppNotice { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -1357,6 +1357,7 @@ mod tests {
                 event_id: uuid::Uuid::nil(),
                 source: crate::events::EventSource::Telegram,
                 status: crate::events::EventStatus::Claimed,
+                reply_message: None,
                 arrived_at_ms: 1,
                 payload: crate::events::EventPayload::TelegramIncoming(
                     crate::events::TelegramIncomingEvent {

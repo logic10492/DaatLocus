@@ -234,10 +234,11 @@ mod tests {
                 app: AppId::terminal(),
                 reason: "busy".to_string(),
             },
-            ClaimedRuntimeInput::Event(EventView {
+            ClaimedRuntimeInput::Event(Box::new(EventView {
                 event_id: event_a,
                 source: crate::events::EventSource::Telegram,
                 status: EventStatus::Pending,
+                reply_message: None,
                 arrived_at_ms: 0,
                 payload: EventPayload::TelegramIncoming(crate::events::TelegramIncomingEvent {
                     chat_id: "1".to_string(),
@@ -251,11 +252,12 @@ mod tests {
                     attachments: Vec::new(),
                 }),
                 last_error: None,
-            }),
-            ClaimedRuntimeInput::Event(EventView {
+            })),
+            ClaimedRuntimeInput::Event(Box::new(EventView {
                 event_id: event_b,
                 source: crate::events::EventSource::Telegram,
                 status: EventStatus::Pending,
+                reply_message: None,
                 arrived_at_ms: 0,
                 payload: EventPayload::TelegramIncoming(crate::events::TelegramIncomingEvent {
                     chat_id: "2".to_string(),
@@ -269,7 +271,7 @@ mod tests {
                     attachments: Vec::new(),
                 }),
                 last_error: None,
-            }),
+            })),
         ];
 
         assert_eq!(

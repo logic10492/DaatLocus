@@ -2,7 +2,7 @@ mod apps;
 mod common;
 mod exec;
 mod highlight;
-mod markdown;
+pub(crate) mod markdown;
 mod messages;
 mod plan;
 mod tui;
@@ -591,6 +591,7 @@ mod tests {
                 .expect("valid uuid"),
             source: crate::events::EventSource::Terminal,
             status: crate::events::EventStatus::Claimed,
+            reply_message: None,
             arrived_at_ms: 1,
             payload: EventPayload::TerminalIncoming(crate::events::TerminalIncomingEvent {
                 origin: "dashboard".to_string(),

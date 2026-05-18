@@ -1943,7 +1943,23 @@ pub(crate) fn execute_remote_message(
     events: &EventStore,
     pending_work: &PendingWorkQueue,
 ) -> String {
-    enqueue_terminal_message_with_attachments(events, pending_work, input.trim(), attachments)
+    match register_terminal_message_with_attachments(
+        events,
+        pending_work,
+        input.trim(),
+        attachments,
+    ) {
+        Ok(event_id) => format!("queued terminal message as event {event_id}"),
+        Err(err) => err,
+    }
+}
+
+pub(crate) fn enqueue_local_send_message(
+    events: &EventStore,
+    pending_work: &PendingWorkQueue,
+    input: &str,
+) -> std::result::Result<uuid::Uuid, String> {
+    register_terminal_message_with_attachments(events, pending_work, input.trim(), Vec::new())
 }
 
 fn enqueue_terminal_message(
@@ -1960,25 +1976,37 @@ fn enqueue_terminal_message_with_attachments(
     input: &str,
     attachments: Vec<DashboardIncomingAttachment>,
 ) -> String {
-    match events.register_terminal_incoming(TerminalIncomingEvent {
-        origin: "dashboard".to_string(),
-        incoming_text: input.to_string(),
-        attachments: attachments
-            .into_iter()
-            .map(|attachment| TerminalIncomingAttachment {
-                kind: crate::events::TerminalIncomingAttachmentKind::Image,
-                media_type: attachment.media_type,
-                local_path: attachment.local_path,
-                description: attachment.description,
-            })
-            .collect(),
-    }) {
-        Ok(event_id) => match pending_work.enqueue(PendingWork::Event { event_id }) {
-            Ok(_) => format!("queued terminal message as event {event_id}"),
-            Err(err) => format!("failed to queue terminal message {event_id}: {err}"),
-        },
-        Err(err) => format!("failed to register terminal message: {err}"),
+    match register_terminal_message_with_attachments(events, pending_work, input, attachments) {
+        Ok(event_id) => format!("queued terminal message as event {event_id}"),
+        Err(err) => err,
     }
+}
+
+fn register_terminal_message_with_attachments(
+    events: &EventStore,
+    pending_work: &PendingWorkQueue,
+    input: &str,
+    attachments: Vec<DashboardIncomingAttachment>,
+) -> std::result::Result<uuid::Uuid, String> {
+    let event_id = events
+        .register_terminal_incoming(TerminalIncomingEvent {
+            origin: "dashboard".to_string(),
+            incoming_text: input.to_string(),
+            attachments: attachments
+                .into_iter()
+                .map(|attachment| TerminalIncomingAttachment {
+                    kind: crate::events::TerminalIncomingAttachmentKind::Image,
+                    media_type: attachment.media_type,
+                    local_path: attachment.local_path,
+                    description: attachment.description,
+                })
+                .collect(),
+        })
+        .map_err(|err| format!("failed to register terminal message: {err}"))?;
+    pending_work
+        .enqueue(PendingWork::Event { event_id })
+        .map_err(|err| format!("failed to queue terminal message {event_id}: {err}"))?;
+    Ok(event_id)
 }
 
 fn panel(title: impl Into<Line<'static>>) -> Block<'static> {

@@ -30,6 +30,8 @@ struct PersistedEventStore {
 pub struct Event {
     pub source: EventSource,
     pub status: EventStatus,
+    #[serde(default)]
+    pub reply_message: Option<String>,
     pub arrived_at_ms: i64,
     pub last_updated_at_ms: i64,
     pub payload: EventPayload,
@@ -51,6 +53,26 @@ pub enum EventStatus {
     Resolved,
     Dismissed,
     Failed,
+}
+
+impl EventStatus {
+    pub fn is_send_terminal_status(self) -> bool {
+        matches!(
+            self,
+            Self::AwaitingDelivery | Self::Resolved | Self::Dismissed | Self::Failed
+        )
+    }
+
+    pub fn as_snake_case(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Claimed => "claimed",
+            Self::AwaitingDelivery => "awaiting_delivery",
+            Self::Resolved => "resolved",
+            Self::Dismissed => "dismissed",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -136,6 +158,7 @@ pub struct EventView {
     pub event_id: Uuid,
     pub source: EventSource,
     pub status: EventStatus,
+    pub reply_message: Option<String>,
     pub arrived_at_ms: i64,
     pub payload: EventPayload,
     pub last_error: Option<String>,
@@ -191,6 +214,7 @@ impl EventStore {
             Event {
                 source: EventSource::Telegram,
                 status: EventStatus::Pending,
+                reply_message: None,
                 arrived_at_ms: now,
                 last_updated_at_ms: now,
                 payload: EventPayload::TelegramIncoming(event),
@@ -211,6 +235,7 @@ impl EventStore {
             Event {
                 source: EventSource::Terminal,
                 status: EventStatus::Pending,
+                reply_message: None,
                 arrived_at_ms: now,
                 last_updated_at_ms: now,
                 payload: EventPayload::TerminalIncoming(event),
@@ -236,6 +261,7 @@ impl EventStore {
             event_id,
             source: event.source,
             status: event.status,
+            reply_message: event.reply_message.clone(),
             arrived_at_ms: event.arrived_at_ms,
             payload: event.payload.clone(),
             last_error: event.last_error.clone(),
@@ -273,6 +299,7 @@ impl EventStore {
             event_id,
             source: event.source,
             status: event.status,
+            reply_message: event.reply_message.clone(),
             arrived_at_ms: event.arrived_at_ms,
             payload: event.payload.clone(),
             last_error: event.last_error.clone(),
@@ -296,6 +323,25 @@ impl EventStore {
         })
     }
 
+    pub fn finish_with_reply(
+        &self,
+        event_id: &str,
+        status: EventStatus,
+        reply_message: String,
+        note: Option<String>,
+    ) -> Result<()> {
+        self.with_event_mut_from_str(event_id, |event| {
+            event.status = status;
+            event.reply_message = Some(reply_message);
+            event.last_error = if matches!(status, EventStatus::Failed) {
+                note
+            } else {
+                None
+            };
+            Ok(())
+        })
+    }
+
     pub fn set_status(
         &self,
         event_id: &str,
@@ -304,6 +350,9 @@ impl EventStore {
     ) -> Result<()> {
         self.with_event_mut_from_str(event_id, |event| {
             event.status = status;
+            if matches!(status, EventStatus::Dismissed) {
+                event.reply_message = None;
+            }
             event.last_error =
                 if matches!(status, EventStatus::Failed | EventStatus::AwaitingDelivery) {
                     note
@@ -324,6 +373,7 @@ impl EventStore {
                 return Ok(false);
             }
             event.status = EventStatus::Pending;
+            event.reply_message = None;
             event.last_error = None;
             Ok(true)
         })
@@ -432,6 +482,7 @@ fn reset_claimed_events_on_startup(state: &mut PersistedEventStore) {
     for event in state.events.values_mut() {
         if matches!(event.status, EventStatus::Claimed) {
             event.status = EventStatus::Pending;
+            event.reply_message = None;
         }
     }
 }
@@ -471,6 +522,7 @@ mod tests {
             Event {
                 source: EventSource::Telegram,
                 status: EventStatus::AwaitingDelivery,
+                reply_message: None,
                 arrived_at_ms: 10,
                 last_updated_at_ms: 20,
                 payload: EventPayload::TelegramIncoming(TelegramIncomingEvent {
@@ -499,6 +551,7 @@ mod tests {
             Event {
                 source: EventSource::Terminal,
                 status: EventStatus::Failed,
+                reply_message: Some("raw local failure reply".to_string()),
                 arrived_at_ms: 30,
                 last_updated_at_ms: 40,
                 payload: EventPayload::TerminalIncoming(TerminalIncomingEvent {
@@ -540,6 +593,10 @@ mod tests {
         let terminal = restored.events.get(&terminal_id).expect("terminal event");
         assert_eq!(terminal.source, EventSource::Terminal);
         assert_eq!(terminal.status, EventStatus::Failed);
+        assert_eq!(
+            terminal.reply_message.as_deref(),
+            Some("raw local failure reply")
+        );
         assert_eq!(terminal.last_error.as_deref(), Some("failed locally"));
         match &terminal.payload {
             EventPayload::TerminalIncoming(payload) => {
@@ -584,6 +641,7 @@ mod tests {
             Event {
                 source: EventSource::Terminal,
                 status: EventStatus::Claimed,
+                reply_message: Some("stale reply".to_string()),
                 arrived_at_ms: 1,
                 last_updated_at_ms: 1,
                 payload: EventPayload::TerminalIncoming(TerminalIncomingEvent {
@@ -600,6 +658,13 @@ mod tests {
         assert_eq!(
             state.events.get(&event_id).map(|event| event.status),
             Some(EventStatus::Pending)
+        );
+        assert!(
+            state
+                .events
+                .get(&event_id)
+                .and_then(|event| event.reply_message.as_deref())
+                .is_none()
         );
     }
 

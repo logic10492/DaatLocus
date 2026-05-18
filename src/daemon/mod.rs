@@ -198,6 +198,11 @@ pub struct CommandRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct SendRequest {
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CommandAttachmentRequest {
     pub name: String,
     pub media_type: String,
@@ -207,6 +212,14 @@ pub struct CommandAttachmentRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommandResponse {
     pub output: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendResponse {
+    pub event_id: String,
+    pub status: String,
+    pub reply_message: Option<String>,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -510,6 +523,7 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
         .route("/logs/sources", get(logs::sources_handler))
         .route("/logs/read", get(logs::read_handler))
         .route("/commands/run", post(command_handler))
+        .route("/send", post(send_handler))
         .route("/daemon/shutdown", post(shutdown_handler))
         .route("/daemon/restart", post(restart_handler))
         .with_state(app_state.clone());
@@ -980,6 +994,100 @@ async fn command_handler(
     Json(CommandResponse { output }).into_response()
 }
 
+async fn send_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SendRequest>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if !state.lifecycle.get().allows_runtime_commands() {
+        return runtime_not_ready_response(state.lifecycle.get());
+    }
+    let message = request.message.trim();
+    if message.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(SendResponse {
+                event_id: String::new(),
+                status: "failed".to_string(),
+                reply_message: None,
+                note: Some("empty input".to_string()),
+            }),
+        )
+            .into_response();
+    }
+
+    let event_id = match crate::dashboard::enqueue_local_send_message(
+        &state.events,
+        &state.pending_work,
+        message,
+    ) {
+        Ok(event_id) => event_id,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SendResponse {
+                    event_id: String::new(),
+                    status: "failed".to_string(),
+                    reply_message: None,
+                    note: Some(err),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    wait_for_send_reply(state.events.clone(), event_id)
+        .await
+        .into_response()
+}
+
+async fn wait_for_send_reply(
+    events: EventStore,
+    event_id: uuid::Uuid,
+) -> (StatusCode, Json<SendResponse>) {
+    const SEND_POLL_INTERVAL: Duration = Duration::from_millis(250);
+    loop {
+        match events.view(&event_id.to_string()) {
+            Ok(event) if event.status.is_send_terminal_status() => {
+                let status_code = match event.status {
+                    crate::events::EventStatus::Resolved => StatusCode::OK,
+                    crate::events::EventStatus::Failed => StatusCode::INTERNAL_SERVER_ERROR,
+                    crate::events::EventStatus::Dismissed => StatusCode::OK,
+                    crate::events::EventStatus::AwaitingDelivery => StatusCode::OK,
+                    crate::events::EventStatus::Pending | crate::events::EventStatus::Claimed => {
+                        StatusCode::OK
+                    }
+                };
+                return (
+                    status_code,
+                    Json(SendResponse {
+                        event_id: event_id.to_string(),
+                        status: event.status.as_snake_case().to_string(),
+                        reply_message: event.reply_message,
+                        note: event.last_error,
+                    }),
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(SendResponse {
+                        event_id: event_id.to_string(),
+                        status: "failed".to_string(),
+                        reply_message: None,
+                        note: Some(format!("failed to inspect send event: {err}")),
+                    }),
+                );
+            }
+        }
+        tokio::time::sleep(SEND_POLL_INTERVAL).await;
+    }
+}
+
 async fn shutdown_handler(
     State(state): State<ServerState>,
     headers: HeaderMap,
@@ -1441,6 +1549,50 @@ impl DaemonClient {
             .await
             .map_err(|err| miette!("decode run command response failed: {err}"))?;
         Ok(response.output)
+    }
+
+    pub async fn send_message(&self, message: &str) -> Result<SendResponse> {
+        let response =
+            self.with_auth(self.http.post(format!("{}/send", self.base_url())).json(
+                &SendRequest {
+                    message: message.to_string(),
+                },
+            ))?
+            .send()
+            .await
+            .map_err(|err| miette!("send request failed: {err}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|err| miette!("read send response failed: {err}"))?;
+        let send_response = serde_json::from_str::<SendResponse>(&text).map_err(|err| {
+            miette!(
+                "decode send response failed with HTTP {}: {}{}",
+                status,
+                err,
+                if text.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("; body: {text}")
+                }
+            )
+        })?;
+        if status.is_success() {
+            Ok(send_response)
+        } else {
+            let note = send_response
+                .note
+                .as_deref()
+                .unwrap_or("send request failed");
+            Err(miette!(
+                "send request returned {} for event {} with status {}: {}",
+                status,
+                send_response.event_id,
+                send_response.status,
+                note
+            ))
+        }
     }
 
     pub async fn activity_history_before(

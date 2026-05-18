@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{io::Read, sync::Arc};
 
 use crate::{
     commands::reset::{run_compile_reset, run_memory_reset, run_reset_all, run_state_reset},
@@ -15,7 +15,7 @@ use crate::{
 };
 use crate::{config, config_wizard};
 use clap::{Parser, Subcommand};
-use miette::{Result, miette};
+use miette::{IntoDiagnostic, Result, miette};
 use std::path::PathBuf;
 
 pub(crate) fn parse_args() -> Cli {
@@ -35,6 +35,17 @@ enum DaatLocusCommand {
     Run,
     /// Attach to an already-running daemon.
     Attach,
+    /// Send a one-shot message to the running agent and wait for its reply.
+    Send {
+        /// Print the raw final reply instead of terminal-rendered Markdown.
+        #[arg(long)]
+        raw: bool,
+        /// Print JSON metadata; ignores --raw.
+        #[arg(long)]
+        json: bool,
+        /// Prompt text. Multiple words are joined with spaces; stdin is used when omitted.
+        prompt: Vec<String>,
+    },
     /// Manage the background daemon process.
     Daemon {
         #[command(subcommand)]
@@ -219,6 +230,10 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
             attach_to_daemon(client).await?;
             return Ok(());
         }
+        Some(DaatLocusCommand::Send { raw, json, prompt }) => {
+            run_send_command(prompt, *raw, *json).await?;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -277,6 +292,64 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
         return Ok(());
     }
     Ok(())
+}
+
+async fn run_send_command(prompt: &[String], raw: bool, json: bool) -> Result<()> {
+    let message = read_send_message(prompt)?;
+    let client = connect_or_start_daemon().await?;
+    let response = client.send_message(&message).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&response)
+                .map_err(|err| miette!("encode send response as JSON failed: {err}"))?
+        );
+        return Ok(());
+    }
+
+    let reply = response.reply_message.unwrap_or_default();
+    if raw {
+        println!("{reply}");
+    } else {
+        print_terminal_markdown(&reply);
+    }
+    Ok(())
+}
+
+fn read_send_message(prompt: &[String]) -> Result<String> {
+    let message = if prompt.is_empty() {
+        let mut buffer = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buffer)
+            .into_diagnostic()
+            .map_err(|err| miette!("read send prompt from stdin failed: {err}"))?;
+        buffer
+    } else {
+        prompt.join(" ")
+    };
+    let trimmed = message.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(miette!("send prompt is empty"));
+    }
+    Ok(trimmed)
+}
+
+fn print_terminal_markdown(markdown: &str) {
+    let lines =
+        crate::dashboard::cells::markdown::render_markdown(markdown, ratatui::style::Color::White);
+    if lines.is_empty() {
+        println!();
+        return;
+    }
+    for line in lines {
+        let text = line
+            .spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect::<String>();
+        println!("{text}");
+    }
 }
 
 async fn run_config_command(target: Option<&ConfigTarget>) -> Result<()> {
