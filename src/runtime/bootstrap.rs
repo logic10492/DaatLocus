@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    app::{AppId, AppManager},
+    app::AppManager,
     browser_app::BrowserApp,
     coding_app::CodingApp,
     context::Context,
@@ -128,9 +128,7 @@ pub(crate) async fn build_eval_context_with_compiled(
     let telegram_handle = telegram.handle();
     bootstrap_telegram_transport_state_from_acl(&telegram_handle, &telegram_acl);
     let runtime_apps = build_runtime_apps(&execution_cwd, &sandbox_policy);
-    let apps = AppManager::new(Some(AppId::terminal()), runtime_apps.apps)
-        .await
-        .unwrap();
+    let apps = AppManager::new(None, runtime_apps.apps).await.unwrap();
     let client = build_llm(&config.main_model, &config)
         .unwrap_or_else(|err| panic!("failed to construct main LLM client: {err:?}"));
     let judge_model_key = config
@@ -183,6 +181,25 @@ pub(crate) async fn build_eval_context_with_compiled(
         idle_since: None,
         last_idle_sleep_at: None,
         token_estimate_baseline: load_token_estimate_baseline().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn eval_context_starts_without_focused_app() {
+        let home = tempfile::tempdir().expect("test home");
+        let _home_override = DaatLocusHomeOverride::set(home.path().to_path_buf());
+
+        let context = build_eval_context_with_compiled(
+            crate::config::Config::default(),
+            CompiledPromptStore::from_entries(Vec::new()),
+        )
+        .await;
+
+        assert_eq!(context.apps.focused(), None);
     }
 }
 

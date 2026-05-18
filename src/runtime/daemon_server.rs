@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    app::{AppId, AppManager},
+    app::AppManager,
     context::Context,
     daemon::{
         DAEMON_HOST_DISPLAY, DaemonControlCommand as RuntimeDaemonControlCommand,
@@ -216,7 +216,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         })?;
     let sandbox_policy = sandbox_policy_for_runtime(&config).await;
     let runtime_apps = build_runtime_apps(&execution_cwd, &sandbox_policy);
-    let apps = AppManager::new(Some(AppId::terminal()), runtime_apps.apps).await?;
+    let apps = AppManager::new(None, runtime_apps.apps).await?;
     let mut context = Context {
         llm: client,
         judge_llm: judge_client,
