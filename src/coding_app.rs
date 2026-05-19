@@ -26,13 +26,11 @@ use crate::{
     },
 };
 
-const CODING_USAGE_PURPOSE: &str = "Coding is the app to use for local repository, project, and codebase work, backed by scope-engine semantic code operations.";
+const CODING_USAGE_PURPOSE: &str = "Coding is the app to use when a task requires researching, reading, modifying, developing, or otherwise operating on a project. It includes all Terminal capabilities plus additional project-aware tools.";
 const CODING_WHEN_TO_FOCUS: &[&str] = &[
-    "When a task concerns a local repository, project, or codebase and requires understanding, navigating, searching, reading, analyzing, or modifying source code structure.",
-    "When investigating a codebase, locating implementations, tracing calls or references, judging impact, refactoring, removing integrations, or editing source code.",
-    "When source code should be read or edited by selector, symbol, enclosing scope, or structured search result rather than raw file slices or shell text processing.",
-    "When selector-based SCOPE Diff edits, deletions, or propagation review are useful, even if the task also involves config, build files, docs, tests, or Terminal checks.",
-    "Use Terminal for commands, formatting, tests, git, process interaction, filesystem checks, or files outside Coding/SCOPE responsibility; do not let Terminal replace Coding for source-code understanding or modification.",
+    "When a task requires researching, reading, modifying, developing, or otherwise operating on any project.",
+    "When project work may need commands, tests, formatting, git, filesystem inspection, source-code navigation, semantic search, or edits; Coding includes all Terminal capabilities plus additional project-aware tools.",
+    "Project operations must use Coding app rather than Terminal app. Focus Terminal directly only for non-project command execution or standalone process interaction.",
 ];
 const CODING_HOW_TO_USE: &str = r#"Coding app is used to modify projects; think of it as a Coding Studio for the Agent.
 
