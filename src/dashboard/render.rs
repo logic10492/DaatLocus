@@ -585,8 +585,8 @@ pub fn render_status_command_output_for_dashboard(
         .unwrap_or_else(|| "none".to_string());
     let active_plans = context.plan.active_steps().count();
     let event_summary = render_status_event_summary(context);
-    let bound_workflow = context
-        .bound_workflow_id
+    let bound_primitive = context
+        .bound_primitive_id
         .clone()
         .unwrap_or_else(|| "none".to_string());
     let runtime_turn = if context.active_runtime_turn {
@@ -598,7 +598,7 @@ pub fn render_status_command_output_for_dashboard(
         "idle".to_string()
     };
     sections.push(format!(
-        "Overview\nRuntime turn: {runtime_turn}\nFocused app: {focused}\nBound workflow: {bound_workflow}\nPlans: {active_plans}\nEvents: {event_summary}"
+        "Overview\nRuntime turn: {runtime_turn}\nFocused app: {focused}\nBound primitive: {bound_primitive}\nPlans: {active_plans}\nEvents: {event_summary}"
     ));
 
     let usage_lines = render_status_usage_lines(context);

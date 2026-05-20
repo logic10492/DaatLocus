@@ -28,8 +28,8 @@ pub enum ToolUiEvent {
     Reply(ReplyUiData),
     AppAttention(AppAttentionUiData),
     Plan(PlanUiData),
-    CreateWorkflow(CreateWorkflowUiData),
-    ActivateWorkflow(ActivateWorkflowUiData),
+    CreateWorkflow(CreatePrimitiveSpecUiData),
+    ActivateWorkflow(ActivatePrimitiveUiData),
     #[serde(alias = "Finish", alias = "Work")]
     App(ToolUiData),
     Error(ToolUiData),
@@ -237,12 +237,12 @@ pub enum PlanStepUiStatus {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreateWorkflowUiData {
+pub struct CreatePrimitiveSpecUiData {
     pub workflow_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ActivateWorkflowUiData {
+pub struct ActivatePrimitiveUiData {
     pub workflow_id: String,
 }
 
@@ -344,13 +344,13 @@ impl ToolUiEvent {
     }
 
     pub fn create_workflow(workflow_id: impl Into<String>) -> Self {
-        Self::CreateWorkflow(CreateWorkflowUiData {
+        Self::CreateWorkflow(CreatePrimitiveSpecUiData {
             workflow_id: workflow_id.into(),
         })
     }
 
     pub fn activate_workflow(workflow_id: impl Into<String>) -> Self {
-        Self::ActivateWorkflow(ActivateWorkflowUiData {
+        Self::ActivateWorkflow(ActivatePrimitiveUiData {
             workflow_id: workflow_id.into(),
         })
     }

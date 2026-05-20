@@ -1,14 +1,15 @@
-# Workflows
+# Builtin SOP Primitive Specs
 
-This directory stores Daat Locus builtin workflow specification assets.
+This directory stores Daat Locus builtin SOP primitive specification assets.
 
 Rules:
 
-- One markdown file per workflow.
-- The file name is the workflow id.
-- Frontmatter only contains `id`.
-- These workflows are compiled into the program by `build.rs` and belong to builtin baseline capabilities.
-- Builtin workflows are read-only and are never written back by `create_workflow`, sleep patch, or sleep merge.
-- Runtime-evolvable workflows only live under `~/daat-locus-workspace/workflows`.
+- One Markdown file per builtin SOP primitive spec.
+- The file name is the primitive id used by the primitive runtime tools, and it may contain only lowercase `a-z` and `-`.
+- Markdown content is unrestricted by the primitive id; any legacy frontmatter is ignored for identity.
+- Runtime writes primitive specs as Markdown bodies without frontmatter.
+- These primitive specs are compiled into the program by `build.rs` and belong to builtin baseline capabilities.
+- Builtin primitive specs are read-only and are never written back by `create_primitive_spec`, sleep patch, or sleep merge.
+- Runtime-evolvable SOP primitive specs only live under `~/daat-locus-workspace/workflows`.
 
-To add a builtin workflow later, add the corresponding `*.md` file directly under this directory.
+To add a builtin primitive later, add the corresponding `*.md` file directly under this directory.

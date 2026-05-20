@@ -1,28 +1,28 @@
 use serde::{Deserialize, Serialize};
 
-use crate::tool_ui::{ActivateWorkflowUiData, CreateWorkflowUiData};
+use crate::tool_ui::{ActivatePrimitiveUiData, CreatePrimitiveSpecUiData};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ActivateWorkflowActivityCell {
+pub struct ActivatePrimitiveActivityCell {
     pub workflow_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreateWorkflowActivityCell {
+pub struct CreatePrimitiveSpecActivityCell {
     pub workflow_id: String,
 }
 
-impl From<ActivateWorkflowUiData> for ActivateWorkflowActivityCell {
-    fn from(data: ActivateWorkflowUiData) -> Self {
-        ActivateWorkflowActivityCell {
+impl From<ActivatePrimitiveUiData> for ActivatePrimitiveActivityCell {
+    fn from(data: ActivatePrimitiveUiData) -> Self {
+        ActivatePrimitiveActivityCell {
             workflow_id: data.workflow_id,
         }
     }
 }
 
-impl From<CreateWorkflowUiData> for CreateWorkflowActivityCell {
-    fn from(data: CreateWorkflowUiData) -> Self {
-        CreateWorkflowActivityCell {
+impl From<CreatePrimitiveSpecUiData> for CreatePrimitiveSpecActivityCell {
+    fn from(data: CreatePrimitiveSpecUiData) -> Self {
+        CreatePrimitiveSpecActivityCell {
             workflow_id: data.workflow_id,
         }
     }

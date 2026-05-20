@@ -16,7 +16,7 @@ use super::{
     exec::{ExecResultActivityCell, LiveExecActivityCell},
     messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell},
     plan::{PlanActivityCell, PlanStepDisplayStatus},
-    workflow::{ActivateWorkflowActivityCell, CreateWorkflowActivityCell},
+    workflow::{ActivatePrimitiveActivityCell, CreatePrimitiveSpecActivityCell},
 };
 
 pub const WEB_ACTIVITY_VERSION: u8 = 2;
@@ -764,22 +764,22 @@ fn apply_plan_cell(item: &mut WebActivityItem, cell: &PlanActivityCell) {
     }));
 }
 
-fn apply_create_workflow_cell(item: &mut WebActivityItem, cell: &CreateWorkflowActivityCell) {
+fn apply_create_workflow_cell(item: &mut WebActivityItem, cell: &CreatePrimitiveSpecActivityCell) {
     item.kind = WebActivityKind::Workflow;
     item.actor = Some(WebActivityActor::System);
-    item.title = format!("Created Workflow: {}", cell.workflow_id);
+    item.title = format!("Created Primitive Spec: {}", cell.workflow_id);
     item.blocks = kv_block(vec![WebActivityKvEntry {
-        key: "workflow_id".to_string(),
+        key: "primitive_id".to_string(),
         value: cell.workflow_id.clone(),
     }]);
 }
 
-fn apply_activate_workflow_cell(item: &mut WebActivityItem, cell: &ActivateWorkflowActivityCell) {
+fn apply_activate_workflow_cell(item: &mut WebActivityItem, cell: &ActivatePrimitiveActivityCell) {
     item.kind = WebActivityKind::Workflow;
     item.actor = Some(WebActivityActor::System);
-    item.title = format!("Activated Workflow: {}", cell.workflow_id);
+    item.title = format!("Activated Primitive: {}", cell.workflow_id);
     item.blocks = kv_block(vec![WebActivityKvEntry {
-        key: "workflow_id".to_string(),
+        key: "primitive_id".to_string(),
         value: cell.workflow_id.clone(),
     }]);
 }

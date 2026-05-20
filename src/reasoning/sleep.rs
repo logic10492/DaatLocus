@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::{
     AgentLoopStepOutput, DaatLocusHomeOverride, build_eval_context_with_compiled,
-    context::{ActiveWorkflowRunSession, Context, PendingWorkflowRunFlush},
+    context::{ActivePrimitiveRunSession, Context, PendingPrimitiveRunFlush},
     reasoning::{
         compiled::{
             RUNTIME_SYSTEM_PROMPT_COMPILE_KEY, save_compiled_runtime_system_prompt_for_model,
@@ -29,8 +29,8 @@ use crate::{
         turn_compile::current_runtime_system_prompt_artifact_from_store,
     },
     workflow::{
-        NewWorkflowSpec, WorkflowPatch, WorkflowRunRecord, WorkflowSpec, WorkflowStore,
-        compact_workflow_run_record_file, load_workflow_run_batch,
+        NewPrimitiveSpec, PrimitiveRunRecord, PrimitiveSpec, PrimitiveSpecPatch, PrimitiveStore,
+        compact_workflow_run_record_file, load_primitive_run_batch,
     },
 };
 use async_trait::async_trait;
@@ -40,11 +40,12 @@ use tracing::warn;
 use super::{
     episode::EpisodeActionRecord,
     evaluation_artifacts::{
-        EvaluationArtifactPromptReflection, EvaluationArtifactRuntimePromptCandidate,
+        EvaluationArtifactPrimitiveSpecPatch, EvaluationArtifactPromptReflection,
+        EvaluationArtifactRuntimePromptCandidate,
         EvaluationArtifactRuntimePromptCandidateEvaluation,
         EvaluationArtifactWorkflowCandidateEvaluation, EvaluationArtifactWorkflowMerge,
-        EvaluationArtifactWorkflowPatch, EvaluationArtifactWorkflowReflection,
-        EvaluationArtifactsStore, RuntimeErrorCorrectionArtifacts, WorkflowImprovementArtifacts,
+        EvaluationArtifactWorkflowReflection, EvaluationArtifactsStore,
+        RuntimeErrorCorrectionArtifacts, WorkflowImprovementArtifacts,
     },
     render::openai_tools::OpenAIToolRenderer,
     runtime::{execute_program_with_ir_report, resolve_program_tuning},
@@ -150,7 +151,7 @@ struct SleepInputs {
 #[derive(Default)]
 struct SleepWorkflowOptimizationResult {
     reflections: Vec<EvaluationArtifactWorkflowReflection>,
-    patches: Vec<EvaluationArtifactWorkflowPatch>,
+    patches: Vec<EvaluationArtifactPrimitiveSpecPatch>,
     merges: Vec<EvaluationArtifactWorkflowMerge>,
     candidate_evaluations: Vec<EvaluationArtifactWorkflowCandidateEvaluation>,
     frontier_entries: usize,
@@ -172,7 +173,7 @@ struct PromptPlanningResult {
 
 struct WorkflowPlanningResult {
     reflection: EvaluationArtifactWorkflowReflection,
-    patches: Vec<EvaluationArtifactWorkflowPatch>,
+    patches: Vec<EvaluationArtifactPrimitiveSpecPatch>,
     evaluations: Vec<EvaluationArtifactWorkflowCandidateEvaluation>,
 }
 
@@ -250,8 +251,8 @@ fn runtime_error_correction_planning_result_from_output(
 }
 
 fn workflow_planning_result_from_output(
-    workflow: &WorkflowSpec,
-    evidence: &[WorkflowRunRecord],
+    workflow: &PrimitiveSpec,
+    evidence: &[PrimitiveRunRecord],
     output: &WorkflowEvolutionPlannerOutput,
 ) -> Option<WorkflowPlanningResult> {
     if !output.should_optimize {
@@ -261,7 +262,7 @@ fn workflow_planning_result_from_output(
         workflow_id: workflow.id.clone(),
         rationale: output.reflection.rationale.trim().to_string(),
         missing_preconditions: dedupe_vec(output.reflection.missing_preconditions.clone()),
-        weak_workflow_steps: dedupe_vec(output.reflection.weak_workflow_steps.clone()),
+        weak_primitive_steps: dedupe_vec(output.reflection.weak_primitive_steps.clone()),
         weak_done_criteria: dedupe_vec(output.reflection.weak_done_criteria.clone()),
         weak_recovery: dedupe_vec(output.reflection.weak_recovery.clone()),
         recurring_failure_patterns: dedupe_vec(
@@ -276,7 +277,7 @@ fn workflow_planning_result_from_output(
     let patches = output
         .patch_candidates
         .iter()
-        .map(|candidate| EvaluationArtifactWorkflowPatch {
+        .map(|candidate| EvaluationArtifactPrimitiveSpecPatch {
             workflow_id: workflow.id.clone(),
             title: candidate.title.trim().to_string(),
             rationale: candidate.rationale.trim().to_string(),
@@ -322,12 +323,12 @@ fn workflow_planning_result_from_output(
 }
 
 fn workflow_merge_planning_result_from_output(
-    target_workflow: &WorkflowSpec,
-    source_workflow: &WorkflowSpec,
+    target_workflow: &PrimitiveSpec,
+    source_workflow: &PrimitiveSpec,
     target_reflection: &EvaluationArtifactWorkflowReflection,
     source_reflection: &EvaluationArtifactWorkflowReflection,
-    target_evidence: &[WorkflowRunRecord],
-    source_evidence: &[WorkflowRunRecord],
+    target_evidence: &[PrimitiveRunRecord],
+    source_evidence: &[PrimitiveRunRecord],
     output: &WorkflowMergePlannerOutput,
 ) -> WorkflowMergePlanningResult {
     let merge = if output.should_merge {
@@ -363,7 +364,7 @@ fn workflow_merge_planning_result_from_output(
     WorkflowMergePlanningResult { merge, evaluation }
 }
 
-fn render_workflow_spec_markdown(workflow: &WorkflowSpec) -> String {
+fn render_workflow_spec_markdown(workflow: &PrimitiveSpec) -> String {
     let render_section = |title: &str, items: &[String]| -> String {
         let body = if items.is_empty() {
             "- <empty>".to_string()
@@ -381,21 +382,21 @@ fn render_workflow_spec_markdown(workflow: &WorkflowSpec) -> String {
         format!("---\nid: {}\n---", workflow.id),
         render_section("When To Use", &workflow.when_to_use),
         render_section("Preconditions", &workflow.preconditions),
-        render_section("Workflow", &workflow.workflow_steps),
+        render_section("Workflow", &workflow.primitive_steps),
         render_section("Done Criteria", &workflow.done_criteria),
         render_section("Recovery", &workflow.recovery),
     ]
     .join("\n\n")
 }
 
-fn render_workflow_run_evidence_json(evidence: &[WorkflowRunRecord]) -> Result<String> {
+fn render_workflow_run_evidence_json(evidence: &[PrimitiveRunRecord]) -> Result<String> {
     serde_json::to_string_pretty(evidence).into_diagnostic()
 }
 
 fn group_run_records_by_workflow(
-    run_records: &[WorkflowRunRecord],
-) -> HashMap<String, Vec<WorkflowRunRecord>> {
-    let mut grouped = HashMap::<String, Vec<WorkflowRunRecord>>::new();
+    run_records: &[PrimitiveRunRecord],
+) -> HashMap<String, Vec<PrimitiveRunRecord>> {
+    let mut grouped = HashMap::<String, Vec<PrimitiveRunRecord>>::new();
     for record in run_records {
         grouped
             .entry(record.workflow_id.clone())
@@ -409,9 +410,9 @@ async fn replay_workflow_frontier_entries(
     context: &mut Context,
     planner: &dyn SleepPlannerRuntime,
     entries: &[WorkflowFrontierEntry],
-    workflows: &[WorkflowSpec],
+    workflows: &[PrimitiveSpec],
     reflection_by_workflow: &HashMap<String, EvaluationArtifactWorkflowReflection>,
-    evidence_by_workflow: &HashMap<String, Vec<WorkflowRunRecord>>,
+    evidence_by_workflow: &HashMap<String, Vec<PrimitiveRunRecord>>,
 ) -> Result<Vec<WorkflowFrontierEntry>> {
     let workflow_map = workflows
         .iter()
@@ -467,7 +468,7 @@ async fn replay_workflow_frontier_entries(
 
 fn infer_workflow_patch_lineage(
     existing: &[WorkflowFrontierEntry],
-    patch: &EvaluationArtifactWorkflowPatch,
+    patch: &EvaluationArtifactPrimitiveSpecPatch,
 ) -> (Vec<String>, usize) {
     let patch_set = [
         patch.when_to_use_additions.clone(),
@@ -647,20 +648,20 @@ mod tests {
         WorkflowEvolutionPlannerOutput, WorkflowPlannerCandidateEvaluation,
         WorkflowPlannerPatchCandidate, WorkflowPlannerReflection,
     };
-    use crate::workflow::{NewWorkflowSpec, WorkflowRunOutcome, WorkflowRunRecord};
+    use crate::workflow::{NewPrimitiveSpec, PrimitiveRunOutcome, PrimitiveRunRecord};
 
     #[tokio::test]
     async fn sleep_workflow_optimizer_updates_workflow_content_from_run_records() {
         let temp_dir = TempDir::new().expect("create temporary workflow dir");
         let primary = temp_dir.path().join("workflows");
 
-        let mut workflows = WorkflowStore::open_scoped(primary.clone()).await;
+        let mut workflows = PrimitiveStore::open_scoped(primary.clone()).await;
         let created = workflows
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "repair-flaky-test-pipeline".to_string(),
                 when_to_use: vec!["test flaky".to_string()],
                 preconditions: vec!["failing test logs available".to_string()],
-                workflow_steps: vec![
+                primitive_steps: vec![
                     "collect flaky failure evidence".to_string(),
                     "pinpoint unstable assertion".to_string(),
                 ],
@@ -668,15 +669,15 @@ mod tests {
                 recovery: vec!["rollback last risky change".to_string()],
             })
             .await
-            .expect("create workflow");
+            .expect("create primitive spec");
 
-        let run_records = vec![WorkflowRunRecord {
+        let run_records = vec![PrimitiveRunRecord {
             run_id: "workflow-run:test".to_string(),
             workflow_id: created.id.clone(),
             started_at_ms: chrono::Utc::now().timestamp_millis(),
             ended_at_ms: chrono::Utc::now().timestamp_millis(),
             origin: "event:test".to_string(),
-            outcome: WorkflowRunOutcome::Blocked,
+            outcome: PrimitiveRunOutcome::Blocked,
             turn_count: 1,
             tool_action_count: 3,
             manual_fix_detected: true,
@@ -695,7 +696,7 @@ mod tests {
                         "Confirm key dependencies, inputs, and permission conditions before execution."
                             .to_string(),
                     ],
-                    weak_workflow_steps: vec![
+                    weak_primitive_steps: vec![
                         "Before manual repair, lock the repair premise and plan verification steps."
                             .to_string(),
                     ],
@@ -747,7 +748,7 @@ mod tests {
             .find(|patch| selected_titles.contains(&patch.title))
             .expect("selected patch should exist");
         workflows
-            .apply_patch(WorkflowPatch {
+            .apply_patch(PrimitiveSpecPatch {
                 workflow_id: patch.workflow_id.clone(),
                 when_to_use_additions: patch.when_to_use_additions.clone(),
                 precondition_additions: patch.precondition_additions.clone(),
@@ -760,11 +761,11 @@ mod tests {
 
         let updated = workflows
             .get(&created.id)
-            .expect("updated workflow should exist");
-        assert_ne!(updated.workflow_steps, created.workflow_steps);
+            .expect("updated primitive spec should exist");
+        assert_ne!(updated.primitive_steps, created.primitive_steps);
         assert!(
             updated
-                .workflow_steps
+                .primitive_steps
                 .iter()
                 .any(|step| step.contains("manual repair") || step.contains("blocked"))
                 || updated
@@ -780,13 +781,13 @@ mod tests {
         let primary = temp_dir.path().join("primary");
         let isolated = temp_dir.path().join("isolated");
 
-        let mut workflows = WorkflowStore::open_scoped(primary).await;
+        let mut workflows = PrimitiveStore::open_scoped(primary).await;
         let existing = workflows
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "hermes-agent-analysis".to_string(),
                 when_to_use: vec!["analyze agent repos".to_string()],
                 preconditions: Vec::new(),
-                workflow_steps: vec!["inspect repo".to_string()],
+                primitive_steps: vec!["inspect repo".to_string()],
                 done_criteria: vec!["summary is produced".to_string()],
                 recovery: Vec::new(),
             })
@@ -807,13 +808,13 @@ mod tests {
     #[test]
     fn workflow_task_cases_prefer_most_recent_runs() {
         let records = (0..10)
-            .map(|index| WorkflowRunRecord {
+            .map(|index| PrimitiveRunRecord {
                 run_id: format!("run-{index}"),
                 workflow_id: "repair-flaky-test-pipeline".to_string(),
                 started_at_ms: index,
                 ended_at_ms: index + 100,
                 origin: "event:test".to_string(),
-                outcome: WorkflowRunOutcome::Completed,
+                outcome: PrimitiveRunOutcome::Completed,
                 turn_count: 1,
                 tool_action_count: 1,
                 manual_fix_detected: false,
@@ -837,24 +838,24 @@ mod tests {
 
     #[test]
     fn workflow_task_rollout_case_simulates_bind_and_flush_boundary() {
-        let workflow = WorkflowSpec {
+        let workflow = PrimitiveSpec {
             id: "repair-flaky-test-pipeline".to_string(),
             when_to_use: vec!["repair flaky tests".to_string()],
             preconditions: Vec::new(),
-            workflow_steps: vec![
+            primitive_steps: vec![
                 "Collect failing traces".to_string(),
                 "Apply minimal patch".to_string(),
             ],
             done_criteria: vec!["Root cause identified".to_string()],
             recovery: vec!["Fallback to evidence collection".to_string()],
         };
-        let case = WorkflowRunRecord {
+        let case = PrimitiveRunRecord {
             run_id: "run-1".to_string(),
             workflow_id: "old-id".to_string(),
             started_at_ms: 100,
             ended_at_ms: 220,
             origin: "event:test".to_string(),
-            outcome: WorkflowRunOutcome::Blocked,
+            outcome: PrimitiveRunOutcome::Blocked,
             turn_count: 3,
             tool_action_count: 2,
             manual_fix_detected: true,

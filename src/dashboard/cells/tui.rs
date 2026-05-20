@@ -22,7 +22,7 @@ use super::{
     highlight::{DiffScopeBackgrounds, diff_scope_backgrounds, highlight_patch_lines},
     messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell},
     plan::{PlanActivityCell, PlanStepDisplayStatus},
-    workflow::{ActivateWorkflowActivityCell, CreateWorkflowActivityCell},
+    workflow::{ActivatePrimitiveActivityCell, CreatePrimitiveSpecActivityCell},
 };
 use crate::dashboard::renderable::{FlexRenderable, Renderable, ViewportCulledColumn};
 use crate::tool_ui::{PatchDiffLineKind, PatchDiffLineUiData, PatchFileUiData, glyph};
@@ -1061,16 +1061,16 @@ fn render_plan_cell_lines(cell: &PlanActivityCell) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_create_workflow_cell_lines(cell: &CreateWorkflowActivityCell) -> Vec<Line<'static>> {
+fn render_create_workflow_cell_lines(cell: &CreatePrimitiveSpecActivityCell) -> Vec<Line<'static>> {
     render_workflow_line(
-        format!("Created Workflow: {}", cell.workflow_id),
+        format!("Created Primitive Spec: {}", cell.workflow_id),
         glyph::WORKFLOW,
     )
 }
 
-fn render_activate_workflow_cell_lines(cell: &ActivateWorkflowActivityCell) -> Vec<Line<'static>> {
+fn render_activate_workflow_cell_lines(cell: &ActivatePrimitiveActivityCell) -> Vec<Line<'static>> {
     render_workflow_line(
-        format!("Activated Workflow: {}", cell.workflow_id),
+        format!("Activated Primitive: {}", cell.workflow_id),
         glyph::WORKFLOW,
     )
 }

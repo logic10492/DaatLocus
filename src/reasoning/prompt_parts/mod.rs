@@ -126,7 +126,7 @@ impl SystemPromptPart for PlanSystemPart {
 
 impl SystemPromptPart for WorkflowSystemPart {
     fn key(&self) -> &'static str {
-        "workflow"
+        "primitive"
     }
 
     fn build(&self, _ctx: &Context) -> Option<PromptUnitDoc> {
@@ -230,34 +230,73 @@ impl PreTurnContextPart for PreTurnPlanPart {
 
 impl PreTurnContextPart for PreTurnWorkflowStatePart {
     fn key(&self) -> &'static str {
-        "workflow_state"
+        "primitive"
     }
 
     fn build(&self, ctx: &Context, _state: &PreTurnState) -> Option<PromptNode> {
         let mut blocks = Vec::new();
 
-        if let Some(bound_workflow) = ctx.bound_workflow() {
-            let mut pairs = vec![("bound_workflow_id".to_string(), bound_workflow.id.clone())];
-            if let Some(origin) = ctx.workflows.workflow_origin(&bound_workflow.id) {
+        let composition_specs = ctx.bound_primitive_composition_specs();
+        if let Some(composition) = ctx.bound_primitive_composition.as_ref() {
+            blocks.push(PromptBlock::KeyValueList(vec![
+                (
+                    "bound_primitive_id".to_string(),
+                    composition.composition_id.clone(),
+                ),
+                (
+                    "bound_primitive_kind".to_string(),
+                    "composition".to_string(),
+                ),
+                (
+                    "primitive_ids".to_string(),
+                    composition.primitive_ids.join(", "),
+                ),
+            ]));
+
+            for primitive in composition_specs.iter().take(4) {
+                blocks.push(PromptBlock::Paragraph(format!(
+                    "primitive {}:",
+                    primitive.id
+                )));
+                if !primitive.primitive_steps.is_empty() {
+                    blocks.push(PromptBlock::BulletList(
+                        primitive.primitive_steps.iter().take(4).cloned().collect(),
+                    ));
+                }
+                if !primitive.done_criteria.is_empty() {
+                    blocks.push(PromptBlock::BulletList(
+                        primitive
+                            .done_criteria
+                            .iter()
+                            .take(2)
+                            .map(|item| format!("done: {item}"))
+                            .collect(),
+                    ));
+                }
+            }
+        } else if let Some(bound_primitive) = ctx.bound_primitive() {
+            let mut pairs = vec![("bound_primitive_id".to_string(), bound_primitive.id.clone())];
+            pairs.push(("bound_primitive_kind".to_string(), "single".to_string()));
+            if let Some(origin) = ctx.workflows.workflow_origin(&bound_primitive.id) {
                 pairs.push((
-                    "bound_workflow_origin".to_string(),
+                    "bound_primitive_origin".to_string(),
                     format!("{origin:?}").to_ascii_lowercase(),
                 ));
             }
             blocks.push(PromptBlock::KeyValueList(pairs));
-            if !bound_workflow.workflow_steps.is_empty() {
+            if !bound_primitive.primitive_steps.is_empty() {
                 blocks.push(PromptBlock::BulletList(
-                    bound_workflow
-                        .workflow_steps
+                    bound_primitive
+                        .primitive_steps
                         .iter()
                         .take(6)
                         .cloned()
                         .collect(),
                 ));
             }
-            if !bound_workflow.done_criteria.is_empty() {
+            if !bound_primitive.done_criteria.is_empty() {
                 blocks.push(PromptBlock::BulletList(
-                    bound_workflow
+                    bound_primitive
                         .done_criteria
                         .iter()
                         .take(4)
@@ -265,9 +304,9 @@ impl PreTurnContextPart for PreTurnWorkflowStatePart {
                         .collect(),
                 ));
             }
-            if !bound_workflow.recovery.is_empty() {
+            if !bound_primitive.recovery.is_empty() {
                 blocks.push(PromptBlock::BulletList(
-                    bound_workflow
+                    bound_primitive
                         .recovery
                         .iter()
                         .take(4)
@@ -277,7 +316,7 @@ impl PreTurnContextPart for PreTurnWorkflowStatePart {
             }
         } else {
             blocks.push(PromptBlock::KeyValueList(vec![(
-                "bound_workflow_id".to_string(),
+                "bound_primitive_id".to_string(),
                 "<none>".to_string(),
             )]));
         }
@@ -484,19 +523,19 @@ impl AfterClaimContextPart for AfterClaimInputPart {
 
 impl AfterClaimContextPart for AfterClaimWorkflowPrimitiveRoutingPart {
     fn key(&self) -> &'static str {
-        "workflow_routing"
+        "primitive_routing"
     }
 
     fn build(&self, ctx: &Context, input: &AfterClaimContextInput) -> Option<PromptNode> {
         let mut blocks = Vec::new();
-        if ctx.bound_workflow_id.is_none() {
+        if ctx.bound_primitive_id.is_none() {
             blocks.push(PromptBlock::Paragraph(
-                "Workflow primitive routing catalog exposes the full reusable SOP primitive ID vocabulary plus expanded details for only the most relevant primitives. If a primitive fits the claimed work, call `activate_workflow` before executing it. If no primitive fits, continue with a normal plan; call `create_workflow` only when the task truly needs a new stable primitive, not to persist a one-off composite task graph."
+                "Primitive routing catalog exposes the full reusable SOP primitive ID vocabulary plus expanded details for only the most relevant primitives. Primitive ids are filenames restricted to lowercase `a-z` and `-`. If one primitive fits the claimed work, call `activate_composed_primitive` with that primitive id before executing it. If multiple existing primitives should form a temporary graph, call `activate_composed_primitive` with the ordered existing primitive ids joined by `-`; exact primitive filename matches win before composition segmentation. If no primitive fits, continue with a normal plan; call `create_primitive_spec` only when the task truly needs a new stable primitive, not to persist a one-off composite task graph."
                     .to_string(),
             ));
-        } else if let Some(workflow_id) = ctx.bound_workflow_id.as_deref() {
+        } else if let Some(workflow_id) = ctx.bound_primitive_id.as_deref() {
             blocks.push(PromptBlock::KeyValueList(vec![(
-                "current_bound_workflow_id".to_string(),
+                "current_bound_primitive_id".to_string(),
                 workflow_id.to_string(),
             )]));
         }
@@ -522,13 +561,13 @@ impl AfterClaimContextPart for AfterClaimWorkflowPrimitiveRoutingPart {
             ));
             if routing.relevant_omitted_count > 0 {
                 blocks.push(PromptBlock::Paragraph(format!(
-                    "Showing {shown_count} relevant primitive details from {} loaded workflows; {} additional relevant matches are not expanded. The primitive_ids line is the full loaded primitive vocabulary; do not browse it mechanically before continuing.",
+                    "Showing {shown_count} relevant primitive details from {} loaded primitives; {} additional relevant matches are not expanded. The primitive_ids line is the full loaded primitive vocabulary; do not browse it mechanically before continuing.",
                     routing.total_count, routing.relevant_omitted_count
                 )));
             }
         } else if routing.total_count > 0 {
             blocks.push(PromptBlock::Paragraph(format!(
-                "No relevant primitive details matched the claimed input among {} loaded workflows. Use primitive_ids as vocabulary for possible composition, but do not create a composite workflow merely to satisfy routing; continue with a plan unless a new stable primitive is genuinely needed.",
+                "No relevant primitive details matched the claimed input among {} loaded primitives. Use primitive_ids as filename vocabulary for possible `activate_composed_primitive` input, but do not create a composite workflow merely to satisfy routing; continue with a plan unless a new stable primitive is genuinely needed.",
                 routing.total_count
             )));
         }
@@ -569,12 +608,10 @@ fn claimed_work_query(input: &AfterClaimContextInput) -> String {
     parts.join("\n")
 }
 
-fn render_workflow_primitive_summary(
-    summary: &crate::workflow::WorkflowPrimitiveSummary,
-) -> String {
+fn render_workflow_primitive_summary(summary: &crate::workflow::PrimitiveSummary) -> String {
     let prefix = match summary.origin {
-        crate::workflow::WorkflowOrigin::Builtin => "[builtin] ",
-        crate::workflow::WorkflowOrigin::Workspace => "[workspace] ",
+        crate::workflow::PrimitiveOrigin::Builtin => "[builtin] ",
+        crate::workflow::PrimitiveOrigin::Workspace => "[workspace] ",
     };
     let mut parts = vec![format!("{prefix}{}", summary.id)];
     if !summary.capability_summary.is_empty() {
@@ -591,12 +628,12 @@ fn render_workflow_primitive_summary(
     }
     parts.join(" | ")
 }
-fn render_workflow_primitive_ids(ids: &[crate::workflow::WorkflowPrimitiveId]) -> String {
+fn render_workflow_primitive_ids(ids: &[crate::workflow::PrimitiveId]) -> String {
     ids.iter()
         .map(|primitive| {
             let prefix = match primitive.origin {
-                crate::workflow::WorkflowOrigin::Builtin => "[builtin] ",
-                crate::workflow::WorkflowOrigin::Workspace => "[workspace] ",
+                crate::workflow::PrimitiveOrigin::Builtin => "[builtin] ",
+                crate::workflow::PrimitiveOrigin::Workspace => "[workspace] ",
             };
             format!("{prefix}{}", primitive.id)
         })

@@ -23,41 +23,54 @@ use crate::{
 const MAX_SUMMARY_ITEMS: usize = 12;
 const MAX_COMPACT_SUMMARY_CHARS: usize = 180;
 const WORKFLOWS_DIR_NAME: &str = "workflows";
-const WORKFLOW_RUN_RECORDS_FILE_NAME: &str = "run_records.jsonl";
-static WORKFLOW_RUN_RECORDS_IO_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+const PRIMITIVE_RUN_RECORDS_FILE_NAME: &str = "run_records.jsonl";
+static PRIMITIVE_RUN_RECORDS_IO_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
-mod builtin_workflow_bindings {
+mod builtin_primitive_bindings {
     include!(concat!(env!("OUT_DIR"), "/builtin_workflows.rs"));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowOrigin {
+pub enum PrimitiveOrigin {
     Builtin,
     Workspace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkflowSpec {
+pub struct PrimitiveSpec {
     pub id: String,
     #[serde(default)]
     pub when_to_use: Vec<String>,
     #[serde(default)]
     pub preconditions: Vec<String>,
     #[serde(default)]
-    pub workflow_steps: Vec<String>,
+    pub primitive_steps: Vec<String>,
     #[serde(default)]
     pub done_criteria: Vec<String>,
     #[serde(default)]
     pub recovery: Vec<String>,
 }
 
-impl WorkflowSpec {
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrimitiveComposition {
+    pub composition_id: String,
+    pub primitive_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PrimitiveActivation {
+    Single { primitive: PrimitiveSpec },
+    Composition { composition: PrimitiveComposition },
+}
+
+impl PrimitiveSpec {
     fn normalize(mut self) -> Result<Self> {
         self.id = normalize_identifier(&self.id);
         self.when_to_use = normalize_string_list(self.when_to_use);
         self.preconditions = normalize_string_list(self.preconditions);
-        self.workflow_steps = normalize_string_list(self.workflow_steps);
+        self.primitive_steps = normalize_string_list(self.primitive_steps);
         self.done_criteria = normalize_string_list(self.done_criteria);
         self.recovery = normalize_string_list(self.recovery);
 
@@ -67,11 +80,11 @@ impl WorkflowSpec {
         Ok(self)
     }
 
-    pub fn primitive_summary(&self) -> WorkflowPrimitiveSummary {
-        WorkflowPrimitiveSummary {
+    pub fn primitive_summary(&self) -> PrimitiveSummary {
+        PrimitiveSummary {
             id: self.id.clone(),
-            origin: WorkflowOrigin::Workspace,
-            capability_summary: compact_list_summary(&self.workflow_steps, 2),
+            origin: PrimitiveOrigin::Workspace,
+            capability_summary: compact_list_summary(&self.primitive_steps, 2),
             inputs_summary: compact_list_summary(&self.preconditions, 2),
             outputs_summary: compact_list_summary(&self.done_criteria, 2),
             when_to_use_summary: compact_list_summary(&self.when_to_use, 1),
@@ -80,9 +93,9 @@ impl WorkflowSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkflowPrimitiveSummary {
+pub struct PrimitiveSummary {
     pub id: String,
-    pub origin: WorkflowOrigin,
+    pub origin: PrimitiveOrigin,
     #[serde(default)]
     pub capability_summary: String,
     #[serde(default)]
@@ -94,41 +107,41 @@ pub struct WorkflowPrimitiveSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkflowPrimitiveRoutingCatalog {
-    pub primitive_ids: Vec<WorkflowPrimitiveId>,
-    pub relevant_primitives: Vec<WorkflowPrimitiveSummary>,
+pub struct PrimitiveRoutingCatalog {
+    pub primitive_ids: Vec<PrimitiveId>,
+    pub relevant_primitives: Vec<PrimitiveSummary>,
     pub total_count: usize,
     pub relevant_omitted_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkflowPrimitiveId {
+pub struct PrimitiveId {
     pub id: String,
-    pub origin: WorkflowOrigin,
+    pub origin: PrimitiveOrigin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct NewWorkflowSpec {
+pub struct NewPrimitiveSpec {
     pub id: String,
     #[serde(default)]
     pub when_to_use: Vec<String>,
     #[serde(default)]
     pub preconditions: Vec<String>,
     #[serde(default)]
-    pub workflow_steps: Vec<String>,
+    pub primitive_steps: Vec<String>,
     #[serde(default)]
     pub done_criteria: Vec<String>,
     #[serde(default)]
     pub recovery: Vec<String>,
 }
 
-impl NewWorkflowSpec {
-    pub fn into_workflow_spec(self) -> WorkflowSpec {
-        WorkflowSpec {
+impl NewPrimitiveSpec {
+    pub fn into_workflow_spec(self) -> PrimitiveSpec {
+        PrimitiveSpec {
             id: self.id,
             when_to_use: self.when_to_use,
             preconditions: self.preconditions,
-            workflow_steps: self.workflow_steps,
+            primitive_steps: self.primitive_steps,
             done_criteria: self.done_criteria,
             recovery: self.recovery,
         }
@@ -136,13 +149,13 @@ impl NewWorkflowSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkflowRunRecord {
+pub struct PrimitiveRunRecord {
     pub run_id: String,
     pub workflow_id: String,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub origin: String,
-    pub outcome: WorkflowRunOutcome,
+    pub outcome: PrimitiveRunOutcome,
     pub turn_count: usize,
     pub tool_action_count: usize,
     pub manual_fix_detected: bool,
@@ -154,7 +167,7 @@ pub struct WorkflowRunRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowRunOutcome {
+pub enum PrimitiveRunOutcome {
     Completed,
     Blocked,
     Abandoned,
@@ -162,14 +175,14 @@ pub enum WorkflowRunOutcome {
     NoProgress,
 }
 
-pub struct WorkflowRunBatch {
-    pub records: Vec<WorkflowRunRecord>,
+pub struct PrimitiveRunBatch {
+    pub records: Vec<PrimitiveRunRecord>,
     pub unread_record_count: usize,
     pub next_offset: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkflowPatch {
+pub struct PrimitiveSpecPatch {
     pub workflow_id: String,
     #[serde(default)]
     pub when_to_use_additions: Vec<String>,
@@ -183,18 +196,18 @@ pub struct WorkflowPatch {
     pub recovery_additions: Vec<String>,
 }
 
-struct StoredWorkflow {
-    spec: WorkflowSpec,
+struct StoredPrimitive {
+    spec: PrimitiveSpec,
     path: Option<PathBuf>,
-    origin: WorkflowOrigin,
+    origin: PrimitiveOrigin,
 }
 
-pub struct WorkflowStore {
+pub struct PrimitiveStore {
     workflow_dir: PathBuf,
-    workflows: BTreeMap<String, StoredWorkflow>,
+    workflows: BTreeMap<String, StoredPrimitive>,
 }
 
-impl WorkflowStore {
+impl PrimitiveStore {
     pub async fn new() -> Self {
         let workflow_dir = resolve_runtime_workspace_dir()
             .unwrap()
@@ -205,17 +218,17 @@ impl WorkflowStore {
     pub(crate) async fn open_scoped(workflow_dir: PathBuf) -> Self {
         let mut store = Self {
             workflow_dir,
-            workflows: load_builtin_workflows(),
+            workflows: load_builtin_primitives(),
         };
         store.load_from_disk().await;
         store
     }
 
-    pub fn get(&self, workflow_id: &str) -> Option<&WorkflowSpec> {
+    pub fn get(&self, workflow_id: &str) -> Option<&PrimitiveSpec> {
         self.workflows.get(workflow_id).map(|stored| &stored.spec)
     }
 
-    pub fn workflow_origin(&self, workflow_id: &str) -> Option<WorkflowOrigin> {
+    pub fn workflow_origin(&self, workflow_id: &str) -> Option<PrimitiveOrigin> {
         self.workflows.get(workflow_id).map(|stored| stored.origin)
     }
 
@@ -225,24 +238,20 @@ impl WorkflowStore {
             .and_then(|stored| stored.path.as_deref())
     }
 
-    pub fn workspace_list(&self) -> Vec<WorkflowSpec> {
+    pub fn workspace_list(&self) -> Vec<PrimitiveSpec> {
         self.workflows
             .values()
-            .filter(|stored| stored.origin == WorkflowOrigin::Workspace)
+            .filter(|stored| stored.origin == PrimitiveOrigin::Workspace)
             .map(|stored| stored.spec.clone())
             .collect()
     }
 
-    pub fn primitive_routing_catalog(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> WorkflowPrimitiveRoutingCatalog {
+    pub fn primitive_routing_catalog(&self, query: &str, limit: usize) -> PrimitiveRoutingCatalog {
         let query_terms = workflow_relevance_terms(query);
         let mut primitive_ids = self
             .workflows
             .values()
-            .map(|stored| WorkflowPrimitiveId {
+            .map(|stored| PrimitiveId {
                 id: stored.spec.id.clone(),
                 origin: stored.origin,
             })
@@ -288,7 +297,7 @@ impl WorkflowStore {
             .map(|(_, summary)| summary)
             .collect::<Vec<_>>();
         let relevant_omitted_count = scored_count.saturating_sub(relevant_primitives.len());
-        WorkflowPrimitiveRoutingCatalog {
+        PrimitiveRoutingCatalog {
             primitive_ids,
             relevant_primitives,
             total_count,
@@ -296,52 +305,85 @@ impl WorkflowStore {
         }
     }
 
-    pub async fn create_workflow(&mut self, draft: NewWorkflowSpec) -> Result<WorkflowSpec> {
+    pub fn activate_composed_primitive(&self, primitive_id: &str) -> Result<PrimitiveActivation> {
+        let primitive_id = primitive_id.trim();
+        if primitive_id.is_empty() {
+            return Err(miette!(
+                "activate_composed_primitive requires non-empty primitive_id"
+            ));
+        }
+        if let Some(stored) = self.workflows.get(primitive_id) {
+            return Ok(PrimitiveActivation::Single {
+                primitive: stored.spec.clone(),
+            });
+        }
+
+        let composition = self.compose_primitives(primitive_id)?;
+        Ok(PrimitiveActivation::Composition { composition })
+    }
+
+    pub fn compose_primitives(&self, composition: &str) -> Result<PrimitiveComposition> {
+        let primitive_ids = parse_primitive_composition(composition, |candidate| {
+            self.workflows.contains_key(candidate)
+        })?;
+        Ok(PrimitiveComposition {
+            composition_id: primitive_ids.join("-"),
+            primitive_ids,
+        })
+    }
+
+    pub async fn create_workflow(&mut self, draft: NewPrimitiveSpec) -> Result<PrimitiveSpec> {
         if draft.id.trim().is_empty() {
-            return Err(miette!("create_workflow requires non-empty id"));
+            return Err(miette!("create_primitive_spec requires non-empty id"));
+        }
+        if !is_valid_primitive_id(draft.id.trim()) {
+            return Err(miette!(
+                "primitive_id `{}` is invalid; primitive ids may only use lowercase a-z and '-'",
+                draft.id
+            ));
         }
         if draft.when_to_use.is_empty() {
             return Err(miette!(
-                "create_workflow requires at least one when_to_use item"
+                "create_primitive_spec requires at least one when_to_use item"
             ));
         }
         if draft.done_criteria.is_empty() {
             return Err(miette!(
-                "create_workflow requires at least one done_criteria item"
+                "create_primitive_spec requires at least one done_criteria item"
             ));
         }
 
         let spec = draft.into_workflow_spec().normalize()?;
         if self.workflows.contains_key(&spec.id) {
-            return Err(miette!("workflow_id `{}` already exists", spec.id));
+            return Err(miette!("primitive_id `{}` already exists", spec.id));
         }
         let path = self.workflow_dir.join(format!("{}.md", spec.id));
         write_workflow_file(&path, &spec).await?;
         self.workflows.insert(
             spec.id.clone(),
-            StoredWorkflow {
+            StoredPrimitive {
                 spec: spec.clone(),
                 path: Some(path),
-                origin: WorkflowOrigin::Workspace,
+                origin: PrimitiveOrigin::Workspace,
             },
         );
         Ok(spec)
     }
 
-    pub async fn apply_patch(&mut self, patch: WorkflowPatch) -> Result<WorkflowSpec> {
+    pub async fn apply_patch(&mut self, patch: PrimitiveSpecPatch) -> Result<PrimitiveSpec> {
         let stored = self
             .workflows
             .get_mut(&patch.workflow_id)
             .ok_or_else(|| miette!("unknown workflow_id `{}`", patch.workflow_id))?;
-        if stored.origin != WorkflowOrigin::Workspace {
+        if stored.origin != PrimitiveOrigin::Workspace {
             return Err(miette!(
-                "builtin workflow `{}` is read-only and cannot be patched",
+                "builtin primitive `{}` is read-only and cannot be patched",
                 patch.workflow_id
             ));
         }
         let path = stored.path.clone().ok_or_else(|| {
             miette!(
-                "workspace workflow `{}` is missing backing path",
+                "workspace primitive `{}` is missing backing path",
                 patch.workflow_id
             )
         })?;
@@ -356,7 +398,7 @@ impl WorkflowStore {
             normalize_string_list(patch.precondition_additions),
         );
         extend_unique(
-            &mut stored.spec.workflow_steps,
+            &mut stored.spec.primitive_steps,
             normalize_string_list(patch.workflow_step_additions),
         );
         extend_unique(
@@ -379,47 +421,57 @@ impl WorkflowStore {
     pub async fn replace_workspace_workflow(
         &mut self,
         workflow_id: &str,
-        replacement: WorkflowSpec,
-    ) -> Result<WorkflowSpec> {
-        let workflow_id = normalize_identifier(workflow_id);
+        replacement: PrimitiveSpec,
+    ) -> Result<PrimitiveSpec> {
+        let workflow_id = workflow_id.trim().to_string();
         if workflow_id.is_empty() {
             return Err(miette!("replace_workspace_workflow requires non-empty id"));
+        }
+        if !is_valid_primitive_id(&workflow_id) {
+            return Err(miette!(
+                "primitive_id `{workflow_id}` is invalid; primitive ids may only use lowercase a-z and '-'"
+            ));
         }
 
         let stored = self
             .workflows
             .get_mut(&workflow_id)
-            .ok_or_else(|| miette!("unknown workflow_id `{workflow_id}`"))?;
-        if stored.origin != WorkflowOrigin::Workspace {
+            .ok_or_else(|| miette!("unknown primitive_id `{workflow_id}`"))?;
+        if stored.origin != PrimitiveOrigin::Workspace {
             return Err(miette!(
-                "builtin workflow `{workflow_id}` is read-only and cannot be updated"
+                "builtin primitive `{workflow_id}` is read-only and cannot be updated"
             ));
         }
-        let path = stored
-            .path
-            .clone()
-            .ok_or_else(|| miette!("workspace workflow `{workflow_id}` is missing backing path"))?;
+        let path = stored.path.clone().ok_or_else(|| {
+            miette!("workspace primitive `{workflow_id}` is missing backing path")
+        })?;
 
+        if !is_valid_primitive_id(replacement.id.trim()) {
+            return Err(miette!(
+                "replacement primitive id `{}` is invalid; primitive ids may only use lowercase a-z and '-'",
+                replacement.id
+            ));
+        }
         let replacement = replacement.normalize()?;
         if replacement.id != workflow_id {
             return Err(miette!(
-                "replacement workflow id `{}` does not match target workflow_id `{workflow_id}`",
+                "replacement primitive id `{}` does not match target primitive_id `{workflow_id}`",
                 replacement.id
             ));
         }
         if replacement.when_to_use.is_empty() {
             return Err(miette!(
-                "update_workflow requires at least one when_to_use item"
+                "update_primitive_spec requires at least one when_to_use item"
             ));
         }
-        if replacement.workflow_steps.is_empty() {
+        if replacement.primitive_steps.is_empty() {
             return Err(miette!(
-                "update_workflow requires at least one workflow_steps item"
+                "update_primitive_spec requires at least one primitive_steps item"
             ));
         }
         if replacement.done_criteria.is_empty() {
             return Err(miette!(
-                "update_workflow requires at least one done_criteria item"
+                "update_primitive_spec requires at least one done_criteria item"
             ));
         }
 
@@ -437,13 +489,13 @@ impl WorkflowStore {
         target_workflow_id: &str,
         source_workflow_ids: &[String],
         _reason: Option<String>,
-    ) -> Result<WorkflowSpec> {
+    ) -> Result<PrimitiveSpec> {
         if !self.workflows.contains_key(target_workflow_id) {
             return Err(miette!("unknown target workflow_id `{target_workflow_id}`"));
         }
-        if self.workflow_origin(target_workflow_id) != Some(WorkflowOrigin::Workspace) {
+        if self.workflow_origin(target_workflow_id) != Some(PrimitiveOrigin::Workspace) {
             return Err(miette!(
-                "builtin workflow `{target_workflow_id}` is read-only and cannot be merged"
+                "builtin primitive `{target_workflow_id}` is read-only and cannot be merged"
             ));
         }
 
@@ -463,7 +515,7 @@ impl WorkflowStore {
             .map(|source_id| {
                 self.workflows
                     .get(source_id)
-                    .filter(|stored| stored.origin == WorkflowOrigin::Workspace)
+                    .filter(|stored| stored.origin == PrimitiveOrigin::Workspace)
                     .map(|stored| stored.spec.clone())
                     .ok_or_else(|| miette!("unknown source workflow_id `{source_id}`"))
             })
@@ -474,7 +526,7 @@ impl WorkflowStore {
             .get_mut(target_workflow_id)
             .ok_or_else(|| miette!("unknown target workflow_id `{target_workflow_id}`"))?;
         let target_path = target.path.clone().ok_or_else(|| {
-            miette!("workspace workflow `{target_workflow_id}` is missing backing path")
+            miette!("workspace primitive `{target_workflow_id}` is missing backing path")
         })?;
 
         for source in &sources {
@@ -487,8 +539,8 @@ impl WorkflowStore {
                 normalize_string_list(source.preconditions.clone()),
             );
             extend_unique(
-                &mut target.spec.workflow_steps,
-                normalize_string_list(source.workflow_steps.clone()),
+                &mut target.spec.primitive_steps,
+                normalize_string_list(source.primitive_steps.clone()),
             );
             extend_unique(
                 &mut target.spec.done_criteria,
@@ -529,14 +581,21 @@ impl WorkflowStore {
             if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
                 continue;
             }
+            let Some(file_id) = primitive_id_from_path(&path) else {
+                tracing::warn!(
+                    "workspace primitive filename `{}` is invalid; primitive ids may only use lowercase a-z and '-'",
+                    path.display()
+                );
+                continue;
+            };
             let Ok(content) = tokio::fs::read_to_string(&path).await else {
                 continue;
             };
-            match parse_workflow_file(&content) {
+            match parse_workflow_file(&content, Some(&file_id)) {
                 Ok(spec) => {
                     if self.workflows.contains_key(&spec.id) {
                         tracing::warn!(
-                            "workspace workflow id `{}` conflicts with existing builtin/workspace definition at {}; skipping",
+                            "workspace primitive id `{}` conflicts with existing builtin/workspace definition at {}; skipping",
                             spec.id,
                             path.display()
                         );
@@ -544,29 +603,38 @@ impl WorkflowStore {
                     }
                     self.workflows.insert(
                         spec.id.clone(),
-                        StoredWorkflow {
+                        StoredPrimitive {
                             spec,
                             path: Some(path),
-                            origin: WorkflowOrigin::Workspace,
+                            origin: PrimitiveOrigin::Workspace,
                         },
                     );
                 }
                 Err(err) => {
-                    tracing::warn!("failed to parse workflow file {}: {err:?}", path.display());
+                    tracing::warn!(
+                        "failed to parse primitive spec file {}: {err:?}",
+                        path.display()
+                    );
                 }
             }
         }
     }
 }
 
-fn load_builtin_workflows() -> BTreeMap<String, StoredWorkflow> {
+fn load_builtin_primitives() -> BTreeMap<String, StoredPrimitive> {
     let mut workflows = BTreeMap::new();
-    for (source_name, content) in builtin_workflow_bindings::BUILTIN_WORKFLOW_SOURCES {
-        match parse_workflow_file(content) {
+    for (source_name, content) in builtin_primitive_bindings::BUILTIN_PRIMITIVE_SOURCES {
+        if !is_valid_primitive_id(source_name) {
+            tracing::warn!(
+                "builtin primitive filename `{source_name}` is invalid; primitive ids may only use lowercase a-z and '-'"
+            );
+            continue;
+        }
+        match parse_workflow_file(content, Some(source_name)) {
             Ok(spec) => {
                 if workflows.contains_key(&spec.id) {
                     tracing::warn!(
-                        "duplicate builtin workflow id `{}` detected in source {}; keeping first definition",
+                        "duplicate builtin primitive id `{}` detected in source {}; keeping first definition",
                         spec.id,
                         source_name
                     );
@@ -574,16 +642,16 @@ fn load_builtin_workflows() -> BTreeMap<String, StoredWorkflow> {
                 }
                 workflows.insert(
                     spec.id.clone(),
-                    StoredWorkflow {
+                    StoredPrimitive {
                         spec,
                         path: None,
-                        origin: WorkflowOrigin::Builtin,
+                        origin: PrimitiveOrigin::Builtin,
                     },
                 );
             }
             Err(err) => {
                 tracing::warn!(
-                    "failed to parse builtin workflow source {}: {err:?}",
+                    "failed to parse builtin primitive source {}: {err:?}",
                     source_name
                 );
             }
@@ -592,14 +660,14 @@ fn load_builtin_workflows() -> BTreeMap<String, StoredWorkflow> {
     workflows
 }
 
-pub async fn load_workflow_run_batch() -> Result<WorkflowRunBatch> {
+pub async fn load_primitive_run_batch() -> Result<PrimitiveRunBatch> {
     let workflow_run_records_io_guard = workflow_run_records_io_lock().lock().await;
     let path = workflow_run_records_file_path().await;
     let bytes = match fs::read(&path).await {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             drop(workflow_run_records_io_guard);
-            return Ok(WorkflowRunBatch {
+            return Ok(PrimitiveRunBatch {
                 records: Vec::new(),
                 unread_record_count: 0,
                 next_offset: 0,
@@ -624,7 +692,7 @@ pub async fn load_workflow_run_batch() -> Result<WorkflowRunBatch> {
         if line.is_empty() {
             continue;
         }
-        let record: WorkflowRunRecord = serde_json::from_str(line).map_err(|err| {
+        let record: PrimitiveRunRecord = serde_json::from_str(line).map_err(|err| {
             miette!(
                 "failed to parse workflow run record from {}: {err}",
                 path.display()
@@ -634,14 +702,14 @@ pub async fn load_workflow_run_batch() -> Result<WorkflowRunBatch> {
     }
     let unread_record_count = records.len();
     drop(workflow_run_records_io_guard);
-    Ok(WorkflowRunBatch {
+    Ok(PrimitiveRunBatch {
         records,
         unread_record_count,
         next_offset: offset,
     })
 }
 
-pub async fn workflow_run_record_count() -> Result<usize> {
+pub async fn primitive_run_record_count() -> Result<usize> {
     let workflow_run_records_io_guard = workflow_run_records_io_lock().lock().await;
     let path = workflow_run_records_file_path().await;
     let file = match OpenOptions::new().read(true).open(&path).await {
@@ -674,7 +742,7 @@ pub async fn workflow_run_record_count() -> Result<usize> {
     Ok(records)
 }
 
-pub async fn append_workflow_run_records(records: &[WorkflowRunRecord]) -> Result<usize> {
+pub async fn append_primitive_run_records(records: &[PrimitiveRunRecord]) -> Result<usize> {
     if records.is_empty() {
         return Ok(0);
     }
@@ -703,7 +771,7 @@ pub async fn append_workflow_run_records(records: &[WorkflowRunRecord]) -> Resul
             if trimmed.is_empty() {
                 continue;
             }
-            let record: WorkflowRunRecord = serde_json::from_str(trimmed).map_err(|err| {
+            let record: PrimitiveRunRecord = serde_json::from_str(trimmed).map_err(|err| {
                 miette!(
                     "failed to parse workflow run record during dedupe {}: {err}",
                     path.display()
@@ -773,26 +841,40 @@ pub async fn compact_workflow_run_record_file(consumed_offset: u64) -> Result<()
     Ok(())
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct WorkflowFrontmatter {
-    id: String,
-}
-
-fn parse_workflow_file(content: &str) -> Result<WorkflowSpec> {
+fn parse_workflow_file(content: &str, expected_id: Option<&str>) -> Result<PrimitiveSpec> {
     let content = normalize_workflow_line_endings(content);
-    let (frontmatter_text, body) = split_frontmatter(content.as_ref())?;
-    let frontmatter: WorkflowFrontmatter = serde_yaml::from_str(frontmatter_text)
-        .map_err(|err| miette!("parse workflow frontmatter failed: {err}"))?;
+    let body = strip_optional_frontmatter(content.as_ref());
     let sections = parse_markdown_sections(body);
-    WorkflowSpec {
-        id: frontmatter.id,
+    let Some(expected_id) = expected_id else {
+        return Err(miette!(
+            "parse_workflow_file requires filename primitive id"
+        ));
+    };
+    let spec = PrimitiveSpec {
+        id: expected_id.to_string(),
         when_to_use: parse_markdown_list(sections.get("When To Use")),
         preconditions: parse_markdown_list(sections.get("Preconditions")),
-        workflow_steps: parse_markdown_list(sections.get("Workflow")),
+        primitive_steps: parse_markdown_list(sections.get("Workflow")),
         done_criteria: parse_markdown_list(sections.get("Done Criteria")),
         recovery: parse_markdown_list(sections.get("Recovery")),
     }
-    .normalize()
+    .normalize()?;
+    if spec.id != expected_id {
+        return Err(miette!(
+            "primitive filename id `{expected_id}` normalizes to `{}`, but primitive filenames must already use lowercase a-z and '-' only",
+            spec.id
+        ));
+    }
+    Ok(spec)
+}
+
+fn strip_optional_frontmatter(content: &str) -> &str {
+    let Some(rest) = content.strip_prefix("---\n") else {
+        return content;
+    };
+    rest.split_once("\n---\n")
+        .map(|(_, body)| body)
+        .unwrap_or(content)
 }
 
 fn normalize_workflow_line_endings(content: &str) -> Cow<'_, str> {
@@ -803,37 +885,31 @@ fn normalize_workflow_line_endings(content: &str) -> Cow<'_, str> {
     }
 }
 
-async fn write_workflow_file(path: &Path, spec: &WorkflowSpec) -> Result<()> {
+async fn write_workflow_file(path: &Path, spec: &PrimitiveSpec) -> Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|err| {
             miette!(
-                "create workflow directory {} failed: {err}",
+                "create primitive spec directory {} failed: {err}",
                 parent.display()
             )
         })?;
     }
 
-    let frontmatter = WorkflowFrontmatter {
-        id: spec.id.clone(),
-    };
-    let frontmatter_text = serde_yaml::to_string(&frontmatter)
-        .map_err(|err| miette!("serialize workflow frontmatter failed: {err}"))?;
     let body = render_workflow_markdown_body(spec);
-    let content = format!("---\n{}---\n\n{}", frontmatter_text, body);
     write_bytes_atomic(
         path.to_path_buf(),
-        content.into_bytes(),
+        body.into_bytes(),
         PersistenceFileMode::Default,
     )
     .await
-    .map_err(|err| miette!("write workflow file {} failed: {err}", path.display()))
+    .map_err(|err| miette!("write primitive spec file {} failed: {err}", path.display()))
 }
 
-fn render_workflow_markdown_body(spec: &WorkflowSpec) -> String {
+fn render_workflow_markdown_body(spec: &PrimitiveSpec) -> String {
     [
         render_section("When To Use", &spec.when_to_use, false),
         render_section("Preconditions", &spec.preconditions, false),
-        render_section("Workflow", &spec.workflow_steps, true),
+        render_section("Workflow", &spec.primitive_steps, true),
         render_section("Done Criteria", &spec.done_criteria, false),
         render_section("Recovery", &spec.recovery, false),
     ]
@@ -855,16 +931,6 @@ fn render_section(title: &str, items: &[String], ordered: bool) -> String {
         lines.extend(items.iter().map(|item| format!("- {item}")));
     }
     lines.join("\n")
-}
-
-fn split_frontmatter(content: &str) -> Result<(&str, &str)> {
-    let rest = content
-        .strip_prefix("---\n")
-        .ok_or_else(|| miette!("workflow file missing frontmatter start"))?;
-    let end = rest
-        .find("\n---\n")
-        .ok_or_else(|| miette!("workflow file missing frontmatter end"))?;
-    Ok((&rest[..end], &rest[end + 5..]))
 }
 
 fn parse_markdown_sections(body: &str) -> BTreeMap<String, String> {
@@ -914,11 +980,11 @@ fn parse_markdown_list(section: Option<&String>) -> Vec<String> {
         .collect()
 }
 
-fn workflow_content_equal(left: &WorkflowSpec, right: &WorkflowSpec) -> bool {
+fn workflow_content_equal(left: &PrimitiveSpec, right: &PrimitiveSpec) -> bool {
     left.id == right.id
         && left.when_to_use == right.when_to_use
         && left.preconditions == right.preconditions
-        && left.workflow_steps == right.workflow_steps
+        && left.primitive_steps == right.primitive_steps
         && left.done_criteria == right.done_criteria
         && left.recovery == right.recovery
 }
@@ -950,7 +1016,7 @@ fn compact_summary_text(text: &str) -> String {
     format!("{head}...")
 }
 
-fn workflow_route_score(spec: &WorkflowSpec, query_terms: &[String]) -> usize {
+fn workflow_route_score(spec: &PrimitiveSpec, query_terms: &[String]) -> usize {
     if query_terms.is_empty() {
         return 0;
     }
@@ -961,11 +1027,11 @@ fn workflow_route_score(spec: &WorkflowSpec, query_terms: &[String]) -> usize {
         .count()
 }
 
-fn workflow_relevance_text(spec: &WorkflowSpec) -> String {
+fn workflow_relevance_text(spec: &PrimitiveSpec) -> String {
     let mut parts = vec![spec.id.replace(['-', '_'], " ")];
     parts.extend(spec.when_to_use.iter().cloned());
     parts.extend(spec.preconditions.iter().cloned());
-    parts.extend(spec.workflow_steps.iter().cloned());
+    parts.extend(spec.primitive_steps.iter().cloned());
     parts.extend(spec.done_criteria.iter().cloned());
     parts.extend(spec.recovery.iter().cloned());
     parts.join("\n").to_lowercase()
@@ -1062,27 +1128,96 @@ fn is_stop_term(term: &str) -> bool {
     )
 }
 
-fn workflow_origin_sort_key(origin: WorkflowOrigin) -> u8 {
+fn workflow_origin_sort_key(origin: PrimitiveOrigin) -> u8 {
     match origin {
-        WorkflowOrigin::Builtin => 0,
-        WorkflowOrigin::Workspace => 1,
+        PrimitiveOrigin::Builtin => 0,
+        PrimitiveOrigin::Workspace => 1,
     }
 }
 
 fn normalize_identifier(value: &str) -> String {
-    value
-        .trim()
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
+    let mut normalized = String::new();
+    let mut previous_was_dash = true;
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphabetic() {
+            normalized.push(ch.to_ascii_lowercase());
+            previous_was_dash = false;
+        } else if (ch == '-' || ch.is_whitespace() || ch == '_') && !previous_was_dash {
+            normalized.push('-');
+            previous_was_dash = true;
+        }
+    }
+    if previous_was_dash {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn is_valid_primitive_id(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && value.chars().all(|ch| ch.is_ascii_lowercase() || ch == '-')
+}
+
+fn primitive_id_from_path(path: &Path) -> Option<String> {
+    let file_id = path.file_stem()?.to_str()?;
+    is_valid_primitive_id(file_id).then(|| file_id.to_string())
+}
+
+fn parse_primitive_composition(
+    composition: &str,
+    exists: impl Fn(&str) -> bool,
+) -> Result<Vec<String>> {
+    let composition = composition.trim();
+    if composition.is_empty() {
+        return Err(miette!(
+            "activate_composed_primitive requires non-empty primitive_id"
+        ));
+    }
+    if !is_valid_primitive_id(composition) {
+        return Err(miette!(
+            "primitive composition `{composition}` is invalid; use only lowercase a-z and '-'"
+        ));
+    }
+
+    fn segment<F: Fn(&str) -> bool>(
+        parts: &[&str],
+        index: usize,
+        exists: &F,
+    ) -> Option<Vec<String>> {
+        if index == parts.len() {
+            return Some(Vec::new());
+        }
+
+        for end in (index + 1..=parts.len()).rev() {
+            let candidate = parts[index..end].join("-");
+            if !exists(&candidate) {
+                continue;
             }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
+            if let Some(mut remainder) = segment(parts, end, exists) {
+                let mut primitive_ids = Vec::with_capacity(remainder.len() + 1);
+                primitive_ids.push(candidate);
+                primitive_ids.append(&mut remainder);
+                return Some(primitive_ids);
+            }
+        }
+        None
+    }
+
+    let parts = composition.split('-').collect::<Vec<_>>();
+    let Some(primitive_ids) = segment(&parts, 0, &exists) else {
+        return Err(miette!(
+            "primitive composition `{composition}` cannot be segmented into existing primitives"
+        ));
+    };
+
+    if primitive_ids.len() < 2 {
+        return Err(miette!(
+            "activate_composed_primitive composition requires at least two existing primitive ids joined by '-'"
+        ));
+    }
+    Ok(primitive_ids)
 }
 
 fn normalize_string_list(items: Vec<String>) -> Vec<String> {
@@ -1117,11 +1252,11 @@ async fn workflow_run_records_file_path() -> PathBuf {
         .await
         .state_dir()
         .join(WORKFLOWS_DIR_NAME)
-        .join(WORKFLOW_RUN_RECORDS_FILE_NAME)
+        .join(PRIMITIVE_RUN_RECORDS_FILE_NAME)
 }
 
 fn workflow_run_records_io_lock() -> &'static tokio::sync::Mutex<()> {
-    WORKFLOW_RUN_RECORDS_IO_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    PRIMITIVE_RUN_RECORDS_IO_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 #[cfg(test)]
@@ -1131,59 +1266,59 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn create_workflow_writes_markdown_and_can_reload() {
-        let temp_dir = TempDir::new().expect("create workflow temp dir");
+    async fn create_workflow_writes_primitive_markdown_and_can_reload() {
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
         let primary = temp_dir.path().join("workflows");
-        let mut store = WorkflowStore::open_scoped(primary.clone()).await;
+        let mut store = PrimitiveStore::open_scoped(primary.clone()).await;
         let created = store
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "repair-flaky-test-pipeline".to_string(),
                 when_to_use: vec!["flaky test failure".to_string()],
                 preconditions: vec!["failing logs available".to_string()],
-                workflow_steps: vec!["collect evidence".to_string(), "verify fix".to_string()],
+                primitive_steps: vec!["collect evidence".to_string(), "verify fix".to_string()],
                 done_criteria: vec!["result is stable".to_string()],
                 recovery: vec!["return to previous stable state".to_string()],
             })
             .await
-            .expect("create workflow");
+            .expect("create primitive spec");
 
         assert_eq!(created.id, "repair-flaky-test-pipeline");
         assert!(primary.join("repair-flaky-test-pipeline.md").exists());
 
-        let reloaded = WorkflowStore::open_scoped(primary.clone()).await;
+        let reloaded = PrimitiveStore::open_scoped(primary.clone()).await;
         let loaded = reloaded
             .get("repair-flaky-test-pipeline")
-            .expect("reloaded workflow");
-        assert_eq!(loaded.workflow_steps.len(), 2);
+            .expect("reloaded primitive spec");
+        assert_eq!(loaded.primitive_steps.len(), 2);
     }
 
     #[tokio::test]
     async fn primitive_routing_catalog_includes_all_ids_and_ranks_relevant_primitives() {
-        let temp_dir = TempDir::new().expect("create workflow temp dir");
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
         let primary = temp_dir.path().join("workflows");
-        let mut store = WorkflowStore::open_scoped(primary).await;
+        let mut store = PrimitiveStore::open_scoped(primary).await;
         store
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "zephyr-quartz-inspection".to_string(),
                 when_to_use: vec!["inspect zephyr quartz artifacts".to_string()],
                 preconditions: vec!["artifact path is known".to_string()],
-                workflow_steps: vec!["inspect artifact metadata".to_string()],
+                primitive_steps: vec!["inspect artifact metadata".to_string()],
                 done_criteria: vec!["artifact findings are summarized".to_string()],
                 recovery: vec![],
             })
             .await
-            .expect("create matching workflow");
+            .expect("create matching primitive spec");
         store
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "unrelated-ritual".to_string(),
                 when_to_use: vec!["handle unrelated ritual tasks".to_string()],
                 preconditions: vec![],
-                workflow_steps: vec!["perform unrelated step".to_string()],
+                primitive_steps: vec!["perform unrelated step".to_string()],
                 done_criteria: vec!["unrelated result exists".to_string()],
                 recovery: vec![],
             })
             .await
-            .expect("create unrelated workflow");
+            .expect("create unrelated primitive spec");
 
         let catalog = store.primitive_routing_catalog("please inspect zephyr quartz", 8);
         let primitive_ids = catalog
@@ -1204,13 +1339,68 @@ mod tests {
         assert_eq!(catalog.total_count, catalog.primitive_ids.len());
     }
 
+    #[tokio::test]
+    async fn compose_primitives_returns_existing_filename_sequence() {
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
+        let primary = temp_dir.path().join("workflows");
+        let mut store = PrimitiveStore::open_scoped(primary).await;
+        store
+            .create_workflow(NewPrimitiveSpec {
+                id: "inspect-local-project".to_string(),
+                when_to_use: vec!["inspect project".to_string()],
+                preconditions: vec![],
+                primitive_steps: vec!["inspect files".to_string()],
+                done_criteria: vec!["findings exist".to_string()],
+                recovery: vec![],
+            })
+            .await
+            .expect("create inspect primitive");
+        store
+            .create_workflow(NewPrimitiveSpec {
+                id: "run-required-checks".to_string(),
+                when_to_use: vec!["run checks".to_string()],
+                preconditions: vec![],
+                primitive_steps: vec!["run tests".to_string()],
+                done_criteria: vec!["checks pass".to_string()],
+                recovery: vec![],
+            })
+            .await
+            .expect("create checks primitive");
+
+        let composition = store
+            .compose_primitives("inspect-local-project-run-required-checks")
+            .expect("compose primitives");
+
+        assert_eq!(
+            composition.composition_id,
+            "inspect-local-project-run-required-checks"
+        );
+        assert_eq!(
+            composition.primitive_ids,
+            vec!["inspect-local-project", "run-required-checks"]
+        );
+    }
+
+    #[tokio::test]
+    async fn compose_primitives_rejects_non_filename_input() {
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
+        let primary = temp_dir.path().join("workflows");
+        let store = PrimitiveStore::open_scoped(primary).await;
+
+        let err = store
+            .compose_primitives("inspect_local_project-run-required-checks")
+            .expect_err("underscores are not legal primitive filename syntax");
+
+        assert!(err.to_string().contains("use only lowercase a-z and '-'"));
+    }
+
     #[test]
     fn primitive_summary_exposes_primitive_io_contract() {
-        let summary = WorkflowSpec {
+        let summary = PrimitiveSpec {
             id: "modify-local-project".to_string(),
             when_to_use: vec!["local project needs edits".to_string()],
             preconditions: vec!["project path is known".to_string()],
-            workflow_steps: vec![
+            primitive_steps: vec![
                 "inspect relevant code".to_string(),
                 "apply targeted edits".to_string(),
                 "avoid unrelated files".to_string(),
@@ -1230,34 +1420,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn builtin_workflow_ids_cannot_be_overwritten() {
-        let temp_dir = TempDir::new().expect("create workflow temp dir");
+    async fn builtin_primitive_ids_cannot_be_overwritten() {
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
         let primary = temp_dir.path().join("workflows");
-        let mut store = WorkflowStore::open_scoped(primary).await;
+        let mut store = PrimitiveStore::open_scoped(primary).await;
 
         let err = store
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "author-workspace-app".to_string(),
                 when_to_use: vec!["test".to_string()],
                 preconditions: vec![],
-                workflow_steps: vec!["step".to_string()],
+                primitive_steps: vec!["step".to_string()],
                 done_criteria: vec!["done".to_string()],
                 recovery: vec![],
             })
             .await
-            .expect_err("builtin workflow id should be reserved");
+            .expect_err("builtin primitive id should be reserved");
 
         assert!(err.to_string().contains("already exists"));
     }
 
     #[tokio::test]
-    async fn builtin_workflows_are_read_only() {
-        let temp_dir = TempDir::new().expect("create workflow temp dir");
+    async fn builtin_primitives_are_read_only() {
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
         let primary = temp_dir.path().join("workflows");
-        let mut store = WorkflowStore::open_scoped(primary).await;
+        let mut store = PrimitiveStore::open_scoped(primary).await;
 
         let err = store
-            .apply_patch(WorkflowPatch {
+            .apply_patch(PrimitiveSpecPatch {
                 workflow_id: "author-workspace-app".to_string(),
                 when_to_use_additions: vec!["extra".to_string()],
                 precondition_additions: Vec::new(),
@@ -1266,22 +1456,22 @@ mod tests {
                 recovery_additions: Vec::new(),
             })
             .await
-            .expect_err("builtin workflow patch should be rejected");
+            .expect_err("builtin primitive patch should be rejected");
 
         assert!(err.to_string().contains("read-only"));
     }
 
     #[tokio::test]
-    async fn replace_workspace_workflow_rewrites_complete_spec() {
-        let temp_dir = TempDir::new().expect("create workflow temp dir");
+    async fn replace_workspace_primitive_spec_rewrites_complete_spec() {
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
         let primary = temp_dir.path().join("workflows");
-        let mut store = WorkflowStore::open_scoped(primary.clone()).await;
+        let mut store = PrimitiveStore::open_scoped(primary.clone()).await;
         store
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "search-todays-news".to_string(),
                 when_to_use: vec!["search current news".to_string()],
                 preconditions: vec!["network is available".to_string()],
-                workflow_steps: vec![
+                primitive_steps: vec![
                     "search aggregator".to_string(),
                     "repeat fallback searches".to_string(),
                 ],
@@ -1289,16 +1479,16 @@ mod tests {
                 recovery: vec!["keep searching".to_string()],
             })
             .await
-            .expect("create workflow");
+            .expect("create primitive");
 
         let updated = store
             .replace_workspace_workflow(
                 "search-todays-news",
-                WorkflowSpec {
+                PrimitiveSpec {
                     id: "search-todays-news".to_string(),
                     when_to_use: vec!["user asks for today's news".to_string()],
                     preconditions: vec!["date scope is known".to_string()],
-                    workflow_steps: vec![
+                    primitive_steps: vec![
                         "choose approved news sources".to_string(),
                         "verify publication dates".to_string(),
                         "send concise summary".to_string(),
@@ -1308,22 +1498,22 @@ mod tests {
                 },
             )
             .await
-            .expect("replace workflow");
+            .expect("replace primitive spec");
 
-        assert_eq!(updated.workflow_steps.len(), 3);
+        assert_eq!(updated.primitive_steps.len(), 3);
         assert!(
             !updated
-                .workflow_steps
+                .primitive_steps
                 .iter()
                 .any(|step| step == "repeat fallback searches")
         );
 
-        let reloaded = WorkflowStore::open_scoped(primary).await;
+        let reloaded = PrimitiveStore::open_scoped(primary).await;
         let loaded = reloaded
             .get("search-todays-news")
-            .expect("reloaded updated workflow");
+            .expect("reloaded updated primitive spec");
         assert_eq!(
-            loaded.workflow_steps,
+            loaded.primitive_steps,
             vec![
                 "choose approved news sources",
                 "verify publication dates",
@@ -1333,25 +1523,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replace_rejects_builtin_workflow() {
-        let temp_dir = TempDir::new().expect("create workflow temp dir");
+    async fn replace_rejects_builtin_primitive() {
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
         let primary = temp_dir.path().join("workflows");
-        let mut store = WorkflowStore::open_scoped(primary).await;
+        let mut store = PrimitiveStore::open_scoped(primary).await;
 
         let err = store
             .replace_workspace_workflow(
                 "author-workspace-app",
-                WorkflowSpec {
+                PrimitiveSpec {
                     id: "author-workspace-app".to_string(),
                     when_to_use: vec!["test".to_string()],
                     preconditions: vec![],
-                    workflow_steps: vec!["step".to_string()],
+                    primitive_steps: vec!["step".to_string()],
                     done_criteria: vec!["done".to_string()],
                     recovery: vec![],
                 },
             )
             .await
-            .expect_err("builtin workflow update should be rejected");
+            .expect_err("builtin primitive update should be rejected");
 
         assert!(err.to_string().contains("read-only"));
     }
@@ -1359,37 +1549,50 @@ mod tests {
     #[test]
     fn parse_workflow_file_accepts_crlf_line_endings() {
         let spec = parse_workflow_file(
-            "---\r\nid: crlf-workflow\r\n---\r\n\r\n## When To Use\r\n- Windows checkout\r\n\r\n## Preconditions\r\n- A workflow file uses CRLF\r\n\r\n## Workflow\r\n1. Parse frontmatter\r\n\r\n## Done Criteria\r\n- Workflow is loaded\r\n\r\n## Recovery\r\n- Retry with normalized line endings\r\n",
+            "---\r\nid: ignored-frontmatter\r\n---\r\n\r\n## When To Use\r\n- Windows checkout\r\n\r\n## Preconditions\r\n- A primitive spec file uses CRLF\r\n\r\n## Workflow\r\n1. Parse frontmatter\r\n\r\n## Done Criteria\r\n- Primitive spec is loaded\r\n\r\n## Recovery\r\n- Retry with normalized line endings\r\n",
+            Some("crlf-workflow"),
         )
         .expect("parse CRLF workflow");
 
         assert_eq!(spec.id, "crlf-workflow");
-        assert_eq!(spec.workflow_steps, vec!["Parse frontmatter"]);
-        assert_eq!(spec.done_criteria, vec!["Workflow is loaded"]);
+        assert_eq!(spec.primitive_steps, vec!["Parse frontmatter"]);
+        assert_eq!(spec.done_criteria, vec!["Primitive spec is loaded"]);
+    }
+
+    #[test]
+    fn parse_workflow_file_uses_filename_id_over_frontmatter() {
+        let spec = parse_workflow_file(
+            "---\nid: arbitrary-content-id\nnotes: unrestricted\n---\n\n## When To Use\n- Any markdown content may differ from filename identity\n\n## Workflow\n- Load body\n\n## Done Criteria\n- Filename identity wins\n",
+            Some("filename-identity"),
+        )
+        .expect("parse primitive spec with arbitrary frontmatter");
+
+        assert_eq!(spec.id, "filename-identity");
+        assert_eq!(spec.primitive_steps, vec!["Load body"]);
     }
 
     #[tokio::test]
-    async fn merge_workflows_deletes_sources_and_updates_target() {
-        let temp_dir = TempDir::new().expect("create workflow temp dir");
+    async fn merge_primitives_deletes_sources_and_updates_target() {
+        let temp_dir = TempDir::new().expect("create primitive temp dir");
         let primary = temp_dir.path().join("workflows");
-        let mut store = WorkflowStore::open_scoped(primary.clone()).await;
+        let mut store = PrimitiveStore::open_scoped(primary.clone()).await;
         let target = store
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "investigate-runtime-failure".to_string(),
                 when_to_use: vec!["runtime failure".to_string()],
                 preconditions: vec![],
-                workflow_steps: vec!["collect logs".to_string()],
+                primitive_steps: vec!["collect logs".to_string()],
                 done_criteria: vec!["cause is clear".to_string()],
                 recovery: vec![],
             })
             .await
             .expect("create target");
         let source = store
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: "investigate-runtime-errors".to_string(),
                 when_to_use: vec!["runtime error".to_string()],
                 preconditions: vec![],
-                workflow_steps: vec!["locate root cause".to_string()],
+                primitive_steps: vec!["locate root cause".to_string()],
                 done_criteria: vec!["fix direction is clear".to_string()],
                 recovery: vec!["rollback".to_string()],
             })
@@ -1403,11 +1606,11 @@ mod tests {
                 Some("duplicate".to_string()),
             )
             .await
-            .expect("merge workflows");
+            .expect("merge primitives");
 
         assert!(
             merged
-                .workflow_steps
+                .primitive_steps
                 .iter()
                 .any(|item| item == "locate root cause")
         );
@@ -1423,13 +1626,13 @@ mod tests {
             env::set_var("DAAT_LOCUS_HOME", temp_dir.path());
         }
 
-        let record = WorkflowRunRecord {
+        let record = PrimitiveRunRecord {
             run_id: "workflow-run:run-1".to_string(),
             workflow_id: "repair-flaky-test-pipeline".to_string(),
             started_at_ms: 1,
             ended_at_ms: 2,
             origin: "event:test".to_string(),
-            outcome: WorkflowRunOutcome::Completed,
+            outcome: PrimitiveRunOutcome::Completed,
             turn_count: 2,
             tool_action_count: 3,
             manual_fix_detected: false,
@@ -1441,25 +1644,25 @@ mod tests {
         later_record.run_id = "workflow-run:run-2".to_string();
         later_record.origin = "event:later".to_string();
 
-        append_workflow_run_records(&[record.clone(), record.clone()])
+        append_primitive_run_records(&[record.clone(), record.clone()])
             .await
             .expect("append workflow run records");
-        let batch = load_workflow_run_batch()
+        let batch = load_primitive_run_batch()
             .await
             .expect("load workflow run records");
-        let count = workflow_run_record_count()
+        let count = primitive_run_record_count()
             .await
             .expect("count workflow run records");
-        append_workflow_run_records(&[later_record.clone()])
+        append_primitive_run_records(&[later_record.clone()])
             .await
             .expect("append later workflow run record");
         compact_workflow_run_record_file(batch.next_offset)
             .await
             .expect("compact consumed workflow run records");
-        let remaining_batch = load_workflow_run_batch()
+        let remaining_batch = load_primitive_run_batch()
             .await
             .expect("load remaining workflow run records");
-        let remaining_count = workflow_run_record_count()
+        let remaining_count = primitive_run_record_count()
             .await
             .expect("count remaining workflow run records");
 

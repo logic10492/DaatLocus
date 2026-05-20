@@ -238,9 +238,9 @@ and rendered by the runtime, not guessed by the model from memory.
 
 ### Workflow
 
-Workflow is an execution specification for a reusable class of tasks. It is not
-an App manual, not an innate model capability, and not a long-term copy of the
-current plan.
+Workflow is the runtime binding and evolution layer for reusable SOP primitives.
+Persisted specs are primitive specifications, not App manuals, not
+innate model capabilities, and not long-term copies of the current plan.
 
 Workflow answers:
 
@@ -252,17 +252,17 @@ Workflow answers:
 
 Daat Locus separates three workflow layers:
 
-- **WorkflowSpec**: the workflow itself, an execution specification readable by
-  the agent;
+- **PrimitiveSpec**: a persisted SOP primitive specification readable by the
+  agent;
 - **WorkflowBinding**: whether the current task is bound to a workflow, a piece
   of runtime state;
-- **WorkflowRunRecord**: evidence left after daytime execution for sleep-time
+- **PrimitiveRunRecord**: evidence left after daytime execution for sleep-time
   workflow improvement.
 
-This layering matters. WorkflowSpec does not carry runtime state such as
+This layering matters. PrimitiveSpec does not carry runtime state such as
 "currently active"; WorkflowBinding should not be written back into the
-workflow itself; WorkflowRunRecord is recorded automatically by the runtime and
-should not be manually written by the model.
+primitive spec itself; PrimitiveRunRecord is recorded automatically by the
+runtime and should not be manually written by the model.
 
 ## App Model
 
@@ -387,25 +387,25 @@ Workflow is the executable carrier for that experience.
 
 ### Workflow Is Not Prompt
 
-A Workflow can be read by the model, but it is not an ordinary prompt. It is an
-execution asset managed by the runtime, with an id, applicability, procedure,
-completion criteria, and evolution history.
+A PrimitiveSpec can be read by the model, but it is not an ordinary prompt. It is
+a primitive specification asset managed by the runtime, with an id,
+applicability, procedure, completion criteria, and evolution history.
 
-This means a workflow can be selected, bound, have execution results recorded,
-and be corrected during sleep.
+This means a primitive can be selected, bound, have execution results recorded,
+and have its spec corrected during sleep.
 
-### Builtin Workflows And Workspace Workflows
+### Builtin Primitives And Workspace Primitive Specs
 
-Daat Locus distinguishes foundational builtin workflows from evolvable
-workspace workflows.
+Daat Locus distinguishes foundational builtin SOP primitives from evolvable
+workspace primitive specs.
 
-Builtin workflows are more like a base capability layer. They are usually
+Builtin primitives are more like a base capability layer. They are usually
 shipped with the code repository and should not be automatically modified by
 sleep.
 
-Workspace workflows are local execution experience distilled from long-term
-practice. They can be gradually improved through human-in-loop and sleep
-mechanisms.
+Workspace primitive specs are local execution experience distilled from
+long-term practice. They can be gradually improved through human-in-loop and
+sleep mechanisms.
 
 ### Workflow Evolution
 
@@ -454,7 +454,7 @@ Daat Locus splits sleep-time improvement into two independent paths:
 
 - **Runtime Error Correction**: corrects global runtime contracts and tool
   protocol constraints to prevent repeated runtime errors of the same kind;
-- **Workflow Improvement**: improves workspace workflows based on workflow
+- **Workflow Improvement**: improves workspace primitive specs based on workflow
   execution records, making repeated task processes better match practice.
 
 These paths must not be confused. A runtime protocol error should not directly
@@ -535,8 +535,8 @@ Persistent state usually falls into two categories:
 
 - **protected runtime state**: configuration, events, memory, transport state,
   sleep artifacts, and similar runtime-owned data;
-- **editable workspace assets**: workspace apps, workspace workflows, project
-  files, and similar agent-editable assets.
+- **editable workspace assets**: workspace apps, workspace primitive specs,
+  project files, and similar agent-editable assets.
 
 This distinction matters. Runtime state should not be casually rewritten by the
 agent as ordinary project files. Workspace assets can be edited and evolved by

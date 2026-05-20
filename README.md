@@ -111,7 +111,7 @@ run `cargo build -p daat-locus --release --locked` directly.
 
 - [简体中文 README](README_zh-CN.md)
 - [Architecture](docs/architecture.md)
-- [Builtin workflows](workflows/README.md)
+- [Builtin SOP primitive specs](workflows/README.md)
 
 ## License
 

@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::reasoning::{ir::PromptIR, program::Program, signature::Signature};
 
-const WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_SYSTEM_PROMPT: &str = r#"You are responsible for single-case rollout evaluation of a workflow frontier candidate.
+const WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_SYSTEM_PROMPT: &str = r#"You are responsible for single-case rollout evaluation of a SOP primitive frontier candidate.
 The candidate may be a patch or a merge. You will see:
-- target workflow spec after rollout
+- target primitive spec after rollout
 - rollout result summary
 - target reflection
 - a concrete target rollout case containing flushed run record, executed steps, and boundary events
-- for merges, source workflow spec, source reflection, and one source rollout case
+- for merges, source primitive spec, source reflection, and one source rollout case
 - the candidate itself
 
 Your task is to judge:
@@ -42,19 +42,19 @@ impl Program for WorkflowCandidateRolloutEvaluatorProgram {
     }
 
     fn description(&self) -> &'static str {
-        "Evaluate a workflow frontier candidate against a single workflow rollout case."
+        "Evaluate a SOP primitive frontier candidate against a single primitive rollout case."
     }
 
     fn signature(&self) -> Signature {
-        Signature::new("Perform single-case rollout evaluation for a workflow frontier candidate.")
+        Signature::new("Perform single-case rollout evaluation for a SOP primitive frontier candidate.")
             .input("candidate kind", "patch or merge.")
             .input(
-                "rollout target workflow spec",
-                "Target workflow spec after the candidate was actually applied.",
+                "rollout target primitive spec",
+                "Target primitive spec after the candidate was actually applied.",
             )
             .input(
                 "rollout result",
-                "Summary of the candidate's actual application result in an isolated workflow store.",
+                "Summary of the candidate's actual application result in an isolated primitive store.",
             )
             .input("target reflection", "Target workflow reflection.")
             .input(
@@ -62,8 +62,8 @@ impl Program for WorkflowCandidateRolloutEvaluatorProgram {
                 "A concrete target workflow rollout case containing run record, executed steps, and boundary events.",
             )
             .input(
-                "source workflow spec",
-                "Source workflow spec for merges; otherwise none.",
+                "source primitive spec",
+                "Source primitive spec for merges; otherwise none.",
             )
             .input(
                 "source reflection",
@@ -100,14 +100,17 @@ impl WorkflowCandidateRolloutEvaluatorProgram {
     ) -> PromptIR {
         let mut ir = PromptIR::with_system(WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_SYSTEM_PROMPT);
         ir.push_instruction(
-            "The goal is to evaluate candidate behavior on a concrete rollout case; rollout target workflow spec is the real result after applying the candidate.",
+            "The goal is to evaluate candidate behavior on a concrete rollout case; rollout target primitive spec is the real result after applying the candidate.",
         );
         ir.push_section("candidate kind", candidate_kind);
-        ir.push_section("rollout target workflow spec", rollout_target_workflow_spec);
+        ir.push_section(
+            "rollout target primitive spec",
+            rollout_target_workflow_spec,
+        );
         ir.push_section("rollout result", rollout_result);
         ir.push_section("target reflection", target_reflection_json);
         ir.push_section("target rollout case", target_rollout_case_json);
-        ir.push_section("source workflow spec", source_workflow_spec);
+        ir.push_section("source primitive spec", source_workflow_spec);
         ir.push_section("source reflection", source_reflection_json);
         ir.push_section("source rollout case", source_rollout_case_json);
         ir.push_section("candidate", candidate_json);

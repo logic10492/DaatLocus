@@ -11,8 +11,8 @@ use crate::{
     persistence::PersistenceStore,
     reasoning::runtime::{AgentMessage, AgentToolSpec, HistoryMessage},
     tool_ui::{
-        ActivateWorkflowUiData, CreateWorkflowUiData, PatchUiData, PlanUiData, TelegramUiData,
-        TerminalUiData, ToolCallUiEvent, ToolUiData, ToolUiEvent,
+        ActivatePrimitiveUiData, CreatePrimitiveSpecUiData, PatchUiData, PlanUiData,
+        TelegramUiData, TerminalUiData, ToolCallUiEvent, ToolUiData, ToolUiEvent,
     },
 };
 use chrono::Utc;
@@ -968,11 +968,11 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
             crate::tool_ui::AppAttentionUiAction::PutAway => "put away focused app".to_string(),
         },
         ToolUiEvent::Plan(PlanUiData { steps }) => format!("plan with {} step(s)", steps.len()),
-        ToolUiEvent::CreateWorkflow(CreateWorkflowUiData { workflow_id }) => {
-            format!("created workflow {workflow_id}")
+        ToolUiEvent::CreateWorkflow(CreatePrimitiveSpecUiData { workflow_id }) => {
+            format!("created primitive spec {workflow_id}")
         }
-        ToolUiEvent::ActivateWorkflow(ActivateWorkflowUiData { workflow_id }) => {
-            format!("activated workflow {workflow_id}")
+        ToolUiEvent::ActivateWorkflow(ActivatePrimitiveUiData { workflow_id }) => {
+            format!("activated primitive {workflow_id}")
         }
         ToolUiEvent::Terminal(data) => summarize_runtime_inline_text(&data.title),
         ToolUiEvent::Patch(data) => summarize_runtime_inline_text(&data.summary_line),

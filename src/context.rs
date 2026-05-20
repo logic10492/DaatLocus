@@ -30,7 +30,7 @@ use crate::{
     sandbox::RuntimeSandboxPolicy,
     telegram_acl::TelegramAclHandle,
     telegram_transport::state::TelegramTransportStateHandle,
-    workflow::{WorkflowRunOutcome, WorkflowSpec, WorkflowStore},
+    workflow::{PrimitiveComposition, PrimitiveRunOutcome, PrimitiveSpec, PrimitiveStore},
     workspace_app::WorkspaceAppRegistry,
 };
 
@@ -61,10 +61,11 @@ pub struct Context {
     pub plan: Plan,
     pub events: EventStore,
     pub pending_work: PendingWorkQueue,
-    pub workflows: WorkflowStore,
-    pub bound_workflow_id: Option<String>,
-    pub active_workflow_run: Option<ActiveWorkflowRunSession>,
-    pub pending_workflow_run_flushes: Vec<PendingWorkflowRunFlush>,
+    pub workflows: PrimitiveStore,
+    pub bound_primitive_id: Option<String>,
+    pub bound_primitive_composition: Option<PrimitiveComposition>,
+    pub active_primitive_run: Option<ActivePrimitiveRunSession>,
+    pub pending_primitive_run_flushes: Vec<PendingPrimitiveRunFlush>,
     pub current_work_origin: Option<String>,
     pub workflow_step_started_bound_id: Option<String>,
     pub apps: AppManager,
@@ -104,7 +105,7 @@ pub struct TelegramLiveDraftRecord {
 pub type TelegramLiveDraftRegistry = Arc<Mutex<HashMap<String, TelegramLiveDraftRecord>>>;
 
 #[derive(Debug, Clone)]
-pub struct ActiveWorkflowRunSession {
+pub struct ActivePrimitiveRunSession {
     pub run_id: String,
     pub workflow_id: String,
     pub started_at_ms: i64,
@@ -118,9 +119,9 @@ pub struct ActiveWorkflowRunSession {
 }
 
 #[derive(Debug, Clone)]
-pub struct PendingWorkflowRunFlush {
-    pub session: ActiveWorkflowRunSession,
-    pub outcome: WorkflowRunOutcome,
+pub struct PendingPrimitiveRunFlush {
+    pub session: ActivePrimitiveRunSession,
+    pub outcome: PrimitiveRunOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -167,22 +168,35 @@ impl Context {
         PreTurnContextAssembler::default_runtime().assemble(self, state)
     }
 
-    pub fn bound_workflow(&self) -> Option<&WorkflowSpec> {
-        self.bound_workflow_id
+    pub fn bound_primitive(&self) -> Option<&PrimitiveSpec> {
+        self.bound_primitive_id
             .as_deref()
             .and_then(|workflow_id| self.workflows.get(workflow_id))
     }
 
-    pub fn begin_workflow_run_session(&mut self, workflow_id: impl Into<String>) {
+    pub fn bound_primitive_composition_specs(&self) -> Vec<&PrimitiveSpec> {
+        self.bound_primitive_composition
+            .as_ref()
+            .map(|composition| {
+                composition
+                    .primitive_ids
+                    .iter()
+                    .filter_map(|primitive_id| self.workflows.get(primitive_id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn begin_composed_primitive_run_session(&mut self, workflow_id: impl Into<String>) {
         let workflow_id = workflow_id.into();
         if self
-            .active_workflow_run
+            .active_primitive_run
             .as_ref()
             .is_some_and(|session| session.workflow_id == workflow_id)
         {
             return;
         }
-        self.active_workflow_run = Some(ActiveWorkflowRunSession {
+        self.active_primitive_run = Some(ActivePrimitiveRunSession {
             run_id: format!("workflow-run:{}", uuid::Uuid::new_v4()),
             workflow_id,
             started_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -199,10 +213,10 @@ impl Context {
         });
     }
 
-    pub fn queue_active_workflow_run_for_flush(&mut self, outcome: WorkflowRunOutcome) {
-        if let Some(session) = self.active_workflow_run.take() {
-            self.pending_workflow_run_flushes
-                .push(PendingWorkflowRunFlush { session, outcome });
+    pub fn queue_active_primitive_run_for_flush(&mut self, outcome: PrimitiveRunOutcome) {
+        if let Some(session) = self.active_primitive_run.take() {
+            self.pending_primitive_run_flushes
+                .push(PendingPrimitiveRunFlush { session, outcome });
         }
     }
 

@@ -137,7 +137,7 @@ pub fn runtime_system_prompt_doc_from_additions(additions: &[String]) -> PromptD
             vec![PromptBlock::Paragraph(PLAN_UNIT_HOW.to_string())],
         )),
         PromptNode::Unit(PromptUnitDoc::new(
-            "workflow",
+            "primitive",
             vec![PromptBlock::Paragraph(WORKFLOW_UNIT_WHAT.to_string())],
             Vec::new(),
             vec![PromptBlock::Paragraph(WORKFLOW_UNIT_WHEN.to_string())],

@@ -5,7 +5,7 @@ pub(super) async fn run_workflow_improvement_pipeline(
     planner: &dyn SleepPlannerRuntime,
     store: &EvaluationArtifactsStore,
 ) -> Result<WorkflowImprovementSummary> {
-    let run_batch = load_workflow_run_batch().await?;
+    let run_batch = load_primitive_run_batch().await?;
     let workflow_optimization =
         optimize_workflows_from_run_records(context, planner, &run_batch.records).await?;
     store

@@ -3,17 +3,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::reasoning::{ir::PromptIR, program::Program, signature::Signature};
 
-const WORKFLOW_EVOLUTION_PLANNER_SYSTEM_PROMPT: &str = r#"You are responsible for sleep-time optimization planning for a single workflow.
-Based on the workflow spec and its corresponding WorkflowRunRecord evidence, produce:
+const WORKFLOW_EVOLUTION_PLANNER_SYSTEM_PROMPT: &str = r#"You are responsible for sleep-time optimization planning for a single SOP primitive.
+Based on the primitive spec and its corresponding PrimitiveRunRecord evidence, produce:
 1. one structured reflection
 2. patch candidates
 3. evaluations for those patch candidates
 
 Requirements:
-- Diagnose which workflow sections are insufficient before proposing patch candidates.
-- Patches must express incremental spec changes only; do not rewrite the entire workflow.
+- Diagnose which primitive spec sections are insufficient before proposing patch candidates.
+- Patches must express incremental spec changes only; do not rewrite the entire primitive.
 - Evaluations must explicitly state which candidate should be selected.
-- If the current workflow is not worth changing, output should_optimize=false."#;
+- If the current primitive is not worth changing, output should_optimize=false."#;
 
 pub struct WorkflowEvolutionPlannerProgram;
 
@@ -23,7 +23,7 @@ pub struct WorkflowPlannerReflection {
     #[serde(default)]
     pub missing_preconditions: Vec<String>,
     #[serde(default)]
-    pub weak_workflow_steps: Vec<String>,
+    pub weak_primitive_steps: Vec<String>,
     #[serde(default)]
     pub weak_done_criteria: Vec<String>,
     #[serde(default)]
@@ -77,24 +77,24 @@ impl Program for WorkflowEvolutionPlannerProgram {
     }
 
     fn description(&self) -> &'static str {
-        "Generate reflection, patch candidates, and evaluations from a workflow spec and run evidence."
+        "Generate reflection, patch candidates, and evaluations from a primitive spec and run evidence."
     }
 
     fn signature(&self) -> Signature {
-        Signature::new("Generate sleep optimization planning for a single workflow.")
-            .input("workflow id", "Current workflow id.")
-            .input("workflow spec", "Current workflow spec.")
+        Signature::new("Generate sleep optimization planning for a single SOP primitive.")
+            .input("workflow id", "Current primitive id.")
+            .input("primitive spec", "Current primitive spec.")
             .input(
                 "workflow run evidence",
-                "Recent run-level evidence for this workflow.",
+                "Recent run-level evidence for this primitive.",
             )
             .output(
                 "should_optimize",
-                "Whether the current workflow is worth optimizing.",
+                "Whether the current primitive is worth optimizing.",
             )
             .output(
                 "reflection",
-                "Structured reflection on weaknesses in the workflow spec.",
+                "Structured reflection on weaknesses in the primitive spec.",
             )
             .output(
                 "patch_candidates",
@@ -118,14 +118,14 @@ impl WorkflowEvolutionPlannerProgram {
     ) -> PromptIR {
         let mut ir = PromptIR::with_system(WORKFLOW_EVOLUTION_PLANNER_SYSTEM_PROMPT);
         ir.push_instruction(
-            "Focus on the preconditions, workflow steps, done criteria, and recovery sections.",
+            "Focus on the preconditions, workflow steps, done criteria, and recovery sections of the primitive spec.",
         );
         ir.push_instruction("Patch candidates should be small and precise; do not repeat the same meaning across multiple sections.");
         ir.push_instruction(
-            "If the evidence shows the workflow itself is stable, set should_optimize=false.",
+            "If the evidence shows the primitive itself is stable, set should_optimize=false.",
         );
         ir.push_section("workflow id", workflow_id);
-        ir.push_section("workflow spec", workflow_spec_markdown);
+        ir.push_section("primitive spec", workflow_spec_markdown);
         ir.push_section("workflow run evidence", workflow_run_evidence_json);
         ir
     }

@@ -4,7 +4,8 @@ use crate::{
     app::AppId,
     apply_patch::summarize_apply_patch_error,
     context::{
-        ActiveWorkflowRunSession, AppNoticeKey, Context, PendingWorkflowRunFlush, RuntimeTurnPhase,
+        ActivePrimitiveRunSession, AppNoticeKey, Context, PendingPrimitiveRunFlush,
+        RuntimeTurnPhase,
     },
     context_budget::{
         TokenEstimateBaseline, estimate_agent_turn_request, is_context_budget_exceeded,
@@ -58,7 +59,7 @@ use crate::{
     },
     telegram_transport::TelegramLiveDraftClient,
     tool_ui::{ToolCallUiEvent, ToolUiEvent, compact_body_lines},
-    workflow::{WorkflowRunRecord, append_workflow_run_records},
+    workflow::{PrimitiveRunRecord, append_primitive_run_records},
     workspace_app::{WorkspaceAppInvalidation, WorkspaceAppRegistry},
 };
 use chrono::Utc;

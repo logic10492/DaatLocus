@@ -25,7 +25,7 @@ use crate::{
     telegram_acl::TelegramAclHandle,
     telegram_transport::state::TelegramTransportState,
     terminal_app::TerminalApp,
-    workflow::WorkflowStore,
+    workflow::PrimitiveStore,
     workspace_app::paths::{resolve_runtime_workspace_dir, workspace_apps_dir},
     workspace_app::{WorkspaceAppRegistry, bootstrap_workspace_apps},
 };
@@ -122,7 +122,7 @@ pub(crate) async fn build_eval_context_with_compiled(
     let plan = Plan::new().await;
     let events = EventStore::new().await;
     let pending_work = PendingWorkQueue::new().await;
-    let workflows = WorkflowStore::new().await;
+    let workflows = PrimitiveStore::new().await;
     let telegram_acl = TelegramAclHandle::load().await;
     let telegram = TelegramTransportState::new();
     let telegram_handle = telegram.handle();
@@ -150,9 +150,10 @@ pub(crate) async fn build_eval_context_with_compiled(
         events,
         pending_work,
         workflows,
-        bound_workflow_id: None,
-        active_workflow_run: None,
-        pending_workflow_run_flushes: Vec::new(),
+        bound_primitive_composition: None,
+        bound_primitive_id: None,
+        active_primitive_run: None,
+        pending_primitive_run_flushes: Vec::new(),
         current_work_origin: None,
         workflow_step_started_bound_id: None,
         apps,

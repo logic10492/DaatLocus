@@ -494,9 +494,10 @@ fn find_runtime_tool<'a>(
     tools: &'a [Box<dyn RuntimeTool>],
     name: &str,
 ) -> miette::Result<&'a dyn RuntimeTool> {
+    let canonical_name = canonical_runtime_tool_name(name);
     tools
         .iter()
-        .find(|tool| tool.name() == name)
+        .find(|tool| tool.name() == canonical_name)
         .map(|tool| tool.as_ref())
         .ok_or_else(|| miette!("unknown runtime tool: {name}"))
 }
@@ -635,10 +636,10 @@ pub fn render_telegram_tool_result_status(
         }
         "browser_reload" => Some(telegram_status(glyph::BROWSER, "Browser Reloaded")),
         "browser_close_page" => Some(telegram_status(glyph::BROWSER, "Browser Closed")),
-        "create_workflow" => Some(telegram_status(
+        "create_primitive_spec" => Some(telegram_status(
             glyph::WORKFLOW,
             format!(
-                "Workflow Created: {}",
+                "Primitive Spec Created: {}",
                 compact_telegram_status_detail(
                     workflow_id_from_result(&result.ui_event)
                         .or_else(|| call_arg_string(call, "id"))
@@ -646,32 +647,38 @@ pub fn render_telegram_tool_result_status(
                 )
             ),
         )),
-        "activate_workflow" => Some(telegram_status(
+        "activate_composed_primitive" => Some(telegram_status(
             glyph::WORKFLOW,
             format!(
-                "Workflow Active: {}",
+                "Primitive Active: {}",
                 compact_telegram_status_detail(
                     workflow_id_from_result(&result.ui_event)
+                        .or_else(|| call_arg_string(call, "primitive_id"))
                         .or_else(|| call_arg_string(call, "workflow_id"))
+                        .or_else(|| call_arg_string(call, "composition"))
                         .unwrap_or_else(|| "unknown".to_string()),
                 )
             ),
         )),
-        "read_workflow" => Some(telegram_status(
+        "read_primitive_spec" => Some(telegram_status(
             glyph::WORKFLOW,
             format!(
-                "Workflow Read: {}",
+                "Primitive Spec Read: {}",
                 compact_telegram_status_detail(
-                    call_arg_string(call, "workflow_id").unwrap_or_else(|| "unknown".to_string())
+                    call_arg_string(call, "primitive_id")
+                        .or_else(|| call_arg_string(call, "workflow_id"))
+                        .unwrap_or_else(|| "unknown".to_string())
                 )
             ),
         )),
-        "update_workflow" => Some(telegram_status(
+        "update_primitive_spec" => Some(telegram_status(
             glyph::WORKFLOW,
             format!(
-                "Workflow Updated: {}",
+                "Primitive Spec Updated: {}",
                 compact_telegram_status_detail(
-                    call_arg_string(call, "workflow_id").unwrap_or_else(|| "unknown".to_string())
+                    call_arg_string(call, "primitive_id")
+                        .or_else(|| call_arg_string(call, "workflow_id"))
+                        .unwrap_or_else(|| "unknown".to_string())
                 )
             ),
         )),
@@ -694,9 +701,21 @@ fn demangle_known_app_tool_name(tool_name: &str) -> &str {
     if let Some((app_id, app_tool_name)) = tool_name.split_once(AppId::TOOL_NAME_SEPARATOR)
         && AppId::is_valid_name(app_id)
     {
-        return app_tool_name;
+        return canonical_runtime_tool_name(app_tool_name);
     }
-    tool_name
+    canonical_runtime_tool_name(tool_name)
+}
+
+fn canonical_runtime_tool_name(tool_name: &str) -> &str {
+    match tool_name {
+        "create_workflow" => "create_primitive_spec",
+        "activate_workflow" | "activate_primitive" | "compose_workflows" | "compose_primitives" => {
+            "activate_composed_primitive"
+        }
+        "read_workflow" => "read_primitive_spec",
+        "update_workflow" => "update_primitive_spec",
+        _ => tool_name,
+    }
 }
 
 fn telegram_status_ignored_tool(tool_name: &str) -> bool {
@@ -717,10 +736,18 @@ fn telegram_tool_failure_status(tool_name: &str) -> Option<TelegramLiveStatus> {
         "browser_open_page" | "browser_snapshot" | "browser_wait" | "browser_click"
         | "browser_fill" | "browser_back" | "browser_forward" | "browser_reload"
         | "browser_close_page" => Some(telegram_status(glyph::ERROR, "Browser Action Failed")),
-        "create_workflow" => Some(telegram_status(glyph::ERROR, "Workflow Creation Failed")),
-        "activate_workflow" => Some(telegram_status(glyph::ERROR, "Workflow Activation Failed")),
-        "read_workflow" => Some(telegram_status(glyph::ERROR, "Workflow Read Failed")),
-        "update_workflow" => Some(telegram_status(glyph::ERROR, "Workflow Update Failed")),
+        "create_primitive_spec" => Some(telegram_status(
+            glyph::ERROR,
+            "Primitive Spec Creation Failed",
+        )),
+        "activate_composed_primitive" => {
+            Some(telegram_status(glyph::ERROR, "Primitive Activation Failed"))
+        }
+        "read_primitive_spec" => Some(telegram_status(glyph::ERROR, "Primitive Spec Read Failed")),
+        "update_primitive_spec" => Some(telegram_status(
+            glyph::ERROR,
+            "Primitive Spec Update Failed",
+        )),
         "focus_app" => Some(telegram_status(glyph::ERROR, "App Focus Failed")),
         _ => Some(telegram_status(glyph::ERROR, "App Failed")),
     }
@@ -842,7 +869,7 @@ mod tests {
         telegram_acl::TelegramAclHandle,
         telegram_transport::state::TelegramTransportState,
         terminal_app::TerminalApp,
-        workflow::WorkflowStore,
+        workflow::PrimitiveStore,
         workspace_app::WorkspaceAppRegistry,
     };
 
@@ -896,10 +923,11 @@ mod tests {
                 plan: Plan::new().await,
                 events: EventStore::new().await,
                 pending_work: PendingWorkQueue::new().await,
-                workflows: WorkflowStore::new().await,
-                bound_workflow_id: None,
-                active_workflow_run: None,
-                pending_workflow_run_flushes: Vec::new(),
+                workflows: PrimitiveStore::new().await,
+                bound_primitive_composition: None,
+                bound_primitive_id: None,
+                active_primitive_run: None,
+                pending_primitive_run_flushes: Vec::new(),
                 current_work_origin: None,
                 workflow_step_started_bound_id: None,
                 apps,
@@ -1042,22 +1070,22 @@ mod tests {
     }
 
     #[test]
-    fn telegram_tool_status_renders_workflow_activation_failure() {
+    fn telegram_tool_status_renders_primitive_activation_failure() {
         let call = AgentToolCall {
             id: "call_1".to_string(),
-            name: "activate_workflow".to_string(),
-            arguments: serde_json::json!({ "workflow_id": "repo-analysis-summary" }),
+            name: "activate_composed_primitive".to_string(),
+            arguments: serde_json::json!({ "primitive_id": "repo-analysis-summary" }),
         };
         let result = tool_result(
-            "activate_workflow",
-            serde_json::json!({ "error": "unknown workflow" }),
-            ToolUiEvent::error("activate_workflow failed", Vec::new()),
+            "activate_composed_primitive",
+            serde_json::json!({ "error": "unknown primitive" }),
+            ToolUiEvent::error("activate_composed_primitive failed", Vec::new()),
         );
 
         let status = render_telegram_tool_result_status(&call, &result).unwrap();
 
         assert_eq!(status.icon, glyph::ERROR);
-        assert_eq!(status.text, "Workflow Activation Failed");
+        assert_eq!(status.text, "Primitive Activation Failed");
     }
 
     #[tokio::test]

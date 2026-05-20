@@ -1,13 +1,13 @@
 use super::*;
 
 pub(super) struct WorkflowExecutableRolloutResult {
-    pub(super) target_workflow: WorkflowSpec,
+    pub(super) target_workflow: PrimitiveSpec,
     pub(super) summary: String,
 }
 
 #[derive(serde::Serialize)]
 pub(super) struct WorkflowTaskRolloutCase {
-    pub(super) record: WorkflowRunRecord,
+    pub(super) record: PrimitiveRunRecord,
     pub(super) executed_steps: Vec<WorkflowTaskRolloutStep>,
     pub(super) boundary_events: Vec<String>,
     pub(super) summary: String,
@@ -35,7 +35,7 @@ struct WorkflowTaskRolloutOutput {
 pub(super) struct WorkflowTaskCase {
     pub(super) task_summary: String,
     pub(super) origin: String,
-    pub(super) baseline_outcome: crate::workflow::WorkflowRunOutcome,
+    pub(super) baseline_outcome: crate::workflow::PrimitiveRunOutcome,
     pub(super) baseline_turns: usize,
     pub(super) baseline_tool_actions: usize,
     pub(super) manual_fix_detected: bool,
@@ -49,24 +49,24 @@ pub(super) struct WorkflowTaskCase {
 
 #[derive(Default)]
 struct WorkflowTaskRolloutRunnerState {
-    bound_workflow_id: Option<String>,
-    active_workflow_run: Option<ActiveWorkflowRunSession>,
-    pending_workflow_run_flushes: Vec<PendingWorkflowRunFlush>,
+    bound_primitive_id: Option<String>,
+    active_primitive_run: Option<ActivePrimitiveRunSession>,
+    pending_primitive_run_flushes: Vec<PendingPrimitiveRunFlush>,
     current_work_origin: Option<String>,
 }
 
 impl WorkflowTaskRolloutRunnerState {
-    fn begin_bound_workflow_session(&mut self, workflow: &WorkflowSpec, task: &WorkflowTaskCase) {
-        self.bound_workflow_id = Some(workflow.id.clone());
+    fn begin_bound_primitive_session(&mut self, workflow: &PrimitiveSpec, task: &WorkflowTaskCase) {
+        self.bound_primitive_id = Some(workflow.id.clone());
         self.current_work_origin = Some(task.origin.clone());
         if self
-            .active_workflow_run
+            .active_primitive_run
             .as_ref()
             .is_some_and(|session| session.workflow_id == workflow.id)
         {
             return;
         }
-        self.active_workflow_run = Some(ActiveWorkflowRunSession {
+        self.active_primitive_run = Some(ActivePrimitiveRunSession {
             run_id: format!("workflow-rollout:{}", uuid::Uuid::new_v4()),
             workflow_id: workflow.id.clone(),
             started_at_ms: task.started_at_ms,
@@ -83,32 +83,32 @@ impl WorkflowTaskRolloutRunnerState {
         });
     }
 
-    fn accumulate_task(&mut self, workflow: &WorkflowSpec, task: &WorkflowTaskCase) {
-        let Some(session) = self.active_workflow_run.as_mut() else {
+    fn accumulate_task(&mut self, workflow: &PrimitiveSpec, task: &WorkflowTaskCase) {
+        let Some(session) = self.active_primitive_run.as_mut() else {
             return;
         };
         if session.workflow_id != workflow.id {
             return;
         }
-        let executed_steps = simulated_executed_workflow_steps(workflow, task);
+        let executed_steps = simulated_executed_primitive_steps(workflow, task);
         let outputs = workflow_rollout_outputs_from_task(workflow, task, &executed_steps);
         for rollout_output in &outputs {
             accumulate_workflow_rollout_session_from_output(session, rollout_output);
         }
     }
 
-    fn queue_active_workflow_run_for_flush(
+    fn queue_active_primitive_run_for_flush(
         &mut self,
-        outcome: crate::workflow::WorkflowRunOutcome,
+        outcome: crate::workflow::PrimitiveRunOutcome,
     ) {
-        if let Some(session) = self.active_workflow_run.take() {
-            self.pending_workflow_run_flushes
-                .push(PendingWorkflowRunFlush { session, outcome });
+        if let Some(session) = self.active_primitive_run.take() {
+            self.pending_primitive_run_flushes
+                .push(PendingPrimitiveRunFlush { session, outcome });
         }
     }
 
-    fn flush_records(&mut self, ended_at_ms: i64) -> Vec<WorkflowRunRecord> {
-        self.pending_workflow_run_flushes
+    fn flush_records(&mut self, ended_at_ms: i64) -> Vec<PrimitiveRunRecord> {
+        self.pending_primitive_run_flushes
             .drain(..)
             .map(|flush| workflow_rollout_record_from_pending_flush(flush, ended_at_ms))
             .collect()
@@ -155,14 +155,14 @@ pub(super) fn render_workflow_rollout_case_json(case: &WorkflowTaskRolloutCase) 
     serde_json::to_string_pretty(case).into_diagnostic()
 }
 
-fn blank_workflow_run_record() -> WorkflowRunRecord {
-    WorkflowRunRecord {
+fn blank_workflow_run_record() -> PrimitiveRunRecord {
+    PrimitiveRunRecord {
         run_id: "none".to_string(),
         workflow_id: "none".to_string(),
         started_at_ms: 0,
         ended_at_ms: 0,
         origin: "none".to_string(),
-        outcome: crate::workflow::WorkflowRunOutcome::NoProgress,
+        outcome: crate::workflow::PrimitiveRunOutcome::NoProgress,
         turn_count: 0,
         tool_action_count: 0,
         manual_fix_detected: false,
@@ -176,7 +176,7 @@ pub(super) fn blank_workflow_task_case() -> WorkflowTaskCase {
     WorkflowTaskCase {
         task_summary: String::new(),
         origin: "workflow_rollout".to_string(),
-        baseline_outcome: crate::workflow::WorkflowRunOutcome::NoProgress,
+        baseline_outcome: crate::workflow::PrimitiveRunOutcome::NoProgress,
         baseline_turns: 0,
         baseline_tool_actions: 0,
         manual_fix_detected: false,
@@ -189,7 +189,7 @@ pub(super) fn blank_workflow_task_case() -> WorkflowTaskCase {
     }
 }
 
-pub(super) fn workflow_task_case_from_record(record: &WorkflowRunRecord) -> WorkflowTaskCase {
+pub(super) fn workflow_task_case_from_record(record: &PrimitiveRunRecord) -> WorkflowTaskCase {
     WorkflowTaskCase {
         task_summary: record.final_summary.clone(),
         origin: record.origin.clone(),
@@ -298,7 +298,7 @@ fn distribute_rollout_count(total: usize, buckets: usize, index: usize) -> usize
 }
 
 fn workflow_rollout_outputs_from_task(
-    workflow: &WorkflowSpec,
+    workflow: &PrimitiveSpec,
     task: &WorkflowTaskCase,
     executed_steps: &[WorkflowTaskRolloutStep],
 ) -> Vec<WorkflowTaskRolloutOutput> {
@@ -423,7 +423,7 @@ fn workflow_rollout_outputs_from_task(
 }
 
 fn accumulate_workflow_rollout_session_from_output(
-    session: &mut ActiveWorkflowRunSession,
+    session: &mut ActivePrimitiveRunSession,
     rollout_output: &WorkflowTaskRolloutOutput,
 ) {
     let output = &rollout_output.output;
@@ -461,10 +461,10 @@ fn accumulate_workflow_rollout_session_from_output(
 }
 
 fn workflow_rollout_record_from_pending_flush(
-    flush: PendingWorkflowRunFlush,
+    flush: PendingPrimitiveRunFlush,
     ended_at_ms: i64,
-) -> WorkflowRunRecord {
-    WorkflowRunRecord {
+) -> PrimitiveRunRecord {
+    PrimitiveRunRecord {
         run_id: flush.session.run_id,
         workflow_id: flush.session.workflow_id,
         started_at_ms: flush.session.started_at_ms,
@@ -481,7 +481,7 @@ fn workflow_rollout_record_from_pending_flush(
 }
 
 fn workflow_rollout_step_status(
-    outcome: crate::workflow::WorkflowRunOutcome,
+    outcome: crate::workflow::PrimitiveRunOutcome,
     step_index: usize,
     executed_steps: usize,
 ) -> &'static str {
@@ -489,27 +489,27 @@ fn workflow_rollout_step_status(
         return "completed";
     }
     match outcome {
-        crate::workflow::WorkflowRunOutcome::Completed => "completed",
-        crate::workflow::WorkflowRunOutcome::Blocked => "blocked_boundary",
-        crate::workflow::WorkflowRunOutcome::Abandoned => "abandoned_boundary",
-        crate::workflow::WorkflowRunOutcome::Superseded => "superseded_boundary",
-        crate::workflow::WorkflowRunOutcome::NoProgress => "no_progress_boundary",
+        crate::workflow::PrimitiveRunOutcome::Completed => "completed",
+        crate::workflow::PrimitiveRunOutcome::Blocked => "blocked_boundary",
+        crate::workflow::PrimitiveRunOutcome::Abandoned => "abandoned_boundary",
+        crate::workflow::PrimitiveRunOutcome::Superseded => "superseded_boundary",
+        crate::workflow::PrimitiveRunOutcome::NoProgress => "no_progress_boundary",
     }
 }
 
-fn simulated_executed_workflow_steps(
-    workflow: &WorkflowSpec,
+fn simulated_executed_primitive_steps(
+    workflow: &PrimitiveSpec,
     task: &WorkflowTaskCase,
 ) -> Vec<WorkflowTaskRolloutStep> {
-    if workflow.workflow_steps.is_empty() {
+    if workflow.primitive_steps.is_empty() {
         return Vec::new();
     }
     let executed_count = workflow
-        .workflow_steps
+        .primitive_steps
         .len()
         .min(task.baseline_turns.max(task.baseline_tool_actions).max(1));
     workflow
-        .workflow_steps
+        .primitive_steps
         .iter()
         .take(executed_count)
         .enumerate()
@@ -548,8 +548,8 @@ fn workflow_rollout_boundary_events(task: &WorkflowTaskCase) -> Vec<String> {
 pub(super) async fn execute_workflow_candidate_rollout(
     context: &Context,
     entry: &WorkflowFrontierEntry,
-    target_workflow: &WorkflowSpec,
-    source_workflow: Option<&WorkflowSpec>,
+    target_workflow: &PrimitiveSpec,
+    source_workflow: Option<&PrimitiveSpec>,
 ) -> Result<WorkflowExecutableRolloutResult> {
     let rollout_home = std::env::temp_dir().join(format!(
         "daat-locus-workflow-rollout-{}",
@@ -574,7 +574,7 @@ pub(super) async fn execute_workflow_candidate_rollout(
     let (rolled_out_target, summary) = if let Some(patch) = entry.patch.as_ref() {
         let updated = isolated
             .workflows
-            .apply_patch(WorkflowPatch {
+            .apply_patch(PrimitiveSpecPatch {
                 workflow_id: patch.workflow_id.clone(),
                 when_to_use_additions: patch.when_to_use_additions.clone(),
                 precondition_additions: patch.precondition_additions.clone(),
@@ -631,12 +631,12 @@ pub(super) async fn execute_workflow_candidate_rollout(
 }
 
 pub(super) async fn install_rollout_workflows(
-    workflows: &mut WorkflowStore,
+    workflows: &mut PrimitiveStore,
     workflow_dir: std::path::PathBuf,
-    target_workflow: &WorkflowSpec,
-    source_workflow: Option<&WorkflowSpec>,
-) -> Result<(WorkflowSpec, Vec<String>)> {
-    *workflows = WorkflowStore::open_scoped(workflow_dir).await;
+    target_workflow: &PrimitiveSpec,
+    source_workflow: Option<&PrimitiveSpec>,
+) -> Result<(PrimitiveSpec, Vec<String>)> {
+    *workflows = PrimitiveStore::open_scoped(workflow_dir).await;
 
     let target_spec = create_isolated_workflow(workflows, target_workflow).await?;
     let mut source_ids = Vec::<String>::new();
@@ -649,15 +649,15 @@ pub(super) async fn install_rollout_workflows(
 }
 
 async fn create_isolated_workflow(
-    store: &mut WorkflowStore,
-    workflow: &WorkflowSpec,
-) -> Result<WorkflowSpec> {
+    store: &mut PrimitiveStore,
+    workflow: &PrimitiveSpec,
+) -> Result<PrimitiveSpec> {
     store
-        .create_workflow(NewWorkflowSpec {
+        .create_workflow(NewPrimitiveSpec {
             id: workflow.id.clone(),
             when_to_use: workflow.when_to_use.clone(),
             preconditions: workflow.preconditions.clone(),
-            workflow_steps: workflow.workflow_steps.clone(),
+            primitive_steps: workflow.primitive_steps.clone(),
             done_criteria: workflow.done_criteria.clone(),
             recovery: workflow.recovery.clone(),
         })
@@ -665,19 +665,19 @@ async fn create_isolated_workflow(
 }
 
 pub(super) fn run_workflow_task_rollout(
-    workflow: &WorkflowSpec,
+    workflow: &PrimitiveSpec,
     task: &WorkflowTaskCase,
 ) -> WorkflowTaskRolloutCase {
     let mut runner = WorkflowTaskRolloutRunnerState::default();
-    runner.begin_bound_workflow_session(workflow, task);
+    runner.begin_bound_primitive_session(workflow, task);
     runner.accumulate_task(workflow, task);
-    runner.queue_active_workflow_run_for_flush(task.baseline_outcome);
+    runner.queue_active_primitive_run_for_flush(task.baseline_outcome);
     let record = runner
         .flush_records(task.ended_at_ms.max(task.started_at_ms))
         .into_iter()
         .next()
         .unwrap_or_else(blank_workflow_run_record);
-    let executed_steps = simulated_executed_workflow_steps(workflow, task);
+    let executed_steps = simulated_executed_primitive_steps(workflow, task);
     let boundary_events = workflow_rollout_boundary_events(task);
     WorkflowTaskRolloutCase {
         executed_steps,
@@ -690,7 +690,7 @@ pub(super) fn run_workflow_task_rollout(
             record.turn_count,
             record.tool_action_count,
             workflow
-                .workflow_steps
+                .primitive_steps
                 .len()
                 .min(task.baseline_turns.max(task.baseline_tool_actions).max(1)),
             boundary_events.join("|")

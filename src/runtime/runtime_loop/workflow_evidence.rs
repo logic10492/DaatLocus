@@ -87,7 +87,7 @@ fn workflow_run_summary(output: &AgentLoopStepOutput) -> String {
 }
 
 fn accumulate_workflow_session_from_output(
-    session: &mut ActiveWorkflowRunSession,
+    session: &mut ActivePrimitiveRunSession,
     output: &AgentLoopStepOutput,
 ) {
     session.turn_count = session.turn_count.saturating_add(1);
@@ -103,10 +103,10 @@ fn accumulate_workflow_session_from_output(
 }
 
 fn workflow_run_record_from_pending_flush(
-    flush: PendingWorkflowRunFlush,
+    flush: PendingPrimitiveRunFlush,
     ended_at_ms: i64,
-) -> WorkflowRunRecord {
-    WorkflowRunRecord {
+) -> PrimitiveRunRecord {
+    PrimitiveRunRecord {
         run_id: flush.session.run_id,
         workflow_id: flush.session.workflow_id,
         started_at_ms: flush.session.started_at_ms,
@@ -129,17 +129,17 @@ pub(super) async fn record_workflow_run_evidence(
     let target_workflow_id = context
         .workflow_step_started_bound_id
         .clone()
-        .or_else(|| context.bound_workflow_id.clone())
+        .or_else(|| context.bound_primitive_id.clone())
         .or_else(|| {
             context
-                .pending_workflow_run_flushes
+                .pending_primitive_run_flushes
                 .last()
                 .map(|flush| flush.session.workflow_id.clone())
         });
 
     if let Some(workflow_id) = target_workflow_id {
         let mut matched_pending = false;
-        for flush in context.pending_workflow_run_flushes.iter_mut().rev() {
+        for flush in context.pending_primitive_run_flushes.iter_mut().rev() {
             if flush.session.workflow_id == workflow_id {
                 accumulate_workflow_session_from_output(&mut flush.session, output);
                 matched_pending = true;
@@ -147,24 +147,24 @@ pub(super) async fn record_workflow_run_evidence(
             }
         }
         if !matched_pending
-            && let Some(session) = context.active_workflow_run.as_mut()
+            && let Some(session) = context.active_primitive_run.as_mut()
             && session.workflow_id == workflow_id
         {
             accumulate_workflow_session_from_output(session, output);
         }
     }
 
-    if context.pending_workflow_run_flushes.is_empty() {
+    if context.pending_primitive_run_flushes.is_empty() {
         return;
     }
 
     let ended_at_ms = Utc::now().timestamp_millis();
     let records = context
-        .pending_workflow_run_flushes
+        .pending_primitive_run_flushes
         .drain(..)
         .map(|flush| workflow_run_record_from_pending_flush(flush, ended_at_ms))
         .collect::<Vec<_>>();
-    if let Err(err) = append_workflow_run_records(&records).await {
+    if let Err(err) = append_primitive_run_records(&records).await {
         tracing::error!("failed to append workflow run records at runtime boundary: {err:?}");
     }
 }

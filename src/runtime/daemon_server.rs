@@ -33,7 +33,7 @@ use crate::{
     telegram_acl::TelegramAclHandle,
     telegram_transport::TelegramTransport,
     telegram_transport::state::TelegramTransportState,
-    workflow::WorkflowStore,
+    workflow::PrimitiveStore,
     workspace_app::paths::{resolve_runtime_workspace_dir, workspace_apps_dir},
     workspace_app::{WorkspaceAppInvalidation, start_workspace_app_watcher},
 };
@@ -185,7 +185,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
 
     let memory = Memory::new().await;
     let plan = Plan::new().await;
-    let workflows = WorkflowStore::new().await;
+    let workflows = PrimitiveStore::new().await;
     let telegram = TelegramTransportState::new();
     let telegram_handle = telegram.handle();
     bootstrap_telegram_transport_state_from_acl(&telegram_handle, &telegram_acl);
@@ -226,9 +226,10 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         events,
         pending_work,
         workflows,
-        bound_workflow_id: None,
-        active_workflow_run: None,
-        pending_workflow_run_flushes: Vec::new(),
+        bound_primitive_composition: None,
+        bound_primitive_id: None,
+        active_primitive_run: None,
+        pending_primitive_run_flushes: Vec::new(),
         current_work_origin: None,
         workflow_step_started_bound_id: None,
         apps,

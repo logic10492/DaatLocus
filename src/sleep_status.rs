@@ -6,7 +6,7 @@ use crate::{
     daat_locus_paths::daat_locus_paths,
     persistence::{PersistenceFileMode, read_json_or_default, write_bytes_atomic},
     reasoning::{runtime_error::unread_runtime_error_case_count, sleep::SleepSummary},
-    workflow::workflow_run_record_count,
+    workflow::primitive_run_record_count,
 };
 
 const SLEEP_STATUS_FILE_NAME: &str = "sleep_status.json";
@@ -213,7 +213,7 @@ pub async fn refresh_sleep_status_queues(status: &mut SleepStatusSnapshot) {
     if let Ok(backlog) = unread_runtime_error_case_count().await {
         status.unread_runtime_error_backlog = backlog;
     }
-    if let Ok(records) = workflow_run_record_count().await {
+    if let Ok(records) = primitive_run_record_count().await {
         status.workflow_evidence_records = records;
     }
 }

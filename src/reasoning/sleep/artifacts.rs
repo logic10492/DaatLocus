@@ -43,8 +43,8 @@ pub(super) fn dedupe_prompt_candidates(
 }
 
 pub(super) fn dedupe_workflow_patches(
-    patches: Vec<EvaluationArtifactWorkflowPatch>,
-) -> Vec<EvaluationArtifactWorkflowPatch> {
+    patches: Vec<EvaluationArtifactPrimitiveSpecPatch>,
+) -> Vec<EvaluationArtifactPrimitiveSpecPatch> {
     let mut seen = HashSet::new();
     let mut deduped = Vec::new();
     for patch in patches {
@@ -68,7 +68,7 @@ pub(super) fn dedupe_workflow_patches(
 pub(super) async fn optimize_workflows_from_run_records(
     context: &mut Context,
     planner: &dyn SleepPlannerRuntime,
-    run_records: &[WorkflowRunRecord],
+    run_records: &[PrimitiveRunRecord],
 ) -> Result<SleepWorkflowOptimizationResult> {
     let mut result = SleepWorkflowOptimizationResult {
         rounds: 1,
@@ -201,7 +201,7 @@ pub(super) async fn optimize_workflows_from_run_records(
         }
         match context
             .workflows
-            .apply_patch(WorkflowPatch {
+            .apply_patch(PrimitiveSpecPatch {
                 workflow_id: patch.workflow_id.clone(),
                 when_to_use_additions: patch.when_to_use_additions.clone(),
                 precondition_additions: patch.precondition_additions.clone(),
@@ -279,11 +279,11 @@ pub(super) async fn optimize_workflows_from_run_records(
 }
 
 pub(super) fn evaluate_workflow_patch_candidate(
-    workflows: &WorkflowStore,
-    patch: &EvaluationArtifactWorkflowPatch,
+    workflows: &PrimitiveStore,
+    patch: &EvaluationArtifactPrimitiveSpecPatch,
 ) -> bool {
     workflows.workflow_origin(&patch.workflow_id)
-        == Some(crate::workflow::WorkflowOrigin::Workspace)
+        == Some(crate::workflow::PrimitiveOrigin::Workspace)
         && (!patch.when_to_use_additions.is_empty()
             || !patch.precondition_additions.is_empty()
             || !patch.workflow_step_additions.is_empty()
@@ -292,22 +292,23 @@ pub(super) fn evaluate_workflow_patch_candidate(
 }
 
 pub(super) fn evaluate_workflow_merge_candidate(
-    workflows: &WorkflowStore,
+    workflows: &PrimitiveStore,
     merge: &EvaluationArtifactWorkflowMerge,
 ) -> bool {
     if workflows.workflow_origin(&merge.target_workflow_id)
-        != Some(crate::workflow::WorkflowOrigin::Workspace)
+        != Some(crate::workflow::PrimitiveOrigin::Workspace)
     {
         return false;
     }
     !merge.source_workflow_ids.is_empty()
         && merge.source_workflow_ids.iter().all(|source_id| {
-            workflows.workflow_origin(source_id) == Some(crate::workflow::WorkflowOrigin::Workspace)
+            workflows.workflow_origin(source_id)
+                == Some(crate::workflow::PrimitiveOrigin::Workspace)
         })
         && merge.confidence > 0.0
 }
 
-pub(super) fn total_patch_additions(patch: &EvaluationArtifactWorkflowPatch) -> usize {
+pub(super) fn total_patch_additions(patch: &EvaluationArtifactPrimitiveSpecPatch) -> usize {
     patch.when_to_use_additions.len()
         + patch.precondition_additions.len()
         + patch.workflow_step_additions.len()
@@ -315,13 +316,13 @@ pub(super) fn total_patch_additions(patch: &EvaluationArtifactWorkflowPatch) -> 
         + patch.recovery_additions.len()
 }
 
-pub(super) fn has_workflow_patch_content(patch: &EvaluationArtifactWorkflowPatch) -> bool {
+pub(super) fn has_workflow_patch_content(patch: &EvaluationArtifactPrimitiveSpecPatch) -> bool {
     total_patch_additions(patch) > 0
 }
 
 pub(super) fn patch_has_novel_content(
-    workflows: &WorkflowStore,
-    patch: &EvaluationArtifactWorkflowPatch,
+    workflows: &PrimitiveStore,
+    patch: &EvaluationArtifactPrimitiveSpecPatch,
 ) -> bool {
     let Some(current) = workflows.get(&patch.workflow_id) else {
         return false;
@@ -338,7 +339,7 @@ pub(super) fn patch_has_novel_content(
         })
         || patch.workflow_step_additions.iter().any(|item| {
             !current
-                .workflow_steps
+                .primitive_steps
                 .iter()
                 .any(|existing| existing == item)
         })

@@ -27,7 +27,7 @@ id: author-workspace-app
 - The app directory structure is complete and all minimum required files exist.
 - The runtime can recognize this workspace app and produce reasonable app state and prompt information.
 - The app has at least one runnable path for its core capability, not only static placeholder files.
-- `usage.md` and `how_to_use.md` clearly define app semantics and operation without mixing in workflow specification content.
+- `usage.md` and `how_to_use.md` clearly define app semantics and operation without mixing in SOP primitive spec content.
 
 ## Recovery
 - If the app boundary is unclear, shrink to the smallest runnable capability before adding more features.

@@ -1,22 +1,22 @@
 use super::*;
 
 pub(super) struct WorkflowMergePlanningInput<'a> {
-    pub target_workflow: &'a WorkflowSpec,
+    pub target_workflow: &'a PrimitiveSpec,
     pub target_reflection: &'a EvaluationArtifactWorkflowReflection,
-    pub target_evidence: &'a [WorkflowRunRecord],
-    pub source_workflow: &'a WorkflowSpec,
+    pub target_evidence: &'a [PrimitiveRunRecord],
+    pub source_workflow: &'a PrimitiveSpec,
     pub source_reflection: &'a EvaluationArtifactWorkflowReflection,
-    pub source_evidence: &'a [WorkflowRunRecord],
+    pub source_evidence: &'a [PrimitiveRunRecord],
 }
 
 pub(super) struct WorkflowFrontierReplayInput<'a> {
     pub entry: &'a WorkflowFrontierEntry,
-    pub target_workflow: &'a WorkflowSpec,
+    pub target_workflow: &'a PrimitiveSpec,
     pub target_reflection: Option<&'a EvaluationArtifactWorkflowReflection>,
-    pub target_evidence: &'a [WorkflowRunRecord],
-    pub source_workflow: Option<&'a WorkflowSpec>,
+    pub target_evidence: &'a [PrimitiveRunRecord],
+    pub source_workflow: Option<&'a PrimitiveSpec>,
     pub source_reflection: Option<&'a EvaluationArtifactWorkflowReflection>,
-    pub source_evidence: &'a [WorkflowRunRecord],
+    pub source_evidence: &'a [PrimitiveRunRecord],
 }
 
 #[async_trait]
@@ -30,8 +30,8 @@ pub(super) trait SleepPlannerRuntime: Send + Sync {
     async fn plan_workflow_improvement(
         &self,
         context: &mut Context,
-        workflow: &WorkflowSpec,
-        evidence: &[WorkflowRunRecord],
+        workflow: &PrimitiveSpec,
+        evidence: &[PrimitiveRunRecord],
     ) -> Result<Option<WorkflowPlanningResult>>;
 
     async fn plan_workflow_merge(
@@ -101,8 +101,8 @@ impl SleepPlannerRuntime for LlmSleepPlannerRuntime {
     async fn plan_workflow_improvement(
         &self,
         context: &mut Context,
-        workflow: &WorkflowSpec,
-        evidence: &[WorkflowRunRecord],
+        workflow: &PrimitiveSpec,
+        evidence: &[PrimitiveRunRecord],
     ) -> Result<Option<WorkflowPlanningResult>> {
         let renderer = OpenAIToolRenderer;
         let program = WorkflowEvolutionPlannerProgram;

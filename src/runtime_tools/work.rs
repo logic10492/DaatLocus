@@ -5,15 +5,16 @@ use crate::{
     apply_patch::{PatchOperationKind, parse_apply_patch, summarize_patch_ops},
     context::Context,
     core::{
-        ActivateWorkflowArgs, CreateWorkflowArgs, EventResolveArgs, FocusAppArgs,
-        NoticeResolvedArgs, PutAwayAppArgs, ReadWorkflowArgs, UpdatePlanArgs, UpdateWorkflowArgs,
+        ActivateComposedPrimitiveArgs, CreatePrimitiveSpecArgs, EventResolveArgs, FocusAppArgs,
+        NoticeResolvedArgs, PutAwayAppArgs, ReadPrimitiveSpecArgs, UpdatePlanArgs,
+        UpdatePrimitiveSpecArgs,
     },
     dashboard::render::current_plan_step_for_dashboard,
     events::{EventDisposition, EventPayload, EventStatus},
     plan::{Plan, PlanStatus, PlanStep},
     reasoning::{episode::EpisodeActionRecord, runtime::AgentToolCall},
     tool_ui::{PlanStepUiData, PlanStepUiStatus, ReplyDisposition, ToolCallUiEvent, ToolUiEvent},
-    workflow::{NewWorkflowSpec, WorkflowRunOutcome, WorkflowSpec},
+    workflow::{NewPrimitiveSpec, PrimitiveActivation, PrimitiveRunOutcome, PrimitiveSpec},
 };
 
 use super::{
@@ -88,33 +89,33 @@ pub(super) fn register_tools() -> Vec<Box<dyn RuntimeTool>> {
             render_update_plan_call_ui,
             execute_update_plan_tool,
         )),
-        Box::new(StaticRuntimeTool::new::<CreateWorkflowArgs>(
-            "create_workflow",
-            "Create an initial workflow draft when no reusable workflow fits.",
+        Box::new(StaticRuntimeTool::new::<CreatePrimitiveSpecArgs>(
+            "create_primitive_spec",
+            "Create an initial reusable SOP primitive draft when no reusable primitive fits.",
             None,
             summarize_create_workflow_tool,
             render_create_workflow_call_ui,
             execute_create_workflow_tool,
         )),
-        Box::new(StaticRuntimeTool::new::<ActivateWorkflowArgs>(
-            "activate_workflow",
-            "Bind a workflow to the current task for subsequent multi-step execution.",
+        Box::new(StaticRuntimeTool::new::<ActivateComposedPrimitiveArgs>(
+            "activate_composed_primitive",
+            "Bind one existing SOP primitive or a temporary composition of existing primitives to the current task.",
             None,
             summarize_activate_workflow_tool,
             render_activate_workflow_call_ui,
             execute_activate_workflow_tool,
         )),
-        Box::new(StaticRuntimeTool::new::<ReadWorkflowArgs>(
-            "read_workflow",
-            "Read the complete workflow spec for a workflow id, including origin and backing file path when it is a workspace workflow.",
+        Box::new(StaticRuntimeTool::new::<ReadPrimitiveSpecArgs>(
+            "read_primitive_spec",
+            "Read the complete SOP primitive spec for a primitive id, including origin and backing file path when it is a workspace primitive.",
             None,
             summarize_read_workflow_tool,
             render_read_workflow_call_ui,
             execute_read_workflow_tool,
         )),
-        Box::new(StaticRuntimeTool::new::<UpdateWorkflowArgs>(
-            "update_workflow",
-            "Replace a workspace workflow spec with a complete cleaned version. Use this for user-requested workflow maintenance; builtin workflows are read-only.",
+        Box::new(StaticRuntimeTool::new::<UpdatePrimitiveSpecArgs>(
+            "update_primitive_spec",
+            "Replace a workspace SOP primitive spec with a complete cleaned version. Use this for user-requested primitive maintenance; builtin primitives are read-only.",
             None,
             summarize_update_workflow_tool,
             render_update_workflow_call_ui,
@@ -320,8 +321,9 @@ fn execute_event_resolve_tool<'a>(
                 )
             }
         };
-        context.queue_active_workflow_run_for_flush(WorkflowRunOutcome::Completed);
-        context.bound_workflow_id = None;
+        context.queue_active_primitive_run_for_flush(PrimitiveRunOutcome::Completed);
+        context.bound_primitive_id = None;
+        context.bound_primitive_composition = None;
         let auto_put_away_app = put_away_focused_app_after_work_completion(context).await;
         let reply_lines = reply_message
             .as_deref()
@@ -404,8 +406,9 @@ fn execute_notice_resolved_tool<'a>(
             ));
         }
 
-        context.queue_active_workflow_run_for_flush(WorkflowRunOutcome::Completed);
-        context.bound_workflow_id = None;
+        context.queue_active_primitive_run_for_flush(PrimitiveRunOutcome::Completed);
+        context.bound_primitive_id = None;
+        context.bound_primitive_composition = None;
         let auto_put_away_app = put_away_focused_app_after_work_completion(context).await;
         let result_lines = vec![
             format!("App notice resolved: {}", key.app),
@@ -464,7 +467,9 @@ fn execute_update_plan_tool<'a>(
         }
         let summary = if effective_steps.is_empty() {
             if changed {
-                context.queue_active_workflow_run_for_flush(WorkflowRunOutcome::Completed);
+                context.queue_active_primitive_run_for_flush(PrimitiveRunOutcome::Completed);
+                context.bound_primitive_id = None;
+                context.bound_primitive_composition = None;
                 "cleared plan after completion".to_string()
             } else {
                 "plan already clear".to_string()
@@ -485,21 +490,24 @@ fn execute_update_plan_tool<'a>(
 }
 
 fn summarize_create_workflow_tool(call: &AgentToolCall) -> Result<EpisodeActionRecord> {
-    let args: CreateWorkflowArgs = parse_tool_args(call)?;
+    let args: CreatePrimitiveSpecArgs = parse_tool_args(call)?;
     Ok(EpisodeActionRecord {
-        kind: "create_workflow".to_string(),
-        summary: format!("workflow_id={}", args.id),
+        kind: "create_primitive_spec".to_string(),
+        summary: format!("primitive_id={}", args.id),
     })
 }
 
 fn render_create_workflow_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
-    let args: CreateWorkflowArgs = parse_tool_args(call)?;
+    let args: CreatePrimitiveSpecArgs = parse_tool_args(call)?;
     let lines = vec![
         format!("id={}", args.id),
         format!("when_to_use={}", args.when_to_use.len()),
-        format!("workflow_steps={}", args.workflow_steps.len()),
+        format!("primitive_steps={}", args.primitive_steps.len()),
     ];
-    Ok(ToolCallUiEvent::create_workflow("create_workflow", lines))
+    Ok(ToolCallUiEvent::create_workflow(
+        "create_primitive_spec",
+        lines,
+    ))
 }
 
 fn execute_create_workflow_tool<'a>(
@@ -507,24 +515,24 @@ fn execute_create_workflow_tool<'a>(
     call: &'a AgentToolCall,
 ) -> ToolFuture<'a> {
     Box::pin(async move {
-        let args: CreateWorkflowArgs = parse_tool_args(call)?;
+        let args: CreatePrimitiveSpecArgs = parse_tool_args(call)?;
         let created = context
             .workflows
-            .create_workflow(NewWorkflowSpec {
+            .create_workflow(NewPrimitiveSpec {
                 id: args.id,
                 when_to_use: args.when_to_use,
                 preconditions: args.preconditions,
-                workflow_steps: args.workflow_steps,
+                primitive_steps: args.primitive_steps,
                 done_criteria: args.done_criteria,
                 recovery: args.recovery,
             })
             .await?;
-        let summary = format!("created workflow {}", created.id);
+        let summary = format!("created primitive spec {}", created.id);
         Ok(ToolExecutionResult::new(
             summary.clone(),
             json!({
                 "created": created,
-                "bound_workflow_id": context.bound_workflow_id,
+                "bound_primitive_id": context.bound_primitive_id,
             }),
             ToolUiEvent::create_workflow(created.id),
         ))
@@ -532,18 +540,18 @@ fn execute_create_workflow_tool<'a>(
 }
 
 fn summarize_activate_workflow_tool(call: &AgentToolCall) -> Result<EpisodeActionRecord> {
-    let args: ActivateWorkflowArgs = parse_tool_args(call)?;
+    let args: ActivateComposedPrimitiveArgs = parse_tool_args(call)?;
     Ok(EpisodeActionRecord {
-        kind: "activate_workflow".to_string(),
-        summary: format!("workflow_id={}", args.workflow_id),
+        kind: "activate_composed_primitive".to_string(),
+        summary: format!("primitive_id={}", args.workflow_id),
     })
 }
 
 fn render_activate_workflow_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
-    let args: ActivateWorkflowArgs = parse_tool_args(call)?;
+    let args: ActivateComposedPrimitiveArgs = parse_tool_args(call)?;
     Ok(ToolCallUiEvent::activate_workflow(
-        "activate_workflow",
-        vec![format!("workflow_id={}", args.workflow_id)],
+        "activate_composed_primitive",
+        vec![format!("primitive_id={}", args.workflow_id)],
     ))
 }
 
@@ -552,40 +560,78 @@ fn execute_activate_workflow_tool<'a>(
     call: &'a AgentToolCall,
 ) -> ToolFuture<'a> {
     Box::pin(async move {
-        let args: ActivateWorkflowArgs = parse_tool_args(call)?;
-        let workflow_id = require_field(args.workflow_id, "workflow_id")?;
-        let activated = context
+        let args: ActivateComposedPrimitiveArgs = parse_tool_args(call)?;
+        let workflow_id = require_field(args.workflow_id, "primitive_id")?;
+        let activation = context
             .workflows
-            .get(&workflow_id)
-            .cloned()
-            .ok_or_else(|| miette::miette!("unknown workflow_id `{workflow_id}`"))?;
-        if context.bound_workflow_id.as_deref() == Some(activated.id.as_str()) {
-            context.begin_workflow_run_session(activated.id.clone());
-            let summary = format!("workflow {} is already active", activated.id);
+            .activate_composed_primitive(&workflow_id)?;
+        let (bound_id, primitive_ids, activated_value, is_composition) = match activation {
+            PrimitiveActivation::Single { primitive } => {
+                let primitive_id = primitive.id.clone();
+                (
+                    primitive_id,
+                    vec![primitive.id.clone()],
+                    json!(primitive),
+                    false,
+                )
+            }
+            PrimitiveActivation::Composition { composition } => {
+                let composition_id = composition.composition_id.clone();
+                (
+                    composition_id,
+                    composition.primitive_ids.clone(),
+                    json!(composition),
+                    true,
+                )
+            }
+        };
+        if context.bound_primitive_id.as_deref() == Some(bound_id.as_str()) {
+            context.begin_composed_primitive_run_session(bound_id.clone());
+            let summary = if is_composition {
+                format!("primitive composition {bound_id} is already active")
+            } else {
+                format!("primitive {bound_id} is already active")
+            };
             return Ok(ToolExecutionResult::new(
                 summary.clone(),
                 json!({
-                    "bound_workflow_id": context.bound_workflow_id,
-                    "activated": activated,
+                    "bound_primitive_id": context.bound_primitive_id,
+                    "bound_primitive_composition": context.bound_primitive_composition,
+                    "primitive_ids": primitive_ids,
+                    "activated": activated_value,
+                    "is_composition": is_composition,
                     "already_active": true,
                 }),
                 ToolUiEvent::activate_workflow(workflow_id),
             )
             .with_model_content(format!(
-                "summary={summary}\nalready_active=true\nContinue the task using the currently bound workflow; do not call activate_workflow again for this workflow."
+                "summary={summary}\nalready_active=true\nbound_primitive_id={bound_id}\nprimitive_ids={}\nContinue the task using the currently bound primitive or composition; do not call activate_composed_primitive again for this binding.",
+                primitive_ids.join(",")
             )));
         }
-        if context.bound_workflow_id.as_deref() != Some(activated.id.as_str()) {
-            context.queue_active_workflow_run_for_flush(WorkflowRunOutcome::Superseded);
+        if context.bound_primitive_id.as_deref() != Some(bound_id.as_str()) {
+            context.queue_active_primitive_run_for_flush(PrimitiveRunOutcome::Superseded);
         }
-        context.bound_workflow_id = Some(activated.id.clone());
-        context.begin_workflow_run_session(activated.id.clone());
-        let summary = format!("activated workflow {}", activated.id);
+        context.bound_primitive_id = Some(bound_id.clone());
+        context.bound_primitive_composition =
+            is_composition.then(|| crate::workflow::PrimitiveComposition {
+                composition_id: bound_id.clone(),
+                primitive_ids: primitive_ids.clone(),
+            });
+        context.begin_composed_primitive_run_session(bound_id.clone());
+        let summary = if is_composition {
+            format!("activated primitive composition {bound_id}")
+        } else {
+            format!("activated primitive {bound_id}")
+        };
         Ok(ToolExecutionResult::new(
             summary.clone(),
             json!({
-                "bound_workflow_id": context.bound_workflow_id,
-                "activated": activated,
+                "bound_primitive_id": context.bound_primitive_id,
+                "bound_primitive_composition": context.bound_primitive_composition,
+                "primitive_ids": primitive_ids,
+                "activated": activated_value,
+                "is_composition": is_composition,
             }),
             ToolUiEvent::activate_workflow(workflow_id),
         )
@@ -594,22 +640,22 @@ fn execute_activate_workflow_tool<'a>(
 }
 
 fn activate_workflow_turn_boundary_reason() -> &'static str {
-    "workflow binding changed; re-render world state in a new turn before continuing"
+    "primitive binding changed; re-render world state in a new turn before continuing"
 }
 
 fn summarize_read_workflow_tool(call: &AgentToolCall) -> Result<EpisodeActionRecord> {
-    let args: ReadWorkflowArgs = parse_tool_args(call)?;
+    let args: ReadPrimitiveSpecArgs = parse_tool_args(call)?;
     Ok(EpisodeActionRecord {
-        kind: "read_workflow".to_string(),
-        summary: format!("workflow_id={}", args.workflow_id),
+        kind: "read_primitive_spec".to_string(),
+        summary: format!("primitive_id={}", args.workflow_id),
     })
 }
 
 fn render_read_workflow_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
-    let args: ReadWorkflowArgs = parse_tool_args(call)?;
+    let args: ReadPrimitiveSpecArgs = parse_tool_args(call)?;
     Ok(ToolCallUiEvent::app(
-        "read_workflow",
-        vec![format!("workflow_id={}", args.workflow_id)],
+        "read_primitive_spec",
+        vec![format!("primitive_id={}", args.workflow_id)],
     ))
 }
 
@@ -618,31 +664,32 @@ fn execute_read_workflow_tool<'a>(
     call: &'a AgentToolCall,
 ) -> ToolFuture<'a> {
     Box::pin(async move {
-        let args: ReadWorkflowArgs = parse_tool_args(call)?;
-        let workflow_id = require_field(args.workflow_id, "workflow_id")?;
+        let args: ReadPrimitiveSpecArgs = parse_tool_args(call)?;
+        let workflow_id = require_field(args.workflow_id, "primitive_id")?;
         let spec = context
             .workflows
             .get(&workflow_id)
             .cloned()
-            .ok_or_else(|| miette::miette!("unknown workflow_id `{workflow_id}`"))?;
+            .ok_or_else(|| miette::miette!("unknown primitive_id `{workflow_id}`"))?;
         let origin = context.workflows.workflow_origin(&workflow_id);
         let path = context
             .workflows
             .workflow_path(&workflow_id)
             .map(|path| path.display().to_string());
-        let summary = format!("read workflow {}", spec.id);
+        let summary = format!("read primitive spec {}", spec.id);
+        let primitive_id = spec.id.clone();
         Ok(ToolExecutionResult::new(
             summary.clone(),
             json!({
-                "workflow_id": spec.id,
+                "primitive_id": primitive_id,
                 "origin": origin,
                 "path": path,
                 "spec": spec,
             }),
             ToolUiEvent::app(
-                "Read Workflow",
+                "Read Primitive Spec",
                 vec![
-                    format!("workflow_id={workflow_id}"),
+                    format!("primitive_id={workflow_id}"),
                     format!(
                         "origin={}",
                         origin
@@ -656,26 +703,26 @@ fn execute_read_workflow_tool<'a>(
 }
 
 fn summarize_update_workflow_tool(call: &AgentToolCall) -> Result<EpisodeActionRecord> {
-    let args: UpdateWorkflowArgs = parse_tool_args(call)?;
+    let args: UpdatePrimitiveSpecArgs = parse_tool_args(call)?;
     Ok(EpisodeActionRecord {
-        kind: "update_workflow".to_string(),
+        kind: "update_primitive_spec".to_string(),
         summary: format!(
-            "workflow_id={} steps={} reason={}",
+            "primitive_id={} steps={} reason={}",
             args.workflow_id,
-            args.workflow_steps.len(),
+            args.primitive_steps.len(),
             args.reason.as_deref().unwrap_or("")
         ),
     })
 }
 
 fn render_update_workflow_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
-    let args: UpdateWorkflowArgs = parse_tool_args(call)?;
+    let args: UpdatePrimitiveSpecArgs = parse_tool_args(call)?;
     Ok(ToolCallUiEvent::app(
-        "update_workflow",
+        "update_primitive_spec",
         vec![
-            format!("workflow_id={}", args.workflow_id),
+            format!("primitive_id={}", args.workflow_id),
             format!("when_to_use={}", args.when_to_use.len()),
-            format!("workflow_steps={}", args.workflow_steps.len()),
+            format!("primitive_steps={}", args.primitive_steps.len()),
             format!("done_criteria={}", args.done_criteria.len()),
         ],
     ))
@@ -686,38 +733,39 @@ fn execute_update_workflow_tool<'a>(
     call: &'a AgentToolCall,
 ) -> ToolFuture<'a> {
     Box::pin(async move {
-        let args: UpdateWorkflowArgs = parse_tool_args(call)?;
-        let workflow_id = require_field(args.workflow_id, "workflow_id")?;
+        let args: UpdatePrimitiveSpecArgs = parse_tool_args(call)?;
+        let workflow_id = require_field(args.workflow_id, "primitive_id")?;
         let updated = context
             .workflows
             .replace_workspace_workflow(
                 &workflow_id,
-                WorkflowSpec {
+                PrimitiveSpec {
                     id: workflow_id.clone(),
                     when_to_use: args.when_to_use,
                     preconditions: args.preconditions,
-                    workflow_steps: args.workflow_steps,
+                    primitive_steps: args.primitive_steps,
                     done_criteria: args.done_criteria,
                     recovery: args.recovery,
                 },
             )
             .await?;
-        let summary = format!("updated workflow {}", updated.id);
+        let summary = format!("updated primitive spec {}", updated.id);
         Ok(ToolExecutionResult::new(
             summary.clone(),
             json!({
+                "primitive_id": updated.id,
                 "updated": updated,
                 "reason": trim_optional_field(args.reason),
             }),
             ToolUiEvent::app(
-                "Updated Workflow",
+                "Updated Primitive Spec",
                 vec![
-                    format!("workflow_id={workflow_id}"),
+                    format!("primitive_id={workflow_id}"),
                     format!("summary={summary}"),
                 ],
             ),
         )
-        .with_turn_boundary("workflow spec updated; re-render world state in a new turn"))
+        .with_turn_boundary("primitive spec updated; re-render world state in a new turn"))
     })
 }
 
@@ -924,10 +972,10 @@ mod tests {
     }
 
     #[test]
-    fn activate_workflow_declares_turn_boundary_reason() {
+    fn activate_composed_primitive_declares_turn_boundary_reason() {
         assert_eq!(
             activate_workflow_turn_boundary_reason(),
-            "workflow binding changed; re-render world state in a new turn before continuing"
+            "primitive binding changed; re-render world state in a new turn before continuing"
         );
     }
 }

@@ -8,7 +8,7 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     emit_build_target();
     build_embedded_webui(&manifest_dir);
-    write_builtin_workflow_bindings(&manifest_dir);
+    write_builtin_primitive_bindings(&manifest_dir);
 }
 
 fn emit_build_target() {
@@ -263,7 +263,7 @@ fn executable_candidate(candidate: &Path) -> Option<PathBuf> {
     }
 }
 
-fn write_builtin_workflow_bindings(manifest_dir: &Path) {
+fn write_builtin_primitive_bindings(manifest_dir: &Path) {
     let workflows_dir = manifest_dir.join("workflows");
     println!("cargo:rerun-if-changed={}", workflows_dir.display());
 
@@ -271,7 +271,7 @@ fn write_builtin_workflow_bindings(manifest_dir: &Path) {
     if let Ok(entries) = fs::read_dir(&workflows_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if !is_builtin_workflow_file(&path) {
+            if !is_builtin_primitive_file(&path) {
                 continue;
             }
             println!("cargo:rerun-if-changed={}", path.display());
@@ -280,9 +280,9 @@ fn write_builtin_workflow_bindings(manifest_dir: &Path) {
                 .and_then(|value| value.to_str())
                 .expect("workflow stem")
                 .to_string();
-            let canonical = path
-                .canonicalize()
-                .unwrap_or_else(|_| workflows_dir.join(path.file_name().expect("workflow file")));
+            let canonical = path.canonicalize().unwrap_or_else(|_| {
+                workflows_dir.join(path.file_name().expect("primitive spec file"))
+            });
             sources.push((stem, canonical));
         }
     }
@@ -291,15 +291,15 @@ fn write_builtin_workflow_bindings(manifest_dir: &Path) {
     let out_path =
         PathBuf::from(env::var("OUT_DIR").expect("out dir")).join("builtin_workflows.rs");
     let mut code =
-        String::from("pub(crate) const BUILTIN_WORKFLOW_SOURCES: &[(&str, &str)] = &[\n");
+        String::from("pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[\n");
     for (id, path) in &sources {
         code.push_str(&format!("    ({id:?}, include_str!({:?})),\n", path));
     }
     code.push_str("];\n");
-    fs::write(out_path, code).expect("write builtin workflow bindings");
+    fs::write(out_path, code).expect("write builtin primitive bindings");
 }
 
-fn is_builtin_workflow_file(path: &Path) -> bool {
+fn is_builtin_primitive_file(path: &Path) -> bool {
     path.extension().and_then(|value| value.to_str()) == Some("md")
         && path.file_name().and_then(|value| value.to_str()) != Some("README.md")
 }

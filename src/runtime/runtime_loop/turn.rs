@@ -187,7 +187,7 @@ pub(crate) async fn execute_agent_loop_step(
     let runtime_turn_id = format!("runtime-turn-{}", uuid::Uuid::new_v4());
     let claimed_inputs = claim_pending_runtime_inputs(context, RUNTIME_EVENT_CLAIM_BATCH_SIZE);
     context.current_work_origin = runtime_work_origin(&claimed_inputs);
-    context.workflow_step_started_bound_id = context.bound_workflow_id.clone();
+    context.workflow_step_started_bound_id = context.bound_primitive_id.clone();
     let claimed_input_fingerprint = claimed_runtime_input_fingerprint(&claimed_inputs);
     let claimed_event_ids = claimed_inputs
         .iter()
@@ -1013,9 +1013,9 @@ async fn record_runtime_error_case(context: &Context, input: RuntimeErrorRecordI
                 .iter()
                 .map(|notice| format!("{}:{}", notice.app, notice.reason))
                 .collect(),
-            bound_workflow_id: context.bound_workflow_id.clone(),
+            bound_primitive_id: context.bound_primitive_id.clone(),
             workflow_origin: context
-                .bound_workflow_id
+                .bound_primitive_id
                 .as_deref()
                 .and_then(|workflow_id| context.workflows.workflow_origin(workflow_id))
                 .map(|origin| format!("{origin:?}").to_ascii_lowercase()),

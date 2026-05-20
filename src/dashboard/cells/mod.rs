@@ -34,7 +34,7 @@ use common::{render_exposed_tool_names, render_exposed_tool_names_in_lines, thin
 use exec::{ExecResultActivityCell, LiveExecActivityCell, live_exec_cell};
 use messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell};
 use plan::PlanActivityCell;
-use workflow::{ActivateWorkflowActivityCell, CreateWorkflowActivityCell};
+use workflow::{ActivatePrimitiveActivityCell, CreatePrimitiveSpecActivityCell};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LiveActivityCell {
@@ -65,8 +65,8 @@ pub enum ActivityCell {
     #[serde(alias = "ToolResult")]
     GenericApp(GenericAppActivityCell),
     PlanResult(PlanActivityCell),
-    CreateWorkflowResult(CreateWorkflowActivityCell),
-    ActivateWorkflowResult(ActivateWorkflowActivityCell),
+    CreateWorkflowResult(CreatePrimitiveSpecActivityCell),
+    ActivateWorkflowResult(ActivatePrimitiveActivityCell),
     ExecResult(ExecResultActivityCell),
     LiveExec(LiveExecActivityCell),
     Patch(PatchActivityCell),

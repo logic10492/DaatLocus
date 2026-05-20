@@ -10,8 +10,8 @@ use crate::{
 };
 
 use super::evaluation_artifacts::{
-    EvaluationArtifactWorkflowCandidateEvaluation, EvaluationArtifactWorkflowMerge,
-    EvaluationArtifactWorkflowPatch,
+    EvaluationArtifactPrimitiveSpecPatch, EvaluationArtifactWorkflowCandidateEvaluation,
+    EvaluationArtifactWorkflowMerge,
 };
 
 const FRONTIERS_DIR_NAME: &str = "sleep_frontiers";
@@ -27,7 +27,7 @@ pub struct WorkflowFrontierEntry {
     pub group_key: String,
     pub candidate_kind: String,
     #[serde(default)]
-    pub patch: Option<EvaluationArtifactWorkflowPatch>,
+    pub patch: Option<EvaluationArtifactPrimitiveSpecPatch>,
     #[serde(default)]
     pub merge: Option<EvaluationArtifactWorkflowMerge>,
     pub evaluation: EvaluationArtifactWorkflowCandidateEvaluation,
@@ -55,7 +55,7 @@ pub async fn save_workflow_frontier(entries: &[WorkflowFrontierEntry]) -> Result
 }
 
 pub fn workflow_patch_frontier_entry_from_candidate(
-    patch: &EvaluationArtifactWorkflowPatch,
+    patch: &EvaluationArtifactPrimitiveSpecPatch,
     evaluation: &EvaluationArtifactWorkflowCandidateEvaluation,
 ) -> WorkflowFrontierEntry {
     WorkflowFrontierEntry {
@@ -312,7 +312,7 @@ fn workflow_entry_size_cost(entry: &WorkflowFrontierEntry) -> usize {
     }
 }
 
-fn workflow_patch_key(patch: &EvaluationArtifactWorkflowPatch) -> String {
+fn workflow_patch_key(patch: &EvaluationArtifactPrimitiveSpecPatch) -> String {
     format!(
         "patch|{}|{}|{}|{}|{}|{}",
         patch.workflow_id,

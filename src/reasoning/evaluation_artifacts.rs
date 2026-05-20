@@ -125,7 +125,7 @@ pub struct EvaluationArtifactRuntimePromptCandidateEvaluation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct EvaluationArtifactWorkflowPatch {
+pub struct EvaluationArtifactPrimitiveSpecPatch {
     pub workflow_id: String,
     pub title: String,
     pub rationale: String,
@@ -153,7 +153,7 @@ pub struct EvaluationArtifactWorkflowReflection {
     #[serde(default)]
     pub missing_preconditions: Vec<String>,
     #[serde(default)]
-    pub weak_workflow_steps: Vec<String>,
+    pub weak_primitive_steps: Vec<String>,
     #[serde(default)]
     pub weak_done_criteria: Vec<String>,
     #[serde(default)]
@@ -198,7 +198,7 @@ pub struct RuntimeErrorCorrectionArtifacts<'a> {
 
 pub struct WorkflowImprovementArtifacts<'a> {
     pub workflow_reflections: &'a [EvaluationArtifactWorkflowReflection],
-    pub workflow_patches: &'a [EvaluationArtifactWorkflowPatch],
+    pub workflow_patches: &'a [EvaluationArtifactPrimitiveSpecPatch],
     pub workflow_merges: &'a [EvaluationArtifactWorkflowMerge],
     pub workflow_candidate_evaluations: &'a [EvaluationArtifactWorkflowCandidateEvaluation],
 }
@@ -292,7 +292,7 @@ impl EvaluationArtifactsStore {
 
     pub async fn replace_workflow_patches(
         &self,
-        artifacts: &[EvaluationArtifactWorkflowPatch],
+        artifacts: &[EvaluationArtifactPrimitiveSpecPatch],
     ) -> Result<Vec<PathBuf>> {
         let artifacts = artifacts
             .iter()
