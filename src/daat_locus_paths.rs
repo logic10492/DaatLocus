@@ -86,6 +86,10 @@ impl DaatLocusPaths {
         self.runtime_dir().join("daemon.lock")
     }
 
+    pub fn models_dev_cache(&self) -> PathBuf {
+        self.cache_dir().join("models-dev-api.json")
+    }
+
     pub fn daemon_token_file(&self) -> PathBuf {
         self.runtime_dir().join("daemon.token")
     }

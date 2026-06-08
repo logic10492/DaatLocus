@@ -22,7 +22,10 @@ use crate::{
         normalize_provider_base_url, redact_secret_text, resolve_env_reference, write_config,
     },
     i18n::Locale,
-    model_catalog::{ModelCapacity, catalog_model_capacity, conservative_model_capacity},
+    model_catalog::{
+        ModelCapacity, catalog_model_capacity, conservative_model_capacity,
+        fetch_models_dev_capacity,
+    },
     providers::{
         CodexOAuthTokens, codex_oauth_access_from_file, codex_oauth_auth_file,
         codex_oauth_client_version, codex_oauth_default_base_url, write_codex_oauth_tokens,
@@ -1812,12 +1815,19 @@ fn resolve_model_capacity(
 ) -> ModelCapacity {
     let catalog = catalog_model_capacity(model_id);
     let fallback = conservative_model_capacity();
+
+    let models_dev = || fetch_models_dev_capacity(model_id);
+    let ctx = || models_dev().map(|c| c.context_window_tokens);
+    let out = || models_dev().map(|c| c.max_completion_tokens);
+
     ModelCapacity {
         context_window_tokens: detected_context_window
             .or_else(|| catalog.map(|capacity| capacity.context_window_tokens))
+            .or_else(ctx)
             .unwrap_or(fallback.context_window_tokens),
         max_completion_tokens: detected_max_output
             .or_else(|| catalog.map(|capacity| capacity.max_completion_tokens))
+            .or_else(out)
             .unwrap_or(fallback.max_completion_tokens),
         supports_vision: detected_supports_vision.unwrap_or_else(|| {
             catalog

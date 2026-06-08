@@ -141,6 +141,13 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     // Auto-install the browser runtime when it is missing.
     maybe_setup_browser_runtime().await;
 
+    // Refresh models.dev catalog cache in background.
+    tokio::spawn(async {
+        if let Err(err) = crate::model_catalog::refresh_models_dev_cache().await {
+            tracing::warn!("models.dev cache refresh failed: {err}");
+        }
+    });
+
     // Check for restart/shutdown requested during browser setup.
     if daemon_lifecycle.get() != DaemonLifecycleState::Initializing {
         tracing::info!("daemon restart/shutdown requested during init, aborting startup");
