@@ -18,7 +18,7 @@ use ratatui::{
 
 use crate::{
     config::{
-        Config, JudgeConfig, ModelConfig, ProviderConfig, TelegramConfig,
+        Config, JudgeConfig, ModelConfig, ProviderConfig, TelegramConfig, ThinkingBudget,
         normalize_provider_base_url, redact_secret_text, resolve_env_reference, write_config,
     },
     i18n::Locale,
@@ -2371,6 +2371,12 @@ async fn prompt_model(
         ));
     }
 
+    let thinking_budget = prompt_reasoning_config(
+        ui,
+        &model_id,
+        &crate::tr!(locale, "config.reasoning_config"),
+    )?;
+
     Ok((
         name,
         ModelConfig {
@@ -2379,9 +2385,71 @@ async fn prompt_model(
             context_window_tokens: context_window,
             max_completion_tokens: max_completion,
             supports_vision: api_vision,
+            thinking_budget,
             ..ModelConfig::default()
         },
     ))
+}
+
+fn prompt_reasoning_config(
+    ui: &mut PromptUi,
+    model_id: &str,
+    title: &str,
+) -> Result<Option<ThinkingBudget>> {
+    use crate::model_catalog::catalog_model_reasoning_options;
+    let options = catalog_model_reasoning_options(model_id);
+    if options.is_empty() {
+        return Ok(None);
+    }
+
+    let skip_label = format!("skip ({} reasoning configured if needed)", model_id);
+    let mut labels: Vec<String> = options
+        .iter()
+        .flat_map(|opt| match opt {
+            crate::model_catalog::ReasoningOption::Toggle => {
+                vec!["enabled".to_string()]
+            }
+            crate::model_catalog::ReasoningOption::Effort { values } => values.clone(),
+            crate::model_catalog::ReasoningOption::BudgetTokens { .. } => {
+                vec!["custom (budget tokens)".to_string()]
+            }
+        })
+        .collect();
+    let skip_idx = labels.len();
+    labels.push(skip_label);
+
+    let idx = ui.select(title, &labels, skip_idx)?;
+    if idx == skip_idx {
+        return Ok(None);
+    }
+
+    let mut flat_idx = idx;
+    for opt in &options {
+        match opt {
+            crate::model_catalog::ReasoningOption::Toggle => {
+                if flat_idx == 0 {
+                    return Ok(Some(ThinkingBudget::new("high")));
+                }
+                flat_idx -= 1;
+            }
+            crate::model_catalog::ReasoningOption::Effort { values } => {
+                if flat_idx < values.len() {
+                    return Ok(Some(ThinkingBudget::new(&values[flat_idx])));
+                }
+                flat_idx -= values.len();
+            }
+            crate::model_catalog::ReasoningOption::BudgetTokens { min, max } => {
+                if flat_idx == 0 {
+                    let default = (*min).max(1024);
+                    let val = ui.usize("Reasoning budget tokens", default)?;
+                    let clamped = val.clamp(*min, max.unwrap_or(usize::MAX));
+                    return Ok(Some(ThinkingBudget::new(clamped.to_string())));
+                }
+                flat_idx -= 1;
+            }
+        }
+    }
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------

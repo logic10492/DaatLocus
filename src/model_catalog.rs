@@ -85,6 +85,52 @@ fn input_modalities_suggest_vision(modalities: &serde_json::Value) -> bool {
     })
 }
 
+/// Reasoning configuration option discovered from models.dev.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReasoningOption {
+    Toggle,
+    Effort { values: Vec<String> },
+    BudgetTokens { min: usize, max: Option<usize> },
+}
+
+/// Search all provider sections for reasoning options for a matching model ID.
+pub fn catalog_model_reasoning_options(model_id: &str) -> Vec<ReasoningOption> {
+    let root = load_catalog_json();
+    let normalized = model_id.trim().to_ascii_lowercase();
+    for section in root.as_object().into_iter().flat_map(|o| o.values()) {
+        if let Some(models) = section["models"].as_object()
+            && let Some(model) = models.get(&normalized)
+        {
+            return parse_reasoning_options(&model["reasoning_options"]);
+        }
+    }
+    Vec::new()
+}
+
+fn parse_reasoning_options(raw: &serde_json::Value) -> Vec<ReasoningOption> {
+    let Some(arr) = raw.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|opt| match opt["type"].as_str()? {
+            "toggle" => Some(ReasoningOption::Toggle),
+            "effort" => {
+                let values: Vec<String> = opt["values"]
+                    .as_array()
+                    .into_iter()
+                    .flat_map(|v| v.iter().filter_map(|s| s.as_str().map(str::to_string)))
+                    .collect();
+                (!values.is_empty()).then_some(ReasoningOption::Effort { values })
+            }
+            "budget_tokens" => Some(ReasoningOption::BudgetTokens {
+                min: opt["min"].as_u64().map(|v| v as usize).unwrap_or(0),
+                max: opt["max"].as_u64().map(|v| v as usize),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Search all provider sections for a matching model ID.
 fn lookup_model_in_json(root: &serde_json::Value, normalized: &str) -> Option<ModelCapacity> {
     for section in root.as_object()?.values() {
