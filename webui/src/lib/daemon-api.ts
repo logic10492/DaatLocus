@@ -784,11 +784,6 @@ export async function readLogSource({
   return parseJsonResponse<LogReadResponse>(response, "Log read");
 }
 
-type DashboardWsMessage =
-  | { type: "snapshot"; data: DashboardSnapshot }
-  | { type: "delta"; data: Record<string, unknown> };
-
-
 export function subscribeDashboardSnapshots({
   token = getStoredDaemonToken(),
   onSnapshot,
@@ -803,8 +798,6 @@ export function subscribeDashboardSnapshots({
 
   const socket = new WebSocket(dashboardStreamUrl(daemonToken));
 
-  let currentSnapshot: DashboardSnapshot | null = null;
-
   socket.addEventListener("message", (event) => {
     if (typeof event.data !== "string") {
       onError?.(
@@ -814,32 +807,7 @@ export function subscribeDashboardSnapshots({
     }
 
     try {
-      const msg = JSON.parse(event.data) as DashboardWsMessage;
-      if (msg.type === "snapshot") {
-        currentSnapshot = msg.data;
-        onSnapshot(currentSnapshot);
-      } else if (msg.type === "delta") {
-        if (!currentSnapshot) {
-          onError?.(
-            new DaemonApiError("Received delta before initial snapshot."),
-          );
-          return;
-        }
-        // Shallow merge changed fields into the current snapshot.
-        const changed = msg.data as Record<string, unknown>;
-        const merged = { ...currentSnapshot };
-        for (const key of Object.keys(changed)) {
-          (merged as Record<string, unknown>)[key] = changed[key];
-        }
-        currentSnapshot = merged as DashboardSnapshot;
-        onSnapshot(currentSnapshot);
-      } else {
-        onError?.(
-          new DaemonApiError(
-            `Unknown dashboard ws message type: ${(msg as { type: string }).type}`,
-          ),
-        );
-      }
+      onSnapshot(JSON.parse(event.data) as DashboardSnapshot);
     } catch (error) {
       onError?.(
         new DaemonApiError(
