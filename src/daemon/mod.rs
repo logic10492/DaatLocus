@@ -34,7 +34,7 @@ use include_dir::{Dir, include_dir};
 use miette::{Result, miette};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, Signal, System};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, watch},
@@ -76,6 +76,9 @@ pub const DAEMON_HOST_DISPLAY: &str = "0.0.0.0";
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const SESSION_IPC_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const SESSION_PROCESS_TERM_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_PROCESS_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_MAIN_LOG: &str = "daat-locus.log";
 const DAEMON_STDERR_LOG: &str = "daemon-stderr.log";
 pub const DAEMONIZE_ENV: &str = "DAAT_LOCUS_DAEMONIZE";
@@ -1651,6 +1654,105 @@ pub(crate) async fn delete_session_by_id(
     Ok(removed)
 }
 
+pub(crate) async fn terminate_process_backed_sessions(
+    sessions: &session::SessionRegistry,
+    session_tokens: &SessionTokenStore,
+    reason: &str,
+) -> Result<()> {
+    let targets = sessions
+        .list()
+        .into_iter()
+        .filter(|info| info.status.is_process_backed())
+        .collect::<Vec<_>>();
+    let results = futures_util::future::join_all(targets.into_iter().map(|info| {
+        terminate_process_backed_session(
+            sessions.clone(),
+            session_tokens.clone(),
+            info,
+            reason.to_string(),
+        )
+    }))
+    .await;
+    let errors = results
+        .into_iter()
+        .filter_map(std::result::Result::err)
+        .map(|err| format!("{err:?}"))
+        .collect::<Vec<_>>();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(miette!(
+            "failed to terminate session processes before daemon restart: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+async fn terminate_process_backed_session(
+    sessions: session::SessionRegistry,
+    session_tokens: SessionTokenStore,
+    info: session::SessionInfo,
+    reason: String,
+) -> Result<()> {
+    let session_id = info.session_id.clone();
+    let ipc_token = session_tokens.read().get(&session_id).cloned();
+    if let (Some(ipc_name), Some(ipc_token)) = (info.ipc_name.clone(), ipc_token) {
+        let client = session_ipc::SessionIpcClient::new(session_id.clone(), ipc_name, ipc_token)
+            .with_timeout(SESSION_IPC_SHUTDOWN_TIMEOUT);
+        if let Err(err) = client
+            .request(session_ipc::SessionIpcRequest::Shutdown {
+                reason: reason.clone(),
+            })
+            .await
+        {
+            tracing::warn!("session `{session_id}` IPC shutdown request failed: {err:?}");
+        }
+    }
+
+    if let Some(pid) = info.pid
+        && !wait_for_process_exit(pid, SESSION_PROCESS_TERM_TIMEOUT).await
+    {
+        tracing::warn!(
+            "session `{session_id}` pid {pid} did not exit after IPC shutdown; sending SIGTERM"
+        );
+        let _ = signal_process(pid, Signal::Term);
+        if !wait_for_process_exit(pid, SESSION_PROCESS_TERM_TIMEOUT).await {
+            tracing::warn!(
+                "session `{session_id}` pid {pid} did not exit after SIGTERM; sending SIGKILL"
+            );
+            let _ = signal_process(pid, Signal::Kill);
+            if !wait_for_process_exit(pid, SESSION_PROCESS_KILL_TIMEOUT).await {
+                return Err(miette!(
+                    "session `{session_id}` pid {pid} did not exit after shutdown request"
+                ));
+            }
+        }
+    }
+
+    session_tokens.write().remove(&session_id);
+    sessions.mark_dead(&session_id).await?;
+    Ok(())
+}
+
+async fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !process_exists(pid) {
+            return true;
+        }
+        tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
+    }
+    !process_exists(pid)
+}
+
+fn signal_process(pid: u32, signal: Signal) -> bool {
+    let system = System::new_all();
+    system
+        .process(Pid::from_u32(pid))
+        .and_then(|process| process.kill_with(signal))
+        .unwrap_or(false)
+}
+
 async fn spawn_session_process(
     sessions: session::SessionRegistry,
     session_tokens: SessionTokenStore,
@@ -2537,6 +2639,46 @@ pub async fn wait_for_daemon_ready() -> Result<StatusResponse> {
     ))
 }
 
+pub async fn wait_for_daemon_restarted(previous: &StatusResponse) -> Result<StatusResponse> {
+    let client = DaemonClient::new(previous.port);
+    let deadline = Instant::now() + READY_TIMEOUT + SHUTDOWN_TIMEOUT;
+    let mut last_error = None;
+    while Instant::now() < deadline {
+        match client.status().await {
+            Ok(status) if is_restarted_ready_daemon(previous, &status) => return Ok(status),
+            Ok(status) if status.state == DaemonLifecycleState::Failed => {
+                return Err(miette!(
+                    "daemon restart failed{}",
+                    daemon_startup_log_tail_suffix().await
+                ));
+            }
+            Ok(status) => {
+                last_error = Some(format!(
+                    "daemon pid={} started_at_ms={} is {}",
+                    status.pid, status.started_at_ms, status.state
+                ));
+            }
+            Err(err) => last_error = Some(err.to_string()),
+        }
+        tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
+    }
+    Err(miette!(
+        "daemon did not restart within {}s{}{}",
+        (READY_TIMEOUT + SHUTDOWN_TIMEOUT).as_secs(),
+        last_error
+            .as_deref()
+            .map(|err| format!(": {err}"))
+            .unwrap_or_default(),
+        daemon_startup_log_tail_suffix().await
+    ))
+}
+
+fn is_restarted_ready_daemon(previous: &StatusResponse, status: &StatusResponse) -> bool {
+    status.state == DaemonLifecycleState::Ready
+        && status.port == previous.port
+        && (status.pid != previous.pid || status.started_at_ms > previous.started_at_ms)
+}
+
 pub async fn wait_for_daemon_shutdown(port: u16) -> Result<()> {
     let client = DaemonClient::new(port);
     let mut deadline = Instant::now() + SHUTDOWN_TIMEOUT;
@@ -2544,11 +2686,7 @@ pub async fn wait_for_daemon_shutdown(port: u16) -> Result<()> {
     while Instant::now() < deadline {
         match client.status().await {
             Ok(status) if status.state == DaemonLifecycleState::Stopping => {
-                // Daemon acknowledged the shutdown/restart request.
-                if !saw_stopping {
-                    saw_stopping = true;
-                }
-                deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+                observe_daemon_shutdown_status(status.state, &mut saw_stopping, &mut deadline);
             }
             Ok(_) => {
                 // Still running normally.
@@ -2558,13 +2696,6 @@ pub async fn wait_for_daemon_shutdown(port: u16) -> Result<()> {
                 return Ok(());
             }
         }
-        // Once we've seen the daemon enter Stopping state, extend the
-        // effective deadline by resetting it from now.  This prevents
-        // the CLI from timing out while the daemon finishes expensive
-        // init work before it can process the control command.
-        if saw_stopping {
-            deadline = Instant::now() + SHUTDOWN_TIMEOUT;
-        }
         tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
     }
     Err(miette!(
@@ -2573,6 +2704,17 @@ pub async fn wait_for_daemon_shutdown(port: u16) -> Result<()> {
         port,
         SHUTDOWN_TIMEOUT.as_secs()
     ))
+}
+
+fn observe_daemon_shutdown_status(
+    state: DaemonLifecycleState,
+    saw_stopping: &mut bool,
+    deadline: &mut Instant,
+) {
+    if state == DaemonLifecycleState::Stopping && !*saw_stopping {
+        *saw_stopping = true;
+        *deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+    }
 }
 
 pub async fn spawn_detached_daemon_process() -> Result<()> {
@@ -2765,5 +2907,77 @@ mod tests {
         lifecycle.set(DaemonLifecycleState::Ready);
         lifecycle.mark_failed_if_initializing();
         assert_eq!(lifecycle.get(), DaemonLifecycleState::Ready);
+    }
+
+    #[test]
+    fn restarted_ready_daemon_requires_new_process_identity() {
+        let previous = StatusResponse {
+            pid: 100,
+            started_at_ms: 1_000,
+            version: "0.1.1".to_string(),
+            bind_host: DAEMON_HOST_DISPLAY.to_string(),
+            port: 53825,
+            state: DaemonLifecycleState::Ready,
+            connected_clients: 0,
+        };
+        let same_process = StatusResponse {
+            pid: 100,
+            started_at_ms: 1_000,
+            version: "0.1.1".to_string(),
+            bind_host: DAEMON_HOST_DISPLAY.to_string(),
+            port: 53825,
+            state: DaemonLifecycleState::Ready,
+            connected_clients: 0,
+        };
+        let restarted = StatusResponse {
+            pid: 101,
+            started_at_ms: 1_100,
+            version: "0.1.1".to_string(),
+            bind_host: DAEMON_HOST_DISPLAY.to_string(),
+            port: 53825,
+            state: DaemonLifecycleState::Ready,
+            connected_clients: 0,
+        };
+
+        assert!(!is_restarted_ready_daemon(&previous, &same_process));
+        assert!(is_restarted_ready_daemon(&previous, &restarted));
+    }
+
+    #[test]
+    fn shutdown_wait_deadline_extends_once_for_stopping_status() {
+        let mut deadline = Instant::now() + Duration::from_secs(1);
+        let initial_deadline = deadline;
+        let mut saw_stopping = false;
+
+        observe_daemon_shutdown_status(
+            DaemonLifecycleState::Ready,
+            &mut saw_stopping,
+            &mut deadline,
+        );
+        assert_eq!(deadline, initial_deadline);
+        assert!(!saw_stopping);
+
+        observe_daemon_shutdown_status(
+            DaemonLifecycleState::Stopping,
+            &mut saw_stopping,
+            &mut deadline,
+        );
+        assert!(deadline > initial_deadline);
+        assert!(saw_stopping);
+        let stopping_deadline = deadline;
+
+        observe_daemon_shutdown_status(
+            DaemonLifecycleState::Stopping,
+            &mut saw_stopping,
+            &mut deadline,
+        );
+        assert_eq!(deadline, stopping_deadline);
+
+        observe_daemon_shutdown_status(
+            DaemonLifecycleState::Ready,
+            &mut saw_stopping,
+            &mut deadline,
+        );
+        assert_eq!(deadline, stopping_deadline);
     }
 }

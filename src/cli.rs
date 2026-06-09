@@ -7,7 +7,7 @@ use crate::{
         CreatedDaemonToken, DaemonClient, DaemonTokenListEntry, connect_daemon_status,
         connect_existing_daemon, connect_or_start_daemon, create_daemon_token, list_daemon_tokens,
         revoke_daemon_token, rotate_daemon_token, spawn_detached_daemon_process, status_summary,
-        wait_for_daemon_ready, wait_for_daemon_shutdown,
+        wait_for_daemon_ready, wait_for_daemon_restarted, wait_for_daemon_shutdown,
     },
     dashboard::run_tui_dashboard,
     i18n::Locale,
@@ -1080,14 +1080,14 @@ async fn run_daemon_stop_command() -> Result<()> {
 
 async fn run_daemon_restart_command() -> Result<()> {
     let locale = configured_locale().await;
-    if let Ok(client) = connect_existing_daemon().await {
-        let port = client.port();
+    let status = if let Ok(client) = connect_existing_daemon().await {
+        let previous = client.status().await?;
         client.restart().await?;
-        wait_for_daemon_shutdown(port).await?;
+        wait_for_daemon_restarted(&previous).await?
     } else {
         spawn_detached_daemon_process().await?;
-    }
-    let status = wait_for_daemon_ready().await?;
+        wait_for_daemon_ready().await?
+    };
     println!(
         "{}",
         crate::tr!(locale, "daemon.restarted", status = status_summary(&status))

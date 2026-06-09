@@ -8,6 +8,7 @@ use crate::{
         DAEMON_HOST_DISPLAY, DaemonControlCommand, DaemonLifecycleHandle, DaemonLifecycleState,
         DaemonLock, DaemonServerStartParams, SessionTokenStore, delete_session_by_id, session,
         session_client_for_id, session_ipc, spawn_detached_daemon_process, start_server,
+        terminate_process_backed_sessions,
     },
     dashboard::{
         DashboardControlCommand, DashboardRuntimeActivity, DashboardRuntimeActivityStatus,
@@ -404,6 +405,13 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         handle.abort();
     }
     session_health_checks.abort();
+    let session_shutdown_error = if restart_requested {
+        terminate_process_backed_sessions(&sessions, &session_tokens, "daemon restart")
+            .await
+            .err()
+    } else {
+        None
+    };
     lock.release();
     if let Some(completion_tx) = shutdown_completion_tx.take() {
         let _ = completion_tx.send(());
@@ -411,6 +419,9 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     drop(dashboard_tx);
     let _ = server_shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(15), daemon_server.shutdown()).await;
+    if let Some(err) = session_shutdown_error {
+        return Err(err);
+    }
     if restart_requested {
         spawn_detached_daemon_process().await?;
     }
