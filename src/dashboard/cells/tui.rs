@@ -527,11 +527,7 @@ fn render_generic_app_cell_lines(cell: &GenericAppActivityCell) -> Vec<Line<'sta
 fn render_coding_open_project_cell_lines(
     cell: &CodingOpenProjectActivityCell,
 ) -> Vec<Line<'static>> {
-    let title = if let Some(language) = cell.language.as_deref() {
-        format!("Opened Project: {} ({language})", cell.project_root)
-    } else {
-        format!("Opened Project: {}", cell.project_root)
-    };
+    let title = format!("Opened Project: {}", cell.project_root);
     render_text_activity_lines(
         glyph::APP_ATTENTION,
         Color::Cyan,

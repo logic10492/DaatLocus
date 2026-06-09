@@ -74,7 +74,6 @@ pub struct GenericAppActivityCell {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CodingOpenProjectActivityCell {
     pub project_root: String,
-    pub language: Option<String>,
     pub detail_lines: Vec<String>,
 }
 
@@ -200,7 +199,6 @@ impl From<crate::tool_ui::CodingOpenProjectUiData> for CodingOpenProjectActivity
     fn from(data: crate::tool_ui::CodingOpenProjectUiData) -> Self {
         Self {
             project_root: data.project_root,
-            language: data.language,
             detail_lines: data.detail_lines,
         }
     }

@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -23,6 +24,133 @@ const MAX_SEARCH_LIMIT: usize = 1000;
 const DEFAULT_REVIEW_LIMIT: usize = 1;
 const MAX_REVIEW_LIMIT: usize = 100;
 const DEFAULT_FILE_SEARCH_LIMIT: usize = 100;
+const MAX_LSP_DID_OPEN_FILES: usize = 500;
+
+fn lsp_config_for_language(lsp_lang: &str) -> Option<Box<dyn LspServerConfig>> {
+    match lsp_lang {
+        "rust" => Some(Box::new(RustAnalyzerConfig)),
+        "python" => Some(Box::new(PyrightConfig)),
+        "typescript" | "javascript" => Some(Box::new(TsJsConfig)),
+        "go" => Some(Box::new(GoplsConfig)),
+        "java" => Some(Box::new(JdtlsConfig)),
+        _ => None,
+    }
+}
+
+fn lsp_extensions_for_language(lsp_lang: &str) -> &'static [&'static str] {
+    match lsp_lang {
+        "rust" => &["rs"],
+        "python" => &["py"],
+        "typescript" | "javascript" => &["ts", "tsx", "js", "jsx"],
+        "go" => &["go"],
+        "java" => &["java"],
+        _ => &[],
+    }
+}
+
+fn lsp_language_for_extension(ext: &str) -> Option<&'static str> {
+    match ext {
+        "rs" => Some("rust"),
+        "py" => Some("python"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "jsx" => Some("javascript"),
+        "go" => Some("go"),
+        "java" => Some("java"),
+        _ => None,
+    }
+}
+
+fn detect_project_lsp_language(root: &Path) -> Option<&'static str> {
+    if root.join("Cargo.toml").is_file() {
+        return Some("rust");
+    }
+    if root.join("pyproject.toml").is_file()
+        || root.join("requirements.txt").is_file()
+        || root.join("setup.py").is_file()
+    {
+        return Some("python");
+    }
+    if root.join("go.mod").is_file() {
+        return Some("go");
+    }
+    if root.join("pom.xml").is_file()
+        || root.join("build.gradle").is_file()
+        || root.join("build.gradle.kts").is_file()
+    {
+        return Some("java");
+    }
+    if root.join("tsconfig.json").is_file() {
+        return Some("typescript");
+    }
+    if root.join("package.json").is_file() {
+        return Some("typescript");
+    }
+
+    let mut counts: HashMap<&'static str, usize> = HashMap::new();
+    for entry in WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .ignore(true)
+        .parents(true)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+        })
+        .take(MAX_LSP_DID_OPEN_FILES)
+    {
+        let Some(ext) = entry.path().extension().and_then(|ext| ext.to_str()) else {
+            continue;
+        };
+        if let Some(language) = lsp_language_for_extension(ext) {
+            *counts.entry(language).or_default() += 1;
+        }
+    }
+
+    ["rust", "typescript", "javascript", "python", "go", "java"]
+        .into_iter()
+        .max_by_key(|language| counts.get(language).copied().unwrap_or(0))
+        .filter(|language| counts.get(language).copied().unwrap_or(0) > 0)
+}
+
+fn open_existing_source_files_for_lsp(lsp: &dyn Analyzer, root: &Path, lsp_lang: &str) {
+    let exts = lsp_extensions_for_language(lsp_lang);
+    if exts.is_empty() {
+        return;
+    }
+    let scan_root = {
+        let src_dir = root.join("src");
+        if src_dir.exists() {
+            src_dir
+        } else {
+            root.to_path_buf()
+        }
+    };
+    for entry in WalkBuilder::new(scan_root)
+        .hidden(false)
+        .git_ignore(true)
+        .ignore(true)
+        .parents(true)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+        })
+        .take(MAX_LSP_DID_OPEN_FILES)
+    {
+        let path = entry.path();
+        if let Some(ext) = path.extension().and_then(|ext| ext.to_str())
+            && exts.contains(&ext)
+            && let Ok(content) = std::fs::read_to_string(path)
+        {
+            lsp.notify_did_open(path, &content);
+        }
+    }
+}
 
 pub fn dispatch(
     req: &JsonRpcRequest,
@@ -43,84 +171,50 @@ pub fn dispatch(
                 }
             };
 
-            // Initialize LspClient for this project
-            let language = params.language.as_deref().unwrap_or("auto");
-            let lsp_lang = match language {
-                "auto" | "rust" => "rust",
-                "python" | "py" => "python",
-                "typescript" | "ts" | "tsx" => "typescript",
-                "javascript" | "js" | "jsx" => "javascript",
-                other => other,
-            };
-            let config: Box<dyn LspServerConfig> = match lsp_lang {
-                "rust" => Box::new(RustAnalyzerConfig),
-                "python" => Box::new(PyrightConfig),
-                "typescript" | "javascript" => Box::new(TsJsConfig),
-                "go" => Box::new(GoplsConfig),
-                "java" => Box::new(JdtlsConfig),
-                _ => {
-                    // Unsupported language — skip LSP initialization
-                    return JsonRpcResponse::ok(
-                        req.id.clone(),
-                        serde_json::json!({
-                            "status": "opened",
-                            "project_root": params.project_root,
-                            "language": params.language.unwrap_or_else(|| "auto".to_string()),
-                            "lsp": "unsupported",
-                        }),
-                    );
+            let root = Path::new(&params.project_root);
+            if project_root == Some(root) {
+                return JsonRpcResponse::ok(
+                    req.id.clone(),
+                    serde_json::json!({
+                        "status": "already_open",
+                        "project_root": params.project_root,
+                    }),
+                );
+            }
+
+            let detected_lsp_language = detect_project_lsp_language(root);
+            let Some(config) = detected_lsp_language.and_then(lsp_config_for_language) else {
+                if let Ok(mut lsp_guard) = lsp_analyzer.lock() {
+                    *lsp_guard = None;
                 }
+                return JsonRpcResponse::ok(
+                    req.id.clone(),
+                    serde_json::json!({
+                        "status": "opened",
+                        "project_root": params.project_root,
+                        "detected_lsp_language": detected_lsp_language,
+                        "lsp": "unsupported",
+                    }),
+                );
             };
             {
                 let mut lsp_guard = match lsp_analyzer.lock() {
                     Ok(g) => g,
                     Err(_) => return JsonRpcResponse::err(req.id.clone(), -32603, "lock poisoned"),
                 };
-                // Drop previous LSP analyzer — its Drop impl sends shutdown
+                // Drop previous LSP analyzer — its Drop impl sends shutdown.
                 *lsp_guard = None;
-                let new_lsp = LspAnalyzer::new(Path::new(&params.project_root), config.as_ref());
+                let new_lsp = LspAnalyzer::new(root, config.as_ref());
                 *lsp_guard = Some(Box::new(new_lsp));
             }
 
-            // Open all existing source files in LSP so that references work
             {
                 let lsp_guard = match lsp_analyzer.lock() {
                     Ok(g) => g,
                     Err(_) => return JsonRpcResponse::err(req.id.clone(), -32603, "lock poisoned"),
                 };
-                if let Some(ref lsp) = *lsp_guard {
-                    let root = Path::new(&params.project_root);
-                    let src_dir = root.join("src");
-                    let scan_dir = if src_dir.exists() {
-                        src_dir.as_path()
-                    } else {
-                        root
-                    };
-                    if let Ok(entries) = std::fs::read_dir(scan_dir) {
-                        let exts: &[&str] = match lsp_lang {
-                            "rust" => &["rs"],
-                            "python" => &["py"],
-                            "typescript" | "javascript" => &["ts", "tsx", "js", "jsx"],
-                            "go" => &["go"],
-                            "java" => &["java"],
-                            "c" | "h" => &["c", "h"],
-                            "cpp" | "cxx" | "cc" | "hpp" | "hxx" | "hh" => {
-                                &["cpp", "cxx", "cc", "hpp", "hxx", "hh"]
-                            }
-                            "rb" => &["rb"],
-                            "php" => &["php"],
-                            _ => &["rs"],
-                        };
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if let Some(ext) = path.extension().and_then(|e| e.to_str())
-                                && exts.contains(&ext)
-                                && let Ok(content) = std::fs::read_to_string(&path)
-                            {
-                                lsp.notify_did_open(&path, &content);
-                            }
-                        }
-                    }
+                if let (Some(lsp), Some(lsp_lang)) = (&*lsp_guard, detected_lsp_language) {
+                    open_existing_source_files_for_lsp(lsp.as_ref(), root, lsp_lang);
                 }
             }
 
@@ -129,7 +223,7 @@ pub fn dispatch(
                 serde_json::json!({
                     "status": "opened",
                     "project_root": params.project_root,
-                    "language": params.language.unwrap_or_else(|| "auto".to_string()),
+                    "detected_lsp_language": detected_lsp_language,
                 }),
             )
         }
@@ -1004,6 +1098,92 @@ mod tests {
     use super::*;
     use crate::state::PropagationState;
     use std::sync::Mutex;
+
+    #[test]
+    fn open_project_rejects_manual_language_param() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            method: "open_project".to_string(),
+            params: serde_json::json!({
+                "project_root": dir.path(),
+                "language": "rust",
+            }),
+        };
+        let propagation_state = Mutex::new(PropagationState::new());
+        let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+
+        let response = dispatch(&req, None, &propagation_state, &lsp_analyzer);
+
+        assert!(response.error.is_some());
+        assert!(
+            response
+                .error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("unknown field `language`")
+        );
+    }
+
+    #[test]
+    fn open_project_detects_lsp_language_from_project_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"tmp\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        let req = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            method: "open_project".to_string(),
+            params: serde_json::json!({
+                "project_root": dir.path(),
+            }),
+        };
+        let propagation_state = Mutex::new(PropagationState::new());
+        let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+
+        let response = dispatch(&req, None, &propagation_state, &lsp_analyzer);
+
+        assert!(
+            response.error.is_none(),
+            "unexpected error: {:?}",
+            response.error
+        );
+        let result = response.result.unwrap();
+        assert_eq!(result["detected_lsp_language"], "rust");
+        assert!(result.get("language").is_none());
+    }
+
+    #[test]
+    fn open_project_is_idempotent_for_current_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(1),
+            method: "open_project".to_string(),
+            params: serde_json::json!({
+                "project_root": dir.path(),
+            }),
+        };
+        let propagation_state = Mutex::new(PropagationState::new());
+        let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+
+        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
+
+        assert!(
+            response.error.is_none(),
+            "unexpected error: {:?}",
+            response.error
+        );
+        let result = response.result.unwrap();
+        assert_eq!(result["status"], "already_open");
+        assert!(result.get("language").is_none());
+        assert!(result.get("detected_lsp_language").is_none());
+    }
 
     #[test]
     fn grep_output_groups_matches_by_file_and_selector() {

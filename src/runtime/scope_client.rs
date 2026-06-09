@@ -47,33 +47,31 @@ impl ScopeClient {
 
     /// Open a project, setting the root directory for subsequent operations.
     #[allow(dead_code)]
-    pub fn open_project(
-        &mut self,
-        project_root: impl Into<PathBuf>,
-        language: Option<&str>,
-    ) -> api::JsonRpcResponse {
+    pub fn open_project(&mut self, project_root: impl Into<PathBuf>) -> api::JsonRpcResponse {
         let project_root = project_root.into();
+        let previous_project_root = self.project_root.clone();
         let fake_req = api::JsonRpcRequest {
             _jsonrpc: "2.0".to_string(),
             id: serde_json::json!(1),
             method: "open_project".to_string(),
             params: serde_json::json!({
                 "project_root": project_root.to_string_lossy(),
-                "language": language,
             }),
         };
         let response = scope_engine::server::dispatch(
             &fake_req,
-            Some(&project_root),
+            previous_project_root.as_deref(),
             &self.propagation_state,
             &self.lsp_analyzer,
         );
         if response.error.is_none() {
-            let mut state = self
-                .propagation_state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            *state = PropagationState::new();
+            if previous_project_root.as_deref() != Some(project_root.as_path()) {
+                let mut state = self
+                    .propagation_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *state = PropagationState::new();
+            }
             self.project_root = Some(project_root);
         }
         response
@@ -333,11 +331,17 @@ mod tests {
     }
 
     #[test]
-    fn open_project_resets_pending_review_state() {
+    fn open_project_preserves_pending_review_for_same_project_and_resets_on_project_change() {
         let temp_dir = tempfile::tempdir().unwrap();
+        let other_temp_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             temp_dir.path().join("Cargo.toml"),
             "[package]\nname = \"tmp\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            other_temp_dir.path().join("Cargo.toml"),
+            "[package]\nname = \"other\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
 
@@ -362,7 +366,30 @@ mod tests {
             .accumulate(vec![open_result("src/main.rs::fn main")]);
         assert_eq!(client.pending_review_count(), 1);
 
-        let response = client.open_project(temp_dir.path(), Some("rust"));
+        let response = client.open_project(temp_dir.path());
+        assert!(response.error.is_none());
+        assert_eq!(client.pending_review_count(), 0);
+
+        client
+            .propagation_state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .accumulate(vec![open_result("src/lib.rs::fn lib")]);
+        assert_eq!(client.pending_review_count(), 1);
+
+        let response = client.open_project(temp_dir.path());
+        assert!(response.error.is_none());
+        assert_eq!(
+            response
+                .result
+                .as_ref()
+                .and_then(|result| result.get("status"))
+                .and_then(serde_json::Value::as_str),
+            Some("already_open")
+        );
+        assert_eq!(client.pending_review_count(), 1);
+
+        let response = client.open_project(other_temp_dir.path());
         assert!(response.error.is_none());
         assert_eq!(client.pending_review_count(), 0);
         assert!(

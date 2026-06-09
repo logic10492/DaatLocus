@@ -37,20 +37,19 @@ fn main() {
             }
         };
 
-        // Track project_root from open_project calls
-        if req.method == "open_project"
-            && let Ok(params) =
-                serde_json::from_value::<api::OpenProjectRequest>(req.params.clone())
-        {
-            project_root = Some(PathBuf::from(&params.project_root));
-        }
-
         let resp = server::dispatch(
             &req,
             project_root.as_deref(),
             &propagation_state,
             &lsp_analyzer,
         );
+        if resp.error.is_none()
+            && req.method == "open_project"
+            && let Ok(params) =
+                serde_json::from_value::<api::OpenProjectRequest>(req.params.clone())
+        {
+            project_root = Some(PathBuf::from(&params.project_root));
+        }
         let json = serde_json::to_string(&resp).unwrap_or_default();
         let _ = writeln!(stdout.lock(), "{json}");
     }

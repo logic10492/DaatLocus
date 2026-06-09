@@ -54,9 +54,9 @@ impl JsonRpcResponse {
 // ── Domain types ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpenProjectRequest {
     pub project_root: String,
-    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

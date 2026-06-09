@@ -83,8 +83,6 @@ pub struct BrowserUiData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CodingOpenProjectUiData {
     pub project_root: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
     #[serde(default)]
     pub detail_lines: Vec<String>,
 }
@@ -299,14 +297,9 @@ impl ToolUiEvent {
         })
     }
 
-    pub fn coding_open_project(
-        project_root: impl Into<String>,
-        language: Option<String>,
-        detail_lines: Vec<String>,
-    ) -> Self {
+    pub fn coding_open_project(project_root: impl Into<String>, detail_lines: Vec<String>) -> Self {
         Self::CodingOpenProject(CodingOpenProjectUiData {
             project_root: project_root.into(),
-            language,
             detail_lines,
         })
     }

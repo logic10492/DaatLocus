@@ -1158,7 +1158,6 @@ mod tests {
             name: "coding__open_project".to_string(),
             arguments: json!({
                 "project_root": root,
-                "language": "rust",
             }),
         };
         execute_agent_tool_call(&mut isolated.context, &open_call)
@@ -1199,7 +1198,6 @@ mod tests {
             name: "coding__open_project".to_string(),
             arguments: json!({
                 "project_root": root,
-                "language": "rust",
             }),
         };
         execute_agent_tool_call(&mut isolated.context, &open_call)

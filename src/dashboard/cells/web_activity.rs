@@ -709,16 +709,10 @@ fn apply_coding_open_project_cell(
         exit_code: None,
         affected_files: Vec::new(),
     });
-    item.blocks = kv_block(vec![
-        WebActivityKvEntry {
-            key: "project_root".to_string(),
-            value: cell.project_root.clone(),
-        },
-        WebActivityKvEntry {
-            key: "language".to_string(),
-            value: cell.language.clone().unwrap_or_else(|| "auto".to_string()),
-        },
-    ]);
+    item.blocks = kv_block(vec![WebActivityKvEntry {
+        key: "project_root".to_string(),
+        value: cell.project_root.clone(),
+    }]);
     item.detail_blocks = text_blocks(cell.detail_lines.clone());
 }
 

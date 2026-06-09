@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -48,9 +49,9 @@ const PROJECT_INSTRUCTION_FILENAMES: &[&str] =
     &["AGENTS.override.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"];
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CodingOpenProjectArgs {
     pub project_root: String,
-    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -255,6 +256,46 @@ fn load_instruction_documents_in_dir(dir: &Path) -> Result<Vec<ProjectInstructio
     Ok(documents)
 }
 
+fn hash_instruction_file(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path).map_err(|err| {
+        miette!(
+            "failed to open project instruction file {}: {err}",
+            path.display()
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).map_err(|err| {
+            miette!(
+                "failed to read project instruction file {}: {err}",
+                path.display()
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn load_project_instruction_fingerprint_in_dir(dir: &Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    for name in PROJECT_INSTRUCTION_FILENAMES {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let sha256 = hash_instruction_file(&path)?;
+        hasher.update(name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(sha256.as_bytes());
+        hasher.update(b"\0");
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 fn instruction_payload(instruction: &ProjectInstructionDocument) -> Value {
     json!({
         "path": instruction.path,
@@ -263,6 +304,17 @@ fn instruction_payload(instruction: &ProjectInstructionDocument) -> Value {
         "sha256": instruction.sha256,
         "content": instruction.content,
     })
+}
+
+fn project_instruction_fingerprint(instructions: &[ProjectInstructionDocument]) -> String {
+    let mut hasher = Sha256::new();
+    for instruction in instructions {
+        hasher.update(instruction.name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(instruction.sha256.as_bytes());
+        hasher.update(b"\0");
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn short_hash(hash: &str) -> &str {
@@ -284,6 +336,18 @@ fn render_project_instructions(label: &str, instructions: &[ProjectInstructionDo
     }
     rendered.push(format!("</{label}>"));
     rendered.join("\n")
+}
+
+fn root_project_instruction_model_content(
+    instructions: &[ProjectInstructionDocument],
+    context: &AppToolExecutionContext,
+) -> String {
+    let content = if instructions.is_empty() {
+        "root_project_instructions=none".to_string()
+    } else {
+        render_project_instructions("root_project_instructions", instructions)
+    };
+    truncate_text_to_token_budget(&content, context.tool_output_max_tokens)
 }
 
 fn selector_path(selector: &str) -> &str {
@@ -314,9 +378,9 @@ fn format_install_command(value: Option<&Value>) -> Option<String> {
 pub struct CodingApp {
     scope: ScopeClient,
     project_root: Option<PathBuf>,
-    language: Option<String>,
     config_hint_summary: Option<CodingConfigHintSummary>,
     root_instructions: Vec<ProjectInstructionDocument>,
+    root_instruction_fingerprint: Option<String>,
     delivered_scoped_instructions: HashSet<DeliveredProjectInstructionKey>,
     coding_tool_group_calls: Vec<CodingToolCallUiData>,
     last_action: Option<String>,
@@ -327,9 +391,9 @@ impl CodingApp {
         Self {
             scope: ScopeClient::new(),
             project_root: None,
-            language: None,
             config_hint_summary: None,
             root_instructions: Vec::new(),
+            root_instruction_fingerprint: None,
             delivered_scoped_instructions: HashSet::new(),
             coding_tool_group_calls: Vec::new(),
             last_action: None,
@@ -360,9 +424,89 @@ impl CodingApp {
             ));
         }
 
-        let response = self
-            .scope
-            .open_project(project_root.clone(), args.language.as_deref());
+        if self.project_root.as_deref() == Some(project_root.as_path()) {
+            let root_instruction_fingerprint =
+                load_project_instruction_fingerprint_in_dir(&project_root)?;
+            if self.root_instruction_fingerprint.as_deref()
+                == Some(root_instruction_fingerprint.as_str())
+            {
+                self.last_action = Some("project already open".to_string());
+                return Ok(AppToolExecutionResult {
+                    summary: format!("coding project already open {}", project_root.display()),
+                    payload: json!({
+                        "status": "already_open",
+                        "project_root": project_root,
+                        "root_project_instruction_fingerprint": root_instruction_fingerprint,
+                    }),
+                    model_content: Some(format!(
+                        "status=already_open\nproject_root={}\nroot_project_instruction_fingerprint={}",
+                        project_root.display(),
+                        root_instruction_fingerprint,
+                    )),
+                    ui_event: ToolUiEvent::coding_open_project(
+                        project_root.display().to_string(),
+                        vec![
+                            "status=already_open".to_string(),
+                            format!("project_root={}", project_root.display()),
+                            format!(
+                                "root_project_instruction_fingerprint={}",
+                                short_hash(&root_instruction_fingerprint)
+                            ),
+                        ],
+                    ),
+                    turn_boundary_reason: None,
+                });
+            }
+
+            let root_instructions = load_instruction_documents_in_dir(&project_root)?;
+            debug_assert_eq!(
+                project_instruction_fingerprint(&root_instructions),
+                root_instruction_fingerprint
+            );
+            self.root_instructions = root_instructions.clone();
+            self.root_instruction_fingerprint = Some(root_instruction_fingerprint.clone());
+            self.last_action = Some("reloaded project instructions".to_string());
+            let mut ui_lines = vec![
+                "status=project_instructions_reloaded".to_string(),
+                format!("project_root={}", project_root.display()),
+                format!(
+                    "root_project_instruction_fingerprint={}",
+                    short_hash(&root_instruction_fingerprint)
+                ),
+            ];
+            ui_lines.extend(root_instructions.iter().map(|instruction| {
+                format!(
+                    "root_instruction file={} sha256={}",
+                    instruction.path.display(),
+                    short_hash(&instruction.sha256)
+                )
+            }));
+            return Ok(AppToolExecutionResult {
+                summary: format!(
+                    "reloaded coding project instructions {}",
+                    project_root.display()
+                ),
+                payload: json!({
+                    "status": "project_instructions_reloaded",
+                    "project_root": project_root,
+                    "root_project_instruction_fingerprint": root_instruction_fingerprint,
+                    "root_project_instructions": root_instructions.iter().map(instruction_payload).collect::<Vec<_>>(),
+                }),
+                model_content: Some(root_project_instruction_model_content(
+                    &root_instructions,
+                    context,
+                )),
+                ui_event: ToolUiEvent::coding_open_project(
+                    project_root.display().to_string(),
+                    ui_lines,
+                ),
+                turn_boundary_reason: None,
+            });
+        }
+
+        let root_instructions = load_instruction_documents_in_dir(&project_root)?;
+        let root_instruction_fingerprint = project_instruction_fingerprint(&root_instructions);
+        let response = self.scope.open_project(project_root.clone());
         if let Some(error) = response.error {
             return Err(miette!(
                 "scope-engine open_project failed: {}",
@@ -382,12 +526,10 @@ impl CodingApp {
             .unwrap_or(serde_json::Value::Null);
         let config_hint_summary = CodingConfigHintSummary::from_hints(&config_hints);
 
-        let root_instructions = load_instruction_documents_in_dir(&project_root)?;
-
         self.project_root = Some(project_root.clone());
-        self.language = args.language.clone();
         self.config_hint_summary = Some(config_hint_summary.clone());
         self.root_instructions = root_instructions.clone();
+        self.root_instruction_fingerprint = Some(root_instruction_fingerprint.clone());
         self.delivered_scoped_instructions.clear();
         self.coding_tool_group_calls.clear();
         self.last_action = Some("opened project".to_string());
@@ -405,6 +547,10 @@ impl CodingApp {
         );
         let mut ui_lines = vec![format!("project_root={}", project_root.display())];
         ui_lines.extend(config_hint_summary.state_lines());
+        ui_lines.push(format!(
+            "root_project_instruction_fingerprint={}",
+            short_hash(&root_instruction_fingerprint)
+        ));
         ui_lines.extend(root_instructions.iter().map(|instruction| {
             format!(
                 "root_instruction file={} sha256={}",
@@ -416,16 +562,16 @@ impl CodingApp {
         Ok(AppToolExecutionResult {
             summary: format!("opened coding project {}", project_root.display()),
             payload: json!({
+                "status": "opened",
                 "project_root": project_root,
-                "language": args.language,
                 "scope_response": response.result,
                 "config_hints": config_hints,
+                "root_project_instruction_fingerprint": root_instruction_fingerprint,
                 "root_project_instructions": root_instructions.iter().map(instruction_payload).collect::<Vec<_>>(),
             }),
             model_content: Some(model_content),
             ui_event: ToolUiEvent::coding_open_project(
                 project_root.display().to_string(),
-                args.language,
                 ui_lines,
             ),
             turn_boundary_reason: None,
@@ -636,9 +782,6 @@ impl App for CodingApp {
                 self.scope.pending_review_count()
             ),
         ];
-        if let Some(language) = self.language.as_ref() {
-            lines.push(format!("language={language}"));
-        }
         if let Some(summary) = self.config_hint_summary.as_ref() {
             lines.extend(summary.state_lines());
         }
@@ -725,9 +868,8 @@ impl App for CodingApp {
             "open_project" => {
                 let args: CodingOpenProjectArgs = parse_coding_tool_args(call)?;
                 format!(
-                    "project_root={} language={}",
-                    summarize_coding_inline_text(&args.project_root),
-                    args.language.unwrap_or_else(|| "auto".to_string())
+                    "project_root={}",
+                    summarize_coding_inline_text(&args.project_root)
                 )
             }
             "read_code" => {
@@ -1338,6 +1480,28 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn test_app_context(root: &Path) -> AppToolExecutionContext {
+        AppToolExecutionContext {
+            execution_cwd: root.to_path_buf(),
+            sandbox_policy: crate::sandbox::RuntimeSandboxPolicy::disabled(),
+            dashboard_tx: None,
+            tool_output_max_tokens: 4096,
+            turn_epoch: 1,
+        }
+    }
+
+    fn pending_review_result(selector: &str) -> scope_engine::api::PropagationResult {
+        scope_engine::api::PropagationResult {
+            selector: selector.to_string(),
+            reason: "changed".to_string(),
+            source: scope_engine::api::PropagationSource::OpenEnded,
+            lsp_references: None,
+            diff_summary: Some("diff".to_string()),
+            file_snippet: Some("fn main() {}".to_string()),
+            project_files: Some(vec!["src/main.rs".to_string()]),
+        }
+    }
+
     #[test]
     fn config_hint_summary_keeps_lsp_setup_hints_visible() {
         let hints = json!({
@@ -1421,6 +1585,17 @@ mod tests {
     }
 
     #[test]
+    fn open_project_args_reject_manual_language_param() {
+        let err = serde_json::from_value::<CodingOpenProjectArgs>(json!({
+            "project_root": "/tmp/project",
+            "language": "rust",
+        }))
+        .expect_err("language must not be accepted");
+
+        assert!(err.to_string().contains("unknown field `language`"));
+    }
+
+    #[test]
     fn loads_project_instruction_documents_with_hash() {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::write(temp.path().join("AGENTS.md"), "Root rule\n").expect("write agents");
@@ -1433,6 +1608,11 @@ mod tests {
         assert_eq!(instructions[0].content, "Root rule\n");
         assert_eq!(instructions[0].scope_dir, temp.path());
         assert_eq!(instructions[0].sha256.len(), 64);
+        assert_eq!(
+            load_project_instruction_fingerprint_in_dir(temp.path())
+                .expect("load instruction fingerprint"),
+            project_instruction_fingerprint(&instructions)
+        );
         assert!(
             render_project_instructions("root_project_instructions", &instructions)
                 .contains("Root rule")
@@ -1451,6 +1631,128 @@ mod tests {
         assert_eq!(instructions.len(), 1);
         assert_eq!(instructions[0].name, "AGENTS.md");
         assert_eq!(instructions[0].content, content);
+    }
+
+    #[test]
+    fn open_project_is_idempotent_when_root_instructions_are_unchanged() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nested = temp.path().join("src/nested");
+        std::fs::create_dir_all(&nested).expect("create nested");
+        std::fs::write(temp.path().join("AGENTS.md"), "Root rule v1\n").expect("write root");
+        std::fs::write(nested.join("AGENTS.md"), "Nested rule\n").expect("write nested");
+        let context = test_app_context(temp.path());
+        let mut app = CodingApp::new();
+
+        let first = app
+            .open_project(
+                CodingOpenProjectArgs {
+                    project_root: temp.path().display().to_string(),
+                },
+                &context,
+            )
+            .expect("first open");
+        assert!(
+            first
+                .model_content
+                .as_deref()
+                .is_some_and(|content| content.contains("Root rule v1"))
+        );
+        assert_eq!(
+            app.scoped_instructions_for_path_once_per_turn("src/nested/file.rs", 7)
+                .expect("first scoped")
+                .len(),
+            1
+        );
+        let _ = app.scope.next_review_event(vec![
+            pending_review_result("src/main.rs::fn main"),
+            pending_review_result("src/lib.rs::fn lib"),
+        ]);
+        assert_eq!(app.scope.pending_review_count(), 1);
+
+        let second = app
+            .open_project(
+                CodingOpenProjectArgs {
+                    project_root: temp.path().display().to_string(),
+                },
+                &context,
+            )
+            .expect("second open");
+
+        assert_eq!(
+            second.payload.get("status").and_then(Value::as_str),
+            Some("already_open")
+        );
+        assert!(second.payload.get("root_project_instructions").is_none());
+        assert!(
+            !second
+                .model_content
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Root rule v1")
+        );
+        assert_eq!(app.scope.pending_review_count(), 1);
+        assert!(
+            app.scoped_instructions_for_path_once_per_turn("src/nested/file.rs", 7)
+                .expect("second scoped")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn open_project_reloads_root_instructions_when_hash_changes_without_clearing_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let nested = temp.path().join("src/nested");
+        std::fs::create_dir_all(&nested).expect("create nested");
+        std::fs::write(temp.path().join("AGENTS.md"), "Root rule v1\n").expect("write root");
+        std::fs::write(nested.join("AGENTS.md"), "Nested rule\n").expect("write nested");
+        let context = test_app_context(temp.path());
+        let mut app = CodingApp::new();
+
+        app.open_project(
+            CodingOpenProjectArgs {
+                project_root: temp.path().display().to_string(),
+            },
+            &context,
+        )
+        .expect("first open");
+        assert_eq!(
+            app.scoped_instructions_for_path_once_per_turn("src/nested/file.rs", 7)
+                .expect("first scoped")
+                .len(),
+            1
+        );
+        let _ = app.scope.next_review_event(vec![
+            pending_review_result("src/main.rs::fn main"),
+            pending_review_result("src/lib.rs::fn lib"),
+        ]);
+        assert_eq!(app.scope.pending_review_count(), 1);
+
+        std::fs::write(temp.path().join("AGENTS.md"), "Root rule v2\n").expect("update root");
+        let second = app
+            .open_project(
+                CodingOpenProjectArgs {
+                    project_root: temp.path().display().to_string(),
+                },
+                &context,
+            )
+            .expect("second open");
+
+        assert_eq!(
+            second.payload.get("status").and_then(Value::as_str),
+            Some("project_instructions_reloaded")
+        );
+        assert!(
+            second
+                .model_content
+                .as_deref()
+                .is_some_and(|content| content.contains("Root rule v2"))
+        );
+        assert_eq!(app.scope.pending_review_count(), 1);
+        assert!(
+            app.scoped_instructions_for_path_once_per_turn("src/nested/file.rs", 7)
+                .expect("second scoped")
+                .is_empty()
+        );
     }
 
     #[test]
