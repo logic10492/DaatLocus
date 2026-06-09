@@ -16,6 +16,11 @@ use crate::{
 use crate::{config, config_wizard};
 use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, Result, miette};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{ListItem, ListState},
+};
 use std::path::PathBuf;
 
 pub(crate) fn parse_args() -> Cli {
@@ -427,11 +432,10 @@ async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>
         widgets::{Block, Borders, List, ListState, Paragraph},
     };
 
-    let mut sessions = filtered_sessions(&client, project_dir.as_deref()).await;
+    let mut sessions = selector_sessions(&client, project_dir.as_deref()).await;
+    let mut rows = build_session_tree_rows(&sessions, project_dir.as_deref());
     let mut state = ListState::default();
-    if !sessions.is_empty() {
-        state.select(Some(0));
-    }
+    select_first_action_row(&mut state, &rows);
 
     let mut terminal: Option<DefaultTerminal> = None;
     let mut last_refresh = std::time::Instant::now();
@@ -441,11 +445,17 @@ async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>
         loop {
             let now = std::time::Instant::now();
             if now.duration_since(last_refresh) >= refresh_interval {
-                sessions = filtered_sessions(&client, project_dir.as_deref()).await;
+                let selected_id = selected_session(&sessions, &rows, state.selected())
+                    .map(|session| session.session_id.as_str().to_string());
+                sessions = selector_sessions(&client, project_dir.as_deref()).await;
+                rows = build_session_tree_rows(&sessions, project_dir.as_deref());
                 last_refresh = now;
-                if state.selected().unwrap_or(0) >= sessions.len() && !sessions.is_empty() {
-                    state.select(Some(sessions.len() - 1));
-                }
+                restore_session_tree_selection(
+                    &mut state,
+                    &sessions,
+                    &rows,
+                    selected_id.as_deref(),
+                );
             }
             if terminal.is_none() {
                 let _ = ratatui::try_restore();
@@ -477,27 +487,12 @@ async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>
                 ])
                 .split(inner);
 
-                if sessions.is_empty() {
+                if rows.is_empty() {
                     let p =
                         Paragraph::new("(no sessions)").style(Style::default().fg(Color::DarkGray));
                     frame.render_widget(p, layout[0]);
                 } else {
-                    let items: Vec<String> = sessions
-                        .iter()
-                        .map(|s| {
-                            let name = s
-                                .title
-                                .as_deref()
-                                .filter(|title| !title.trim().is_empty())
-                                .unwrap_or("Untitled session");
-                            match &s.scope {
-                                crate::daemon::session::SessionScope::General => name.to_string(),
-                                crate::daemon::session::SessionScope::Project { project_dir } => {
-                                    format!("{name}  [{}]", project_dir.display())
-                                }
-                            }
-                        })
-                        .collect();
+                    let items = session_tree_list_items(&sessions, &rows);
 
                     let list = List::new(items)
                         .block(Block::default())
@@ -512,7 +507,7 @@ async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>
                     frame.render_stateful_widget(list, layout[0], &mut state);
                 }
 
-                let help = Paragraph::new("n new  d delete  t title  Enter attach  q quit")
+                let help = Paragraph::new("Enter attach/create  d delete  t title  q quit")
                     .style(Style::default().fg(Color::DarkGray));
                 frame.render_widget(help, layout[2]);
             })
@@ -526,37 +521,18 @@ async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>
 
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('n') => {
-                    let title = project_dir
-                        .as_ref()
-                        .and_then(|path| path.file_name())
-                        .and_then(|name| name.to_str());
-                    if client
-                        .create_session(project_dir.as_deref(), title)
-                        .await
-                        .is_ok()
-                    {
-                        sessions = filtered_sessions(&client, project_dir.as_deref()).await;
-                        if !sessions.is_empty() {
-                            state.select(Some(sessions.len() - 1));
-                        }
-                    }
-                }
                 KeyCode::Char('d') => {
-                    if let Some(idx) = state.selected()
-                        && let Some(s) = sessions.get(idx)
-                        && client.delete_session(s.session_id.as_str()).await.is_ok()
+                    if let Some(session_id) = selected_session(&sessions, &rows, state.selected())
+                        .map(|session| session.session_id.as_str().to_string())
+                        && client.delete_session(&session_id).await.is_ok()
                     {
-                        sessions = filtered_sessions(&client, project_dir.as_deref()).await;
-                        if state.selected().unwrap_or(0) >= sessions.len() && !sessions.is_empty() {
-                            state.select(Some(sessions.len() - 1));
-                        }
+                        sessions = selector_sessions(&client, project_dir.as_deref()).await;
+                        rows = build_session_tree_rows(&sessions, project_dir.as_deref());
+                        restore_session_tree_selection(&mut state, &sessions, &rows, None);
                     }
                 }
                 KeyCode::Char('t') => {
-                    if let Some(idx) = state.selected()
-                        && let Some(s) = sessions.get(idx)
-                    {
+                    if let Some(s) = selected_session(&sessions, &rows, state.selected()).cloned() {
                         let session_id = s.session_id.as_str().to_string();
                         let current_title = s.title.clone().unwrap_or_default();
                         drop(terminal.take());
@@ -578,7 +554,14 @@ async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>
                                 let _ = client.set_session_title(&session_id, &title).await;
                             }
                         }
-                        sessions = filtered_sessions(&client, project_dir.as_deref()).await;
+                        sessions = selector_sessions(&client, project_dir.as_deref()).await;
+                        rows = build_session_tree_rows(&sessions, project_dir.as_deref());
+                        restore_session_tree_selection(
+                            &mut state,
+                            &sessions,
+                            &rows,
+                            Some(session_id.as_str()),
+                        );
                         terminal = Some(
                             ratatui::try_init()
                                 .map_err(|e| miette!("failed to reinit terminal: {e}"))?,
@@ -586,35 +569,25 @@ async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    let current = state.selected().unwrap_or(0);
-                    let next = if current == 0 {
-                        sessions.len().saturating_sub(1)
-                    } else {
-                        current - 1
-                    };
-                    state.select(if sessions.is_empty() {
-                        None
-                    } else {
-                        Some(next)
-                    });
+                    select_previous_session_row(&mut state, &rows);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let current = state.selected().unwrap_or(0);
-                    let next = if current + 1 >= sessions.len() {
-                        0
-                    } else {
-                        current + 1
-                    };
-                    state.select(if sessions.is_empty() {
-                        None
-                    } else {
-                        Some(next)
-                    });
+                    select_next_session_row(&mut state, &rows);
                 }
                 KeyCode::Enter => {
-                    if let Some(idx) = state.selected()
-                        && let Some(s) = sessions.get(idx)
-                    {
+                    if let Some(target) = selected_create_target(&rows, state.selected()).cloned() {
+                        if let Ok(session) = create_selector_session(&client, &target).await {
+                            let session_id = session.session_id.as_str().to_string();
+                            sessions = selector_sessions(&client, project_dir.as_deref()).await;
+                            rows = build_session_tree_rows(&sessions, project_dir.as_deref());
+                            restore_session_tree_selection(
+                                &mut state,
+                                &sessions,
+                                &rows,
+                                Some(session_id.as_str()),
+                            );
+                        }
+                    } else if let Some(s) = selected_session(&sessions, &rows, state.selected()) {
                         let session_id = s.session_id.as_str().to_string();
                         drop(terminal.take());
                         let _ = ratatui::try_restore();
@@ -632,17 +605,17 @@ async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>
     result
 }
 
-async fn filtered_sessions(
+async fn selector_sessions(
     client: &DaemonClient,
     project_dir: Option<&std::path::Path>,
 ) -> Vec<crate::daemon::session::SessionSummary> {
     let Ok(sessions) = client.list_sessions().await else {
         return Vec::new();
     };
-    sessions
+    let mut sessions = sessions
         .into_iter()
         .filter(|session| match (&session.scope, project_dir) {
-            (crate::daemon::session::SessionScope::General, None) => true,
+            (_, None) => true,
             (
                 crate::daemon::session::SessionScope::Project {
                     project_dir: stored,
@@ -651,7 +624,368 @@ async fn filtered_sessions(
             ) => stored == project_dir,
             _ => false,
         })
+        .collect::<Vec<_>>();
+    sort_selector_sessions(&mut sessions);
+    sessions
+}
+
+async fn create_selector_session(
+    client: &DaemonClient,
+    target: &SessionCreateTarget,
+) -> Result<crate::daemon::session::SessionSummary> {
+    match target {
+        SessionCreateTarget::General => client.create_session(None, None).await,
+        SessionCreateTarget::Project { project_dir } => {
+            let title = project_label(project_dir);
+            client
+                .create_session(Some(project_dir.as_path()), Some(title.as_str()))
+                .await
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionCreateTarget {
+    General,
+    Project { project_dir: PathBuf },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionTreeRow {
+    Section {
+        label: String,
+        count: usize,
+    },
+    Project {
+        label: String,
+        path: String,
+        count: usize,
+    },
+    Create {
+        target: SessionCreateTarget,
+        label: String,
+        depth: usize,
+    },
+    Session {
+        session_index: usize,
+        depth: usize,
+    },
+}
+
+fn build_session_tree_rows(
+    sessions: &[crate::daemon::session::SessionSummary],
+    project_dir_filter: Option<&std::path::Path>,
+) -> Vec<SessionTreeRow> {
+    use std::collections::BTreeMap;
+
+    let mut general = Vec::new();
+    let mut projects: BTreeMap<String, (std::path::PathBuf, Vec<usize>)> = BTreeMap::new();
+
+    for (index, session) in sessions.iter().enumerate() {
+        match &session.scope {
+            crate::daemon::session::SessionScope::General => general.push(index),
+            crate::daemon::session::SessionScope::Project { project_dir } => {
+                projects
+                    .entry(project_dir.display().to_string())
+                    .or_insert_with(|| (project_dir.clone(), Vec::new()))
+                    .1
+                    .push(index);
+            }
+        }
+    }
+
+    if let Some(project_dir) = project_dir_filter {
+        projects
+            .entry(project_dir.display().to_string())
+            .or_insert_with(|| (project_dir.to_path_buf(), Vec::new()));
+    }
+
+    let mut rows = Vec::new();
+    if project_dir_filter.is_none() {
+        rows.push(SessionTreeRow::Section {
+            label: "General".to_string(),
+            count: general.len(),
+        });
+        rows.push(SessionTreeRow::Create {
+            target: SessionCreateTarget::General,
+            label: "New general session".to_string(),
+            depth: 1,
+        });
+        rows.extend(
+            general
+                .into_iter()
+                .map(|session_index| SessionTreeRow::Session {
+                    session_index,
+                    depth: 1,
+                }),
+        );
+    }
+
+    let coding_count = projects.values().map(|(_, sessions)| sessions.len()).sum();
+    if coding_count > 0 || project_dir_filter.is_some() {
+        rows.push(SessionTreeRow::Section {
+            label: "Coding".to_string(),
+            count: coding_count,
+        });
+        for (_, (project_dir, project_sessions)) in projects {
+            rows.push(SessionTreeRow::Project {
+                label: project_label(&project_dir),
+                path: project_dir.display().to_string(),
+                count: project_sessions.len(),
+            });
+            rows.push(SessionTreeRow::Create {
+                target: SessionCreateTarget::Project {
+                    project_dir: project_dir.clone(),
+                },
+                label: "New coding session".to_string(),
+                depth: 2,
+            });
+            rows.extend(project_sessions.into_iter().map(|session_index| {
+                SessionTreeRow::Session {
+                    session_index,
+                    depth: 2,
+                }
+            }));
+        }
+    }
+
+    rows
+}
+
+fn session_tree_list_items(
+    sessions: &[crate::daemon::session::SessionSummary],
+    rows: &[SessionTreeRow],
+) -> Vec<ListItem<'static>> {
+    rows.iter()
+        .map(|row| match row {
+            SessionTreeRow::Section { label, count } => ListItem::new(Line::from(vec![
+                Span::styled(
+                    label.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" ({count})"), Style::default().fg(Color::DarkGray)),
+            ])),
+            SessionTreeRow::Project { label, path, count } => ListItem::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    label.clone(),
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" ({count})"), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  {path}"), Style::default().fg(Color::DarkGray)),
+            ])),
+            SessionTreeRow::Create { label, depth, .. } => {
+                let indent = "  ".repeat(*depth);
+                ListItem::new(Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled("+ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(label.clone(), Style::default().fg(Color::LightGreen)),
+                ]))
+            }
+            SessionTreeRow::Session {
+                session_index,
+                depth,
+            } => {
+                let session = &sessions[*session_index];
+                let indent = "  ".repeat(*depth);
+                ListItem::new(Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled("- ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(session_title(session), Style::default().fg(Color::White)),
+                    Span::styled(
+                        format!("  {}", short_session_id(session.session_id.as_str())),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+            }
+        })
         .collect()
+}
+
+fn sort_selector_sessions(sessions: &mut [crate::daemon::session::SessionSummary]) {
+    sessions.sort_by_key(|session| {
+        let scope_order = match &session.scope {
+            crate::daemon::session::SessionScope::General => 0,
+            crate::daemon::session::SessionScope::Project { .. } => 1,
+        };
+        (
+            scope_order,
+            session_project_sort_key(session),
+            session_title(session).to_ascii_lowercase(),
+            session.started_at_ms,
+            session.session_id.as_str().to_string(),
+        )
+    });
+}
+
+fn session_project_sort_key(session: &crate::daemon::session::SessionSummary) -> String {
+    match &session.scope {
+        crate::daemon::session::SessionScope::General => String::new(),
+        crate::daemon::session::SessionScope::Project { project_dir } => {
+            project_dir.display().to_string()
+        }
+    }
+}
+
+fn project_label(project_dir: &std::path::Path) -> String {
+    project_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| project_dir.display().to_string())
+}
+
+fn session_title(session: &crate::daemon::session::SessionSummary) -> String {
+    session
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or("Untitled session")
+        .to_string()
+}
+
+fn short_session_id(session_id: &str) -> &str {
+    session_id.get(..8).unwrap_or(session_id)
+}
+
+fn selected_session<'a>(
+    sessions: &'a [crate::daemon::session::SessionSummary],
+    rows: &[SessionTreeRow],
+    selected_row: Option<usize>,
+) -> Option<&'a crate::daemon::session::SessionSummary> {
+    let session_index = selected_row
+        .and_then(|row_index| rows.get(row_index))
+        .and_then(|row| match row {
+            SessionTreeRow::Session { session_index, .. } => Some(*session_index),
+            SessionTreeRow::Section { .. }
+            | SessionTreeRow::Project { .. }
+            | SessionTreeRow::Create { .. } => None,
+        })?;
+    sessions.get(session_index)
+}
+
+fn selected_create_target(
+    rows: &[SessionTreeRow],
+    selected_row: Option<usize>,
+) -> Option<&SessionCreateTarget> {
+    selected_row
+        .and_then(|row_index| rows.get(row_index))
+        .and_then(|row| match row {
+            SessionTreeRow::Create { target, .. } => Some(target),
+            SessionTreeRow::Section { .. }
+            | SessionTreeRow::Project { .. }
+            | SessionTreeRow::Session { .. } => None,
+        })
+}
+
+fn select_first_action_row(state: &mut ListState, rows: &[SessionTreeRow]) {
+    state.select(first_action_row(rows));
+}
+
+fn restore_session_tree_selection(
+    state: &mut ListState,
+    sessions: &[crate::daemon::session::SessionSummary],
+    rows: &[SessionTreeRow],
+    preferred_session_id: Option<&str>,
+) {
+    if let Some(session_id) = preferred_session_id
+        && select_session_row_by_id(state, sessions, rows, session_id)
+    {
+        return;
+    }
+
+    normalize_session_tree_selection(state, rows);
+}
+
+fn normalize_session_tree_selection(state: &mut ListState, rows: &[SessionTreeRow]) {
+    let Some(selected) = state.selected() else {
+        select_first_action_row(state, rows);
+        return;
+    };
+    if is_action_row(rows, selected) {
+        return;
+    }
+
+    let next = (selected..rows.len())
+        .find(|row_index| is_action_row(rows, *row_index))
+        .or_else(|| {
+            (0..selected)
+                .rev()
+                .find(|row_index| is_action_row(rows, *row_index))
+        });
+    state.select(next);
+}
+
+fn select_session_row_by_id(
+    state: &mut ListState,
+    sessions: &[crate::daemon::session::SessionSummary],
+    rows: &[SessionTreeRow],
+    session_id: &str,
+) -> bool {
+    let Some(row_index) = rows.iter().position(|row| match row {
+        SessionTreeRow::Session { session_index, .. } => sessions
+            .get(*session_index)
+            .is_some_and(|session| session.session_id.as_str() == session_id),
+        SessionTreeRow::Section { .. }
+        | SessionTreeRow::Project { .. }
+        | SessionTreeRow::Create { .. } => false,
+    }) else {
+        return false;
+    };
+    state.select(Some(row_index));
+    true
+}
+
+fn first_action_row(rows: &[SessionTreeRow]) -> Option<usize> {
+    rows.iter().position(|row| {
+        matches!(
+            row,
+            SessionTreeRow::Create { .. } | SessionTreeRow::Session { .. }
+        )
+    })
+}
+
+fn is_action_row(rows: &[SessionTreeRow], row_index: usize) -> bool {
+    matches!(
+        rows.get(row_index),
+        Some(SessionTreeRow::Create { .. } | SessionTreeRow::Session { .. })
+    )
+}
+
+fn select_next_session_row(state: &mut ListState, rows: &[SessionTreeRow]) {
+    let Some(first) = first_action_row(rows) else {
+        state.select(None);
+        return;
+    };
+    let current = state.selected().unwrap_or(first);
+    let next = ((current + 1)..rows.len())
+        .find(|row_index| is_action_row(rows, *row_index))
+        .unwrap_or(first);
+    state.select(Some(next));
+}
+
+fn select_previous_session_row(state: &mut ListState, rows: &[SessionTreeRow]) {
+    let Some(first) = first_action_row(rows) else {
+        state.select(None);
+        return;
+    };
+    let current = state.selected().unwrap_or(first);
+    let previous = (0..current)
+        .rev()
+        .find(|row_index| is_action_row(rows, *row_index))
+        .or_else(|| {
+            (first..rows.len())
+                .rev()
+                .find(|row_index| is_action_row(rows, *row_index))
+        })
+        .unwrap_or(first);
+    state.select(Some(previous));
 }
 
 async fn run_config_command(target: Option<&ConfigTarget>) -> Result<()> {
@@ -782,4 +1116,175 @@ async fn attach_to_daemon(client: DaemonClient) -> Result<()> {
     let _ = stop_tx.send(());
     let _ = stream_task.await;
     Ok(())
+}
+
+#[cfg(test)]
+mod session_selector_tests {
+    use super::*;
+    use crate::daemon::session::{SessionId, SessionScope, SessionSummary};
+    use std::path::PathBuf;
+
+    #[test]
+    fn session_tree_groups_general_and_coding_projects() {
+        let project_a = PathBuf::from("/tmp/project-a");
+        let project_b = PathBuf::from("/tmp/project-b");
+        let sessions = vec![
+            summary("general-1", SessionScope::General, "General"),
+            summary(
+                "project-a-1",
+                SessionScope::Project {
+                    project_dir: project_a.clone(),
+                },
+                "Project A",
+            ),
+            summary(
+                "project-b-1",
+                SessionScope::Project {
+                    project_dir: project_b.clone(),
+                },
+                "Project B",
+            ),
+        ];
+
+        let rows = build_session_tree_rows(&sessions, None);
+
+        assert_eq!(
+            rows,
+            vec![
+                SessionTreeRow::Section {
+                    label: "General".to_string(),
+                    count: 1,
+                },
+                SessionTreeRow::Create {
+                    target: SessionCreateTarget::General,
+                    label: "New general session".to_string(),
+                    depth: 1,
+                },
+                SessionTreeRow::Session {
+                    session_index: 0,
+                    depth: 1,
+                },
+                SessionTreeRow::Section {
+                    label: "Coding".to_string(),
+                    count: 2,
+                },
+                SessionTreeRow::Project {
+                    label: "project-a".to_string(),
+                    path: project_a.display().to_string(),
+                    count: 1,
+                },
+                SessionTreeRow::Create {
+                    target: SessionCreateTarget::Project {
+                        project_dir: project_a.clone(),
+                    },
+                    label: "New coding session".to_string(),
+                    depth: 2,
+                },
+                SessionTreeRow::Session {
+                    session_index: 1,
+                    depth: 2,
+                },
+                SessionTreeRow::Project {
+                    label: "project-b".to_string(),
+                    path: project_b.display().to_string(),
+                    count: 1,
+                },
+                SessionTreeRow::Create {
+                    target: SessionCreateTarget::Project {
+                        project_dir: project_b.clone(),
+                    },
+                    label: "New coding session".to_string(),
+                    depth: 2,
+                },
+                SessionTreeRow::Session {
+                    session_index: 2,
+                    depth: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn code_session_tree_starts_at_coding_project_hierarchy() {
+        let project = PathBuf::from("/tmp/project-a");
+        let sessions = vec![summary(
+            "project-a-1",
+            SessionScope::Project {
+                project_dir: project.clone(),
+            },
+            "Project A",
+        )];
+
+        let rows = build_session_tree_rows(&sessions, Some(project.as_path()));
+
+        assert_eq!(
+            rows,
+            vec![
+                SessionTreeRow::Section {
+                    label: "Coding".to_string(),
+                    count: 1,
+                },
+                SessionTreeRow::Project {
+                    label: "project-a".to_string(),
+                    path: project.display().to_string(),
+                    count: 1,
+                },
+                SessionTreeRow::Create {
+                    target: SessionCreateTarget::Project {
+                        project_dir: project.clone(),
+                    },
+                    label: "New coding session".to_string(),
+                    depth: 2,
+                },
+                SessionTreeRow::Session {
+                    session_index: 0,
+                    depth: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn code_session_tree_keeps_create_row_when_project_has_no_sessions() {
+        let project = PathBuf::from("/tmp/project-a");
+
+        let rows = build_session_tree_rows(&[], Some(project.as_path()));
+
+        assert_eq!(
+            rows,
+            vec![
+                SessionTreeRow::Section {
+                    label: "Coding".to_string(),
+                    count: 0,
+                },
+                SessionTreeRow::Project {
+                    label: "project-a".to_string(),
+                    path: project.display().to_string(),
+                    count: 0,
+                },
+                SessionTreeRow::Create {
+                    target: SessionCreateTarget::Project {
+                        project_dir: project.clone(),
+                    },
+                    label: "New coding session".to_string(),
+                    depth: 2,
+                },
+            ]
+        );
+    }
+
+    fn summary(id: &str, scope: SessionScope, title: &str) -> SessionSummary {
+        let project_dir = match &scope {
+            SessionScope::General => None,
+            SessionScope::Project { project_dir } => Some(project_dir.clone()),
+        };
+        SessionSummary {
+            session_id: SessionId::from_string(id.to_string()).expect("test session id"),
+            scope,
+            project_dir,
+            title: Some(title.to_string()),
+            started_at_ms: 0,
+            last_seen_at_ms: None,
+        }
+    }
 }

@@ -1,12 +1,26 @@
 import {
   ActivityIcon,
+  ChevronRightIcon,
+  Code2Icon,
+  FolderIcon,
   MessageSquareIcon,
   PlusIcon,
   ScrollTextIcon,
   SettingsIcon,
+  Trash2Icon,
 } from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Sidebar,
   SidebarContent,
@@ -33,8 +47,10 @@ type AppSidebarProps = {
   selectedSessionId: string | null;
   sessionError: string | null;
   isCreatingSession: boolean;
+  deletingSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
-  onCreateSession: () => void;
+  onCreateSession: (projectDir?: string) => void;
+  onDeleteSession: (sessionId: string) => Promise<void>;
 };
 
 type NavigationItem = {
@@ -42,6 +58,17 @@ type NavigationItem = {
   href: string;
   page: AppPage;
   icon: typeof MessageSquareIcon;
+};
+
+type SessionProjectGroup = {
+  projectDir: string;
+  label: string;
+  sessions: SessionInfo[];
+};
+
+type SessionTree = {
+  general: SessionInfo[];
+  projectGroups: SessionProjectGroup[];
 };
 
 const navigationItems: NavigationItem[] = [
@@ -91,13 +118,35 @@ function AppSidebarBody({
   selectedSessionId,
   sessionError,
   isCreatingSession,
+  deletingSessionId,
   onSelectSession,
   onCreateSession,
+  onDeleteSession,
 }: AppSidebarProps) {
   const { setOpenMobile } = useSidebar();
+  const sessionTree = buildSessionTree(sessions);
+  const [deleteCandidate, setDeleteCandidate] = useState<SessionInfo | null>(
+    null,
+  );
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
   function closeMobile() {
     setOpenMobile(false);
+  }
+
+  async function confirmDeleteSession() {
+    if (!deleteCandidate || isConfirmingDelete) {
+      return;
+    }
+    setIsConfirmingDelete(true);
+    try {
+      await onDeleteSession(deleteCandidate.session_id);
+      setDeleteCandidate(null);
+    } catch {
+      // The parent renders the API error in the sidebar alert.
+    } finally {
+      setIsConfirmingDelete(false);
+    }
   }
 
   return (
@@ -109,21 +158,6 @@ function AppSidebarBody({
             {sessions.length} session{sessions.length === 1 ? "" : "s"}
           </div>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label="New session"
-          title="New session"
-          onClick={() => {
-            onCreateSession();
-            closeMobile();
-          }}
-          disabled={isCreatingSession}
-          className="shrink-0"
-        >
-          <PlusIcon className={cn("size-4", isCreatingSession && "opacity-60")} />
-        </Button>
       </SidebarHeader>
 
       <SidebarContent>
@@ -139,37 +173,55 @@ function AppSidebarBody({
         <SidebarGroup className="min-h-0 flex-1">
           <SidebarGroupLabel>Sessions</SidebarGroupLabel>
           <SidebarGroupContent className="min-h-0">
-            {sessions.length === 0 ? (
-              <div className="rounded-md border border-sidebar-border bg-sidebar-accent/45 px-3 py-2 text-sm text-sidebar-foreground/65">
-                No sessions
-              </div>
-            ) : (
-              <SidebarMenu>
-                {sessions.map((session) => (
-                  <SidebarMenuItem key={session.session_id}>
-                    <SidebarMenuButton
-                      type="button"
-                      size="lg"
-                      isActive={session.session_id === selectedSessionId}
-                      onClick={() => {
-                        onSelectSession(session.session_id);
-                        closeMobile();
-                      }}
-                      className="h-auto min-h-12 flex-col items-start gap-0.5 py-2"
-                    >
-                      <span className="block max-w-full truncate font-medium">
-                        {sessionTitle(session)}
-                      </span>
-                      {sessionSubtitle(session) ? (
-                        <span className="block max-w-full truncate text-xs font-normal text-sidebar-foreground/60">
-                          {sessionSubtitle(session)}
-                        </span>
-                      ) : null}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            )}
+            <div role="tree" aria-label="Sessions" className="space-y-2">
+              <SessionTreeBranch
+                icon={MessageSquareIcon}
+                label="General"
+              >
+                <SessionLeafList
+                  createLabel="New general session"
+                  isCreatingSession={isCreatingSession}
+                  deletingSessionId={deletingSessionId}
+                  sessions={sessionTree.general}
+                  selectedSessionId={selectedSessionId}
+                  onCreateSession={() => {
+                    onCreateSession();
+                    closeMobile();
+                  }}
+                  onSelectSession={onSelectSession}
+                  onRequestDeleteSession={setDeleteCandidate}
+                  onCloseMobile={closeMobile}
+                />
+              </SessionTreeBranch>
+
+              {sessionTree.projectGroups.length > 0 ? (
+                <SessionTreeBranch
+                  icon={Code2Icon}
+                  label="Coding"
+                >
+                  <div className="space-y-2">
+                    {sessionTree.projectGroups.map((group) => (
+                      <SessionProjectBranch key={group.projectDir} group={group}>
+                        <SessionLeafList
+                          createLabel="New coding session"
+                          isCreatingSession={isCreatingSession}
+                          deletingSessionId={deletingSessionId}
+                          sessions={group.sessions}
+                          selectedSessionId={selectedSessionId}
+                          onCreateSession={() => {
+                            onCreateSession(group.projectDir);
+                            closeMobile();
+                          }}
+                          onSelectSession={onSelectSession}
+                          onRequestDeleteSession={setDeleteCandidate}
+                          onCloseMobile={closeMobile}
+                        />
+                      </SessionProjectBranch>
+                    ))}
+                  </div>
+                </SessionTreeBranch>
+              ) : null}
+            </div>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
@@ -199,7 +251,224 @@ function AppSidebarBody({
           })}
         </SidebarMenu>
       </SidebarFooter>
+
+      <DeleteSessionDialog
+        session={deleteCandidate}
+        deleting={isConfirmingDelete || deletingSessionId !== null}
+        onOpenChange={(open) => {
+          if (!open && !isConfirmingDelete) {
+            setDeleteCandidate(null);
+          }
+        }}
+        onConfirm={confirmDeleteSession}
+      />
     </>
+  );
+}
+
+function SessionTreeBranch({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: typeof MessageSquareIcon;
+  label: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(true);
+
+  return (
+    <div role="group" className="min-w-0">
+      <div className="flex h-7 items-center gap-2 rounded-md px-2 text-xs font-medium text-sidebar-foreground/70">
+        <Icon className="size-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="size-6 text-sidebar-foreground/55 hover:text-sidebar-foreground"
+        >
+          <ChevronRightIcon
+            className={cn("size-3.5 transition-transform", open && "rotate-90")}
+          />
+        </Button>
+      </div>
+      {open ? (
+        <div className="ml-3 border-l border-sidebar-border/70 pl-2">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SessionProjectBranch({
+  group,
+  children,
+}: {
+  group: SessionProjectGroup;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(true);
+
+  return (
+    <div role="group" className="min-w-0">
+      <div className="flex min-h-7 items-center gap-2 rounded-md px-2 py-1 text-xs text-sidebar-foreground/65">
+        <FolderIcon className="size-3.5 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium text-sidebar-foreground/80">
+            {group.label}
+          </div>
+          <div className="truncate text-[11px] text-sidebar-foreground/45">
+            {group.projectDir}
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`${open ? "Collapse" : "Expand"} ${group.label}`}
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="size-6 text-sidebar-foreground/55 hover:text-sidebar-foreground"
+        >
+          <ChevronRightIcon
+            className={cn("size-3.5 transition-transform", open && "rotate-90")}
+          />
+        </Button>
+      </div>
+      {open ? (
+        <div className="ml-3 border-l border-sidebar-border/60 pl-2">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SessionLeafList({
+  createLabel,
+  isCreatingSession,
+  deletingSessionId,
+  sessions,
+  selectedSessionId,
+  onCreateSession,
+  onSelectSession,
+  onRequestDeleteSession,
+  onCloseMobile,
+}: {
+  createLabel: string;
+  isCreatingSession: boolean;
+  deletingSessionId: string | null;
+  sessions: SessionInfo[];
+  selectedSessionId: string | null;
+  onCreateSession: () => void;
+  onSelectSession: (sessionId: string) => void;
+  onRequestDeleteSession: (session: SessionInfo) => void;
+  onCloseMobile: () => void;
+}) {
+  return (
+    <SidebarMenu className="gap-0.5 py-1">
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          type="button"
+          size="lg"
+          role="treeitem"
+          disabled={isCreatingSession}
+          onClick={onCreateSession}
+          className="h-auto min-h-10 gap-2 py-2 text-sidebar-foreground/75"
+        >
+          <PlusIcon className="size-4" />
+          <span className="block max-w-full truncate font-medium">
+            {isCreatingSession ? "Creating session" : createLabel}
+          </span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+      {sessions.map((session) => (
+        <SidebarMenuItem key={session.session_id}>
+          <div className="group/session-row flex min-w-0 items-stretch gap-1">
+            <SidebarMenuButton
+              type="button"
+              size="lg"
+              role="treeitem"
+              aria-selected={session.session_id === selectedSessionId}
+              isActive={session.session_id === selectedSessionId}
+              onClick={() => {
+                onSelectSession(session.session_id);
+                onCloseMobile();
+              }}
+              className="h-auto min-h-11 flex-1 flex-col items-start gap-0.5 py-2"
+            >
+              <span className="block max-w-full truncate font-medium">
+                {sessionTitle(session)}
+              </span>
+              <span className="block max-w-full truncate text-xs font-normal text-sidebar-foreground/55">
+                {sessionSubtitle(session)}
+              </span>
+            </SidebarMenuButton>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Delete ${sessionTitle(session)}`}
+              title="Delete session"
+              disabled={deletingSessionId !== null}
+              onClick={() => onRequestDeleteSession(session)}
+              className="mt-1 text-sidebar-foreground/45 hover:text-destructive focus-visible:text-destructive"
+            >
+              <Trash2Icon className="size-4" />
+            </Button>
+          </div>
+        </SidebarMenuItem>
+      ))}
+    </SidebarMenu>
+  );
+}
+
+function DeleteSessionDialog({
+  session,
+  deleting,
+  onOpenChange,
+  onConfirm,
+}: {
+  session: SessionInfo | null;
+  deleting: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={session !== null} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete session?</DialogTitle>
+          <DialogDescription>
+            This permanently deletes{" "}
+            <span className="font-medium text-foreground">
+              {session ? sessionTitle(session) : "this session"}
+            </span>{" "}
+            ({session ? shortSessionId(session.session_id) : "unknown"}).
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button type="button" variant="outline" disabled={deleting}>
+              Cancel
+            </Button>
+          </DialogClose>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={deleting}
+            onClick={onConfirm}
+          >
+            {deleting ? "Deleting" : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -208,8 +477,60 @@ function sessionTitle(session: SessionInfo) {
 }
 
 function sessionSubtitle(session: SessionInfo) {
-  if (session.scope.kind === "project") {
-    return session.scope.project_dir.split("/").filter(Boolean).pop() ?? "Project";
+  return shortSessionId(session.session_id);
+}
+
+function buildSessionTree(sessions: SessionInfo[]): SessionTree {
+  const general = sortSessions(
+    sessions.filter((session) => session.scope.kind === "general"),
+  );
+  const projects = new Map<string, SessionInfo[]>();
+
+  for (const session of sessions) {
+    if (session.scope.kind !== "project") {
+      continue;
+    }
+
+    const projectDir = session.scope.project_dir;
+    projects.set(projectDir, [...(projects.get(projectDir) ?? []), session]);
   }
-  return null;
+
+  const projectGroups = Array.from(projects.entries())
+    .map(([projectDir, projectSessions]) => ({
+      projectDir,
+      label: projectLabel(projectDir),
+      sessions: sortSessions(projectSessions),
+    }))
+    .sort((a, b) => a.projectDir.localeCompare(b.projectDir));
+
+  return {
+    general,
+    projectGroups,
+  };
+}
+
+function sortSessions(sessions: SessionInfo[]) {
+  return [...sessions].sort((a, b) => {
+    const titleOrder = sessionTitle(a)
+      .toLocaleLowerCase()
+      .localeCompare(sessionTitle(b).toLocaleLowerCase());
+    if (titleOrder !== 0) {
+      return titleOrder;
+    }
+
+    if (a.started_at_ms !== b.started_at_ms) {
+      return a.started_at_ms - b.started_at_ms;
+    }
+
+    return a.session_id.localeCompare(b.session_id);
+  });
+}
+
+function projectLabel(projectDir: string) {
+  const parts = projectDir.split("/").filter(Boolean);
+  return parts.at(-1) ?? projectDir;
+}
+
+function shortSessionId(sessionId: string) {
+  return sessionId.slice(0, 8);
 }

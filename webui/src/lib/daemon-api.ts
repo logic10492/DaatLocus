@@ -967,10 +967,11 @@ export async function fetchSessions({
 }
 
 export async function createSession({
+  projectDir,
   title,
   signal,
   token = getStoredDaemonToken(),
-}: FetchOptions & { title?: string } = {}): Promise<SessionInfo> {
+}: FetchOptions & { projectDir?: string; title?: string } = {}): Promise<SessionInfo> {
   const daemonToken = token.trim();
 
   if (!daemonToken) {
@@ -984,11 +985,37 @@ export async function createSession({
       Authorization: `Bearer ${daemonToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({
+      project_dir: projectDir,
+      title,
+    }),
     signal,
   });
 
   return parseJsonResponse<SessionInfo>(response, "Create session");
+}
+
+export async function deleteSession({
+  sessionId,
+  signal,
+  token = getStoredDaemonToken(),
+}: FetchOptions & { sessionId: string }): Promise<void> {
+  const daemonToken = token.trim();
+
+  if (!daemonToken) {
+    throw new DaemonApiError("Missing daemon token for session deletion.");
+  }
+
+  const response = await fetch(`/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${daemonToken}`,
+    },
+    signal,
+  });
+
+  await parseJsonResponse<unknown>(response, "Delete session");
 }
 
 async function parseJsonResponse<T>(

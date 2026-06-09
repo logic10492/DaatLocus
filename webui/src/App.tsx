@@ -9,6 +9,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { getStoredDaemonToken } from "@/lib/daemon-auth";
 import {
   createSession,
+  deleteSession,
   fetchSessions,
   type SessionInfo,
 } from "@/lib/daemon-api";
@@ -28,6 +29,9 @@ export default function App() {
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [hasLoadedSessions, setHasLoadedSessions] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     function updateActivePage() {
@@ -89,20 +93,54 @@ export default function App() {
     }
   }
 
-  async function handleCreateSession() {
+  async function handleCreateSession(projectDir?: string) {
     if (isCreatingSession) {
       return;
     }
     setIsCreatingSession(true);
     setSessionError(null);
     try {
-      const session = await createSession();
+      const session = await createSession({
+        projectDir,
+        title: projectDir ? projectLabel(projectDir) : undefined,
+      });
       setSessions((current) => [...current, session]);
       setSelectedSessionId(session.session_id);
+      if (activePage !== "agent") {
+        window.location.hash = "#agent";
+      }
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsCreatingSession(false);
+    }
+  }
+
+  async function handleDeleteSession(sessionId: string) {
+    if (deletingSessionId) {
+      return;
+    }
+    setDeletingSessionId(sessionId);
+    setSessionError(null);
+    try {
+      await deleteSession({ sessionId });
+      setSessions((current) => {
+        const nextSessions = current.filter(
+          (session) => session.session_id !== sessionId,
+        );
+        setSelectedSessionId((currentSelected) => {
+          if (currentSelected !== sessionId) {
+            return currentSelected;
+          }
+          return preferredSession(nextSessions)?.session_id ?? null;
+        });
+        return nextSessions;
+      });
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      setDeletingSessionId(null);
     }
   }
 
@@ -123,15 +161,15 @@ export default function App() {
             selectedSessionId={selectedSessionId}
             sessionError={sessionError}
             isCreatingSession={isCreatingSession}
+            deletingSessionId={deletingSessionId}
             onSelectSession={handleSelectSession}
             onCreateSession={handleCreateSession}
+            onDeleteSession={handleDeleteSession}
           />
           <SidebarInset className="min-h-screen">
             {renderAuthenticatedPage(activePage, selectedSessionId, {
               hasLoadedSessions,
-              isCreatingSession,
               sessionError,
-              onCreateSession: handleCreateSession,
             })}
           </SidebarInset>
         </SidebarProvider>
@@ -147,9 +185,7 @@ function renderAuthenticatedPage(
   selectedSessionId: string | null,
   sessionState: {
     hasLoadedSessions: boolean;
-    isCreatingSession: boolean;
     sessionError: string | null;
-    onCreateSession: () => void;
   },
 ) {
   switch (activePage) {
@@ -171,14 +207,10 @@ function renderAuthenticatedPage(
 
 function NoSessionPage({
   hasLoadedSessions,
-  isCreatingSession,
   sessionError,
-  onCreateSession,
 }: {
   hasLoadedSessions: boolean;
-  isCreatingSession: boolean;
   sessionError: string | null;
-  onCreateSession: () => void;
 }) {
   return (
     <section
@@ -192,19 +224,9 @@ function NoSessionPage({
         <p className="text-sm text-muted-foreground">
           {sessionError ??
             (hasLoadedSessions
-              ? "Create a session to open the agent dashboard."
+              ? "Create or select a session from the sidebar."
               : "Fetching available sessions.")}
         </p>
-        {hasLoadedSessions ? (
-          <button
-            type="button"
-            onClick={onCreateSession}
-            disabled={isCreatingSession}
-            className="h-10 rounded-lg border border-border/70 bg-background px-4 text-sm shadow-sm transition hover:border-primary/50 disabled:opacity-50"
-          >
-            {isCreatingSession ? "Creating" : "New session"}
-          </button>
-        ) : null}
       </div>
     </section>
   );
@@ -225,6 +247,11 @@ function readStoredSelectedSessionId() {
   return (
     window.localStorage.getItem(SELECTED_SESSION_STORAGE_KEY)?.trim() || null
   );
+}
+
+function projectLabel(projectDir: string) {
+  const parts = projectDir.split("/").filter(Boolean);
+  return parts.at(-1) ?? projectDir;
 }
 
 function getCurrentPage(): AppPage {
