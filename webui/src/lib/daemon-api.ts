@@ -16,6 +16,19 @@ export type DaemonStatus = {
   connected_clients: number;
 };
 
+export type SessionScope =
+  | { kind: "general" }
+  | { kind: "project"; project_dir: string };
+
+export type SessionInfo = {
+  session_id: string;
+  scope: SessionScope;
+  project_dir: string | null;
+  title: string | null;
+  started_at_ms: number;
+  last_seen_at_ms: number | null;
+};
+
 export type DashboardPlanStep = {
   status: "pending" | "in_progress" | "completed";
   step: string;
@@ -423,6 +436,41 @@ export type DashboardSnapshot = {
   footer_estimated_input_tokens: number | null;
 };
 
+export type SessionRuntimeStatus = {
+  ready: boolean;
+  focused_app: string | null;
+  pending_work_count: number;
+  active_runtime_turn: boolean;
+};
+
+export type SessionStatusDashboard = {
+  agent_name: string;
+  focused_app: string | null;
+  last_cycle_elapsed_ms: number | null;
+  runtime_status: string | null;
+  runtime_status_level: DashboardRuntimeStatusLevel | null;
+  runtime_activity: DashboardRuntimeActivity;
+  current_plan_step: DashboardPlanStep | null;
+  token_usage: DashboardTokenUsageSnapshot;
+  primitive_optimization: DashboardPrimitiveOptimizationSnapshot;
+  runtime_optimization: DashboardRuntimeOptimizationSnapshot;
+  context_composition: DashboardContextCompositionSnapshot | null;
+};
+
+export type StatusSessionSummary = {
+  session: SessionInfo;
+  runtime_status: SessionRuntimeStatus | null;
+  dashboard: SessionStatusDashboard | null;
+  error: string | null;
+};
+
+export type StatusSummary = {
+  loaded_at_ms: number;
+  daemon: DaemonStatus;
+  pending_access_requests: DashboardPendingAccessRequest[];
+  sessions: StatusSessionSummary[];
+};
+
 export type DashboardRuntimeStatusLevel =
   | "debug"
   | "info"
@@ -552,6 +600,7 @@ type FetchOptions = {
 
 type DashboardSnapshotSubscriptionOptions = {
   token?: string;
+  sessionId: string;
   onSnapshot: (snapshot: DashboardSnapshot) => void;
   onError?: (error: Error) => void;
   onClose?: (event: CloseEvent) => void;
@@ -595,17 +644,43 @@ export async function fetchDaemonStatus({
   return parseJsonResponse<DaemonStatus>(response, "Daemon status");
 }
 
+export async function fetchStatusSummary({
+  signal,
+  token = getStoredDaemonToken(),
+}: FetchOptions = {}): Promise<StatusSummary> {
+  const daemonToken = token.trim();
+
+  if (!daemonToken) {
+    throw new DaemonApiError("Missing daemon token for status summary.");
+  }
+
+  const response = await fetch("/status/summary", {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${daemonToken}`,
+    },
+    signal,
+  });
+
+  return parseJsonResponse<StatusSummary>(response, "Status summary");
+}
+
 export async function fetchDashboardSnapshot({
   signal,
   token = getStoredDaemonToken(),
-}: FetchOptions = {}): Promise<DashboardSnapshot> {
+  sessionId,
+}: FetchOptions & { sessionId: string }): Promise<DashboardSnapshot> {
   const daemonToken = token.trim();
 
   if (!daemonToken) {
     throw new DaemonApiError("Missing daemon token for dashboard snapshot.");
   }
 
-  const response = await fetch("/dashboard/snapshot", {
+  const url = new URL("/dashboard/snapshot", window.location.href);
+  url.searchParams.set("session_id", sessionId);
+
+  const response = await fetch(url, {
     method: "GET",
     headers: {
       Accept: "application/json",
@@ -623,11 +698,13 @@ export async function fetchDashboardActivityHistory({
   limit = 80,
   signal,
   token = getStoredDaemonToken(),
+  sessionId,
 }: FetchOptions & {
   before?: number;
   after?: number;
   limit?: number;
-} = {}): Promise<DashboardActivityHistoryPage> {
+  sessionId: string;
+}): Promise<DashboardActivityHistoryPage> {
   const daemonToken = token.trim();
 
   if (!daemonToken) {
@@ -642,6 +719,7 @@ export async function fetchDashboardActivityHistory({
   if (after !== undefined) {
     url.searchParams.set("after", String(after));
   }
+  url.searchParams.set("session_id", sessionId);
 
   const response = await fetch(url, {
     method: "GET",
@@ -696,12 +774,28 @@ export async function runDashboardCommand(
     attachments = [],
     signal,
     token = getStoredDaemonToken(),
-  }: FetchOptions & { attachments?: DashboardCommandAttachment[] } = {},
+    sessionId,
+  }: FetchOptions & {
+    attachments?: DashboardCommandAttachment[];
+    sessionId?: string;
+  },
 ): Promise<string> {
   const daemonToken = token.trim();
 
   if (!daemonToken) {
     throw new DaemonApiError("Missing daemon token for dashboard command.");
+  }
+
+  const body: {
+    command: string;
+    attachments: DashboardCommandAttachment[];
+    session_id?: string;
+  } = {
+    command,
+    attachments,
+  };
+  if (sessionId) {
+    body.session_id = sessionId;
   }
 
   const response = await fetch("/commands/run", {
@@ -711,7 +805,7 @@ export async function runDashboardCommand(
       Authorization: `Bearer ${daemonToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ command, attachments }),
+    body: JSON.stringify(body),
     signal,
   });
 
@@ -786,6 +880,7 @@ export async function readLogSource({
 
 export function subscribeDashboardSnapshots({
   token = getStoredDaemonToken(),
+  sessionId,
   onSnapshot,
   onError,
   onClose,
@@ -796,7 +891,7 @@ export function subscribeDashboardSnapshots({
     throw new DaemonApiError("Missing daemon token for dashboard stream.");
   }
 
-  const socket = new WebSocket(dashboardStreamUrl(daemonToken));
+  const socket = new WebSocket(dashboardStreamUrl(daemonToken, sessionId));
 
   socket.addEventListener("message", (event) => {
     if (typeof event.data !== "string") {
@@ -832,11 +927,59 @@ export function subscribeDashboardSnapshots({
   };
 }
 
-function dashboardStreamUrl(token: string) {
+function dashboardStreamUrl(token: string, sessionId: string) {
   const url = new URL("/dashboard/stream", window.location.href);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("token", token);
+  url.searchParams.set("session_id", sessionId);
   return url.toString();
+}
+
+export async function fetchSessions({
+  signal,
+  token = getStoredDaemonToken(),
+}: FetchOptions = {}): Promise<SessionInfo[]> {
+  const daemonToken = token.trim();
+
+  if (!daemonToken) {
+    throw new DaemonApiError("Missing daemon token for sessions.");
+  }
+
+  const response = await fetch("/sessions", {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${daemonToken}`,
+    },
+    signal,
+  });
+
+  return parseJsonResponse<SessionInfo[]>(response, "Sessions");
+}
+
+export async function createSession({
+  title,
+  signal,
+  token = getStoredDaemonToken(),
+}: FetchOptions & { title?: string } = {}): Promise<SessionInfo> {
+  const daemonToken = token.trim();
+
+  if (!daemonToken) {
+    throw new DaemonApiError("Missing daemon token for session creation.");
+  }
+
+  const response = await fetch("/sessions", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ title }),
+    signal,
+  });
+
+  return parseJsonResponse<SessionInfo>(response, "Create session");
 }
 
 async function parseJsonResponse<T>(

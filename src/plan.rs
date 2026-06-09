@@ -14,6 +14,8 @@ const LEGACY_PLAN_FILE_NAME: &str = "todo_board";
 pub struct Plan {
     #[serde(default)]
     steps: Vec<PlanStep>,
+    #[serde(default, skip)]
+    session_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, JsonSchema)]
@@ -38,18 +40,43 @@ pub enum PlanStatus {
 impl Plan {
     pub async fn new() -> Self {
         let persistence = PersistenceStore::runtime().await;
+        Self::open_with_persistence(persistence).await
+    }
+
+    pub async fn with_session(session_id: &str) -> Self {
+        let persistence = PersistenceStore::for_session(Some(session_id)).await;
+        Self::open_with_persistence_and_session(persistence, Some(session_id.to_string())).await
+    }
+
+    async fn open_with_persistence(persistence: PersistenceStore) -> Self {
+        Self::open_with_persistence_and_session(persistence, None).await
+    }
+
+    async fn open_with_persistence_and_session(
+        persistence: PersistenceStore,
+        session_id: Option<String>,
+    ) -> Self {
         let primary_path = persistence.memory_file(PLAN_FILE_NAME);
         let legacy_path = persistence.memory_file(LEGACY_PLAN_FILE_NAME);
-        if let Some(plan) = read_postcard_optional::<Self>(&primary_path, "plan").await {
+        if let Some(mut plan) = read_postcard_optional::<Self>(&primary_path, "plan").await {
+            plan.session_id = session_id;
             return plan;
         }
         let Some(data) = std::fs::read(&legacy_path).ok() else {
-            return Self::default();
+            return Self {
+                session_id,
+                ..Self::default()
+            };
         };
         if let Ok(legacy_plan) = postcard::from_bytes::<LegacyPlan>(&data) {
-            return legacy_plan.into_plan();
+            let mut plan = legacy_plan.into_plan();
+            plan.session_id = session_id;
+            return plan;
         }
-        Self::default()
+        Self {
+            session_id,
+            ..Self::default()
+        }
     }
 
     pub fn replace(&mut self, mut steps: Vec<PlanStep>) -> bool {
@@ -94,7 +121,7 @@ impl Plan {
     }
 
     pub async fn sync_to_disk(&self) -> miette::Result<()> {
-        PersistenceStore::runtime()
+        PersistenceStore::for_session(self.session_id.as_deref())
             .await
             .write_postcard_memory(PLAN_FILE_NAME, self)
             .await
@@ -128,6 +155,7 @@ mod tests {
                     last_updated_at_ms: 40,
                 },
             ],
+            session_id: None,
         };
 
         let bytes = postcard::to_allocvec(&plan).expect("encode plan");
@@ -285,6 +313,9 @@ impl LegacyPlan {
             step.status = PlanStatus::InProgress;
         }
 
-        Plan { steps }
+        Plan {
+            steps,
+            session_id: None,
+        }
     }
 }

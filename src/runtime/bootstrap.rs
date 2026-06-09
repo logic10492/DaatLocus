@@ -21,7 +21,7 @@ use crate::{
         CompiledPromptStore, load_all_compiled_programs_for_model,
         load_compiled_runtime_system_prompt_for_model,
     },
-    sandbox::RuntimeSandboxPolicy,
+    sandbox::{RuntimeSandboxPolicy, WritableRoot},
     telegram_acl::TelegramAclHandle,
     telegram_transport::state::TelegramTransportState,
     terminal_app::TerminalApp,
@@ -60,18 +60,47 @@ pub async fn save_token_estimate_baseline(baseline: &TokenEstimateBaseline) {
 
 pub(crate) async fn sandbox_policy_for_runtime(
     config: &crate::config::Config,
+    execution_cwd: Option<&Path>,
 ) -> RuntimeSandboxPolicy {
     if !config.sandbox.enabled {
         return RuntimeSandboxPolicy::disabled();
     }
 
     let daat_locus_home = daat_locus_paths().await.root().to_path_buf();
-    RuntimeSandboxPolicy::protect_daat_locus_runtime_with_strong_filesystem(
+    let mut policy = RuntimeSandboxPolicy::protect_daat_locus_runtime_with_strong_filesystem(
         &daat_locus_home,
         daat_locus_source_root().as_deref(),
         config.protected_secret_env_vars(),
         config.sandbox.strong_filesystem,
-    )
+    );
+    if let Some(execution_cwd) = execution_cwd {
+        allow_execution_workspace_writes(&mut policy, execution_cwd);
+    }
+    policy
+}
+
+fn allow_execution_workspace_writes(policy: &mut RuntimeSandboxPolicy, execution_cwd: &Path) {
+    let root = normalize_workspace_root(execution_cwd);
+    policy.filesystem.deny_write_paths.retain(|denied| {
+        let denied = normalize_workspace_root(denied);
+        !root.starts_with(&denied) && !denied.starts_with(&root)
+    });
+    if !policy.filesystem.full_disk_write
+        && !policy
+            .filesystem
+            .writable_roots
+            .iter()
+            .any(|existing| normalize_workspace_root(&existing.root) == root)
+    {
+        policy.filesystem.writable_roots.push(WritableRoot {
+            root,
+            read_only_subpaths: Vec::new(),
+        });
+    }
+}
+
+fn normalize_workspace_root(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn daat_locus_source_root() -> Option<PathBuf> {
@@ -117,7 +146,7 @@ pub(crate) async fn build_eval_context_with_compiled(
             workspace_apps_dir(&execution_cwd).display()
         )
     });
-    let sandbox_policy = sandbox_policy_for_runtime(&config).await;
+    let sandbox_policy = sandbox_policy_for_runtime(&config, Some(&execution_cwd)).await;
     let memory = Memory::new().await;
     let plan = Plan::new().await;
     let events = EventStore::new().await;

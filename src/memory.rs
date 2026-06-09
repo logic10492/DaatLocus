@@ -106,6 +106,14 @@ impl Memory {
         }
     }
 
+    pub async fn with_session(session_id: &str) -> Self {
+        let runtime_conversation =
+            RuntimeConversation::with_session(None, Vec::new(), session_id).await;
+        Self {
+            runtime_conversation,
+        }
+    }
+
     pub async fn record_agent_turn(
         &mut self,
         current_doing: String,
@@ -242,6 +250,8 @@ impl Memory {
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct RuntimeConversation {
+    #[serde(default, skip)]
+    session_id: Option<String>,
     last_focus: Option<String>,
     messages: Vec<HistoryMessage>,
     #[serde(default)]
@@ -533,15 +543,39 @@ fn rebuild_compacted_agent_messages(
 
 impl RuntimeConversation {
     async fn new(bootstrap_focus: Option<String>, bootstrap_messages: Vec<HistoryMessage>) -> Self {
-        let persistence = PersistenceStore::runtime().await;
+        Self::open_with_session(bootstrap_focus, bootstrap_messages, None).await
+    }
+
+    async fn with_session(
+        bootstrap_focus: Option<String>,
+        bootstrap_messages: Vec<HistoryMessage>,
+        session_id: &str,
+    ) -> Self {
+        Self::open_with_session(
+            bootstrap_focus,
+            bootstrap_messages,
+            Some(session_id.to_string()),
+        )
+        .await
+    }
+
+    async fn open_with_session(
+        bootstrap_focus: Option<String>,
+        bootstrap_messages: Vec<HistoryMessage>,
+        session_id: Option<String>,
+    ) -> Self {
+        let persistence = PersistenceStore::for_session(session_id.as_deref()).await;
         if let Some(conversation) = persistence
-            .read_json_memory(RUNTIME_CONVERSATION_FILE_NAME, "runtime conversation")
+            .read_json_memory::<RuntimeConversation>(
+                RUNTIME_CONVERSATION_FILE_NAME,
+                "runtime conversation",
+            )
             .await
         {
-            return conversation;
+            return conversation.with_runtime_session(session_id);
         }
         if let Some(conversation) = persistence
-            .read_postcard_memory(
+            .read_postcard_memory::<RuntimeConversation>(
                 RUNTIME_CONVERSATION_LEGACY_FILE_NAME,
                 "legacy runtime conversation",
             )
@@ -553,13 +587,19 @@ impl RuntimeConversation {
             {
                 tracing::error!("migrate legacy runtime conversation to json failed: {err}");
             }
-            return conversation;
+            return conversation.with_runtime_session(session_id);
         }
         Self {
+            session_id,
             last_focus: bootstrap_focus,
             messages: bootstrap_messages,
             compaction_records: VecDeque::new(),
         }
+    }
+
+    fn with_runtime_session(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
+        self
     }
 
     pub fn append_turn(
@@ -762,7 +802,7 @@ impl RuntimeConversation {
     }
 
     async fn sync_to_disk(&self) {
-        let persistence = PersistenceStore::runtime().await;
+        let persistence = PersistenceStore::for_session(self.session_id.as_deref()).await;
         if let Err(err) = persistence
             .write_json_memory(RUNTIME_CONVERSATION_FILE_NAME, self)
             .await
@@ -1089,6 +1129,7 @@ mod tests {
             last_focus: Some("test".to_string()),
             messages: vec![HistoryMessage::assistant("runtime history".repeat(12))],
             compaction_records: VecDeque::new(),
+            session_id: None,
         };
         let envelope = RuntimeRequestEnvelope::from_system_messages(vec!["system".repeat(8)]);
         let injected_messages = vec![HistoryMessage::user(
@@ -1148,6 +1189,7 @@ mod tests {
                 ),
             ],
             compaction_records: VecDeque::new(),
+            session_id: None,
         };
 
         let all_messages = conversation.messages();
@@ -1268,6 +1310,7 @@ mod tests {
                 tool_call_ui_events: Vec::new(),
             }],
             compaction_records: VecDeque::new(),
+            session_id: None,
         };
         let bytes = serde_json::to_vec_pretty(&conversation).expect("serialize conversation");
         let restored: RuntimeConversation =

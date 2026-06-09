@@ -45,7 +45,7 @@ pub fn sync_dashboard_state(
             activity_cells_from_history_items(&state.activity_history.items)
         };
         crate::dashboard::sync_web_activity_state(state);
-        state.last_cycle_elapsed_ms = last_cycle_elapsed_ms;
+        state.last_cycle_elapsed_ms = last_cycle_elapsed_ms.map(duration_millis_to_u64);
         state.runtime_activity = runtime_activity_for_dashboard(
             context,
             sleep_status,
@@ -503,6 +503,10 @@ fn format_duration(duration: Duration) -> String {
     } else {
         format!("{seconds}s")
     }
+}
+
+fn duration_millis_to_u64(ms: u128) -> u64 {
+    u64::try_from(ms).unwrap_or(u64::MAX)
 }
 
 pub fn runtime_activity_for_dashboard(

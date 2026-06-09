@@ -84,17 +84,34 @@ pub struct PendingOutboundMessage {
 
 impl TelegramTransportState {
     pub fn new() -> Self {
-        Self::with_state(load_telegram_state())
+        Self::with_persistence(PersistenceStore::runtime_sync())
     }
 
-    fn with_state(state: TelegramState) -> Self {
+    pub fn with_session(session_id: &str) -> Self {
+        Self::with_persistence(PersistenceStore::for_session_sync(Some(session_id)))
+    }
+
+    fn with_persistence(persistence: PersistenceStore) -> Self {
+        let state = load_telegram_state(&persistence);
+        let update_offset = load_telegram_update_offset(&persistence);
+        let persistence_path = persistence.state_file(TELEGRAM_TRANSPORT_STATE_FILE_NAME);
+        let update_offset_path = persistence.state_file(TELEGRAM_UPDATE_OFFSET_STATE_FILE_NAME);
+        Self::with_state(state, update_offset, persistence_path, update_offset_path)
+    }
+
+    fn with_state(
+        state: TelegramState,
+        update_offset: Option<i64>,
+        persistence_path: PathBuf,
+        update_offset_path: PathBuf,
+    ) -> Self {
         Self {
             inner: Arc::new(TelegramInner {
                 state: Mutex::new(state),
-                update_offset: Mutex::new(load_telegram_update_offset()),
+                update_offset: Mutex::new(update_offset),
                 outbound_notify: Notify::new(),
-                persistence_path: telegram_transport_state_path(),
-                update_offset_path: telegram_update_offset_state_path(),
+                persistence_path,
+                update_offset_path,
             }),
         }
     }
@@ -389,29 +406,19 @@ impl From<&TelegramChat> for PersistedTelegramChat {
     }
 }
 
-fn telegram_transport_state_path() -> PathBuf {
-    PersistenceStore::runtime_sync().state_file(TELEGRAM_TRANSPORT_STATE_FILE_NAME)
-}
-
-fn telegram_update_offset_state_path() -> PathBuf {
-    PersistenceStore::runtime_sync().state_file(TELEGRAM_UPDATE_OFFSET_STATE_FILE_NAME)
-}
-
-fn load_telegram_state() -> TelegramState {
-    let persisted: PersistedTelegramState = PersistenceStore::runtime_sync()
-        .read_postcard_state_or_default_sync(
-            TELEGRAM_TRANSPORT_STATE_FILE_NAME,
-            "telegram transport state",
-        );
+fn load_telegram_state(persistence: &PersistenceStore) -> TelegramState {
+    let persisted: PersistedTelegramState = persistence.read_postcard_state_or_default_sync(
+        TELEGRAM_TRANSPORT_STATE_FILE_NAME,
+        "telegram transport state",
+    );
     persisted.into()
 }
 
-fn load_telegram_update_offset() -> Option<i64> {
-    let persisted: PersistedTelegramUpdateOffset = PersistenceStore::runtime_sync()
-        .read_postcard_state_or_default_sync(
-            TELEGRAM_UPDATE_OFFSET_STATE_FILE_NAME,
-            "telegram update offset",
-        );
+fn load_telegram_update_offset(persistence: &PersistenceStore) -> Option<i64> {
+    let persisted: PersistedTelegramUpdateOffset = persistence.read_postcard_state_or_default_sync(
+        TELEGRAM_UPDATE_OFFSET_STATE_FILE_NAME,
+        "telegram update offset",
+    );
     persisted.next_update_offset
 }
 

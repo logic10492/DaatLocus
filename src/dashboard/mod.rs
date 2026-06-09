@@ -40,8 +40,6 @@ use std::time::Duration;
 use crate::{
     app::AppId,
     core::TokenUsageInfo,
-    events::{EventStore, TerminalIncomingAttachment, TerminalIncomingEvent},
-    pending_work::{PendingWork, PendingWorkQueue},
     reasoning::turn_compile::{
         load_prompt_persona_spec_sync, prompt_persona_path_sync, render_prompt_persona_markdown,
     },
@@ -228,7 +226,7 @@ pub struct DashboardState {
     pub live_web_activity_items: Vec<LiveWebActivityItem>,
     #[serde(default)]
     pub activity_history: DashboardActivityHistoryWindow,
-    pub last_cycle_elapsed_ms: Option<u128>,
+    pub last_cycle_elapsed_ms: Option<u64>,
     pub runtime_status: Option<String>,
     #[serde(default)]
     pub runtime_status_level: Option<DashboardRuntimeStatusLevel>,
@@ -1919,96 +1917,6 @@ pub(crate) fn execute_control_command(
     }
 }
 
-pub(crate) fn execute_remote_command(
-    input: &str,
-    telegram_acl: &TelegramAclHandle,
-    events: &EventStore,
-    pending_work: &PendingWorkQueue,
-    state: &DashboardState,
-    control_tx: &tokio::sync::mpsc::UnboundedSender<DashboardControlCommand>,
-) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return "empty input".to_string();
-    }
-    let Some(command) = dashboard_command_body(trimmed) else {
-        return enqueue_terminal_message(events, pending_work, trimmed);
-    };
-    execute_control_command(command, telegram_acl, state, control_tx)
-}
-
-pub(crate) fn execute_remote_message(
-    input: &str,
-    attachments: Vec<DashboardIncomingAttachment>,
-    events: &EventStore,
-    pending_work: &PendingWorkQueue,
-) -> String {
-    match register_terminal_message_with_attachments(
-        events,
-        pending_work,
-        input.trim(),
-        attachments,
-    ) {
-        Ok(event_id) => format!("queued terminal message as event {event_id}"),
-        Err(err) => err,
-    }
-}
-
-pub(crate) fn enqueue_local_send_message(
-    events: &EventStore,
-    pending_work: &PendingWorkQueue,
-    input: &str,
-) -> std::result::Result<uuid::Uuid, String> {
-    register_terminal_message_with_attachments(events, pending_work, input.trim(), Vec::new())
-}
-
-fn enqueue_terminal_message(
-    events: &EventStore,
-    pending_work: &PendingWorkQueue,
-    input: &str,
-) -> String {
-    enqueue_terminal_message_with_attachments(events, pending_work, input, Vec::new())
-}
-
-fn enqueue_terminal_message_with_attachments(
-    events: &EventStore,
-    pending_work: &PendingWorkQueue,
-    input: &str,
-    attachments: Vec<DashboardIncomingAttachment>,
-) -> String {
-    match register_terminal_message_with_attachments(events, pending_work, input, attachments) {
-        Ok(event_id) => format!("queued terminal message as event {event_id}"),
-        Err(err) => err,
-    }
-}
-
-fn register_terminal_message_with_attachments(
-    events: &EventStore,
-    pending_work: &PendingWorkQueue,
-    input: &str,
-    attachments: Vec<DashboardIncomingAttachment>,
-) -> std::result::Result<uuid::Uuid, String> {
-    let event_id = events
-        .register_terminal_incoming(TerminalIncomingEvent {
-            origin: "dashboard".to_string(),
-            incoming_text: input.to_string(),
-            attachments: attachments
-                .into_iter()
-                .map(|attachment| TerminalIncomingAttachment {
-                    kind: crate::events::TerminalIncomingAttachmentKind::Image,
-                    media_type: attachment.media_type,
-                    local_path: attachment.local_path,
-                    description: attachment.description,
-                })
-                .collect(),
-        })
-        .map_err(|err| format!("failed to register terminal message: {err}"))?;
-    pending_work
-        .enqueue(PendingWork::Event { event_id })
-        .map_err(|err| format!("failed to queue terminal message {event_id}: {err}"))?;
-    Ok(event_id)
-}
-
 fn panel(title: impl Into<Line<'static>>) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
@@ -2871,5 +2779,19 @@ mod tests {
 
         assert!(telegram_access_picker_for_input("/telegram approve 42", &requests).is_none());
         assert!(telegram_access_picker_for_input("/status", &requests).is_none());
+    }
+
+    #[test]
+    fn dashboard_state_millisecond_fields_json_round_trip() {
+        let state = DashboardState {
+            last_cycle_elapsed_ms: Some(42),
+            ..DashboardState::default()
+        };
+
+        let encoded = serde_json::to_string(&state).expect("serialize dashboard state");
+        let decoded: DashboardState =
+            serde_json::from_str(&encoded).expect("deserialize dashboard state");
+
+        assert_eq!(decoded.last_cycle_elapsed_ms, Some(42));
     }
 }

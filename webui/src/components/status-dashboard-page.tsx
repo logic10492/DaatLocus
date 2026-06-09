@@ -21,30 +21,35 @@ import {
 import { ChartContainer, ChartTooltip } from "@/components/ui/chart";
 import {
   runDashboardCommand,
+  fetchStatusSummary,
   type DashboardPendingAccessRequest,
-  type DashboardSnapshot,
+  type SessionInfo,
+  type SessionStatusDashboard,
+  type StatusSessionSummary,
+  type StatusSummary,
 } from "@/lib/daemon-api";
-import { useDashboardSnapshot } from "@/hooks/use-dashboard-snapshot";
 import {
   CONTEXT_COMPOSITION_CHART_CONFIG,
   RUNTIME_OPTIMIZATION_CHART_CONFIG,
   TOKEN_USAGE_CHART_CONFIG,
   PRIMITIVE_OPTIMIZATION_CHART_CONFIG,
   contextCompositionCardData,
-  dailyTokenUsageChartData,
+  dailyTokenUsageChartDataFromSources,
   formatCompactNumber,
   formatPercent,
   formatPercentAxisTick,
   runtimeOptimizationProgressData,
   primitiveOptimizationProgressData,
   type ContextCompositionPrefixSummaryDatum,
-  type ContextCompositionSegmentChartDatum,
+  type DailyTokenUsageSource,
   type DailyTokenUsageChartDatum,
 } from "@/lib/dashboard-view-model";
 import { cn } from "@/lib/utils";
 
 const STATUS_CARD_ORDER_STORAGE_KEY = "daat-locus.status.card-order";
+const STATUS_SUMMARY_REFRESH_MS = 5000;
 const DEFAULT_STATUS_CARD_ORDER = [
+  "sessions",
   "telegram-approval",
   "runtime-optimization",
   "context-composition",
@@ -61,7 +66,8 @@ type StatusCardDropIntent = {
 };
 
 type StatusCardContentProps = {
-  snapshot: DashboardSnapshot | null;
+  summary: StatusSummary | null;
+  onRefresh: () => void;
   dragHandle: ReactNode;
 };
 
@@ -72,10 +78,6 @@ type StatusCardDefinition = {
 
 type TokenUsageTooltipPayloadItem = {
   payload?: DailyTokenUsageChartDatum;
-};
-
-type ContextCompositionTooltipPayloadItem = {
-  payload?: ContextCompositionSegmentChartDatum;
 };
 
 type ContextPrefixTooltipPayloadItem = {
@@ -92,7 +94,16 @@ type OptimizationProgressDatum = {
   detail: string;
 };
 
+type SessionDashboardEntry = {
+  session: SessionInfo;
+  dashboard: SessionStatusDashboard;
+};
+
 const STATUS_CARD_DEFINITIONS: Record<StatusCardId, StatusCardDefinition> = {
+  sessions: {
+    label: "Sessions",
+    render: (props) => <SessionsCard {...props} />,
+  },
   "telegram-approval": {
     label: "Telegram Approval",
     render: (props) => <TelegramApprovalCard {...props} />,
@@ -116,7 +127,7 @@ const STATUS_CARD_DEFINITIONS: Record<StatusCardId, StatusCardDefinition> = {
 };
 
 export function StatusPage() {
-  const { snapshot } = useDashboardSnapshot();
+  const { summary, loadError, reload } = useStatusSummary();
   const [cardOrder, setCardOrder] = useState<StatusCardId[]>(
     readStoredStatusCardOrder,
   );
@@ -225,6 +236,14 @@ export function StatusPage() {
       aria-label="Status"
       className="min-h-screen w-full px-6 pb-10 pt-20 md:pb-12 md:pt-24"
     >
+      {loadError ? (
+        <div
+          role="alert"
+          className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          {loadError.message}
+        </div>
+      ) : null}
       <div className="grid w-full grid-cols-1 items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {cardColumns.map((column, columnIndex) => (
           <div
@@ -254,7 +273,8 @@ export function StatusPage() {
                   )}
                 >
                   {definition.render({
-                    snapshot,
+                    summary,
+                    onRefresh: reload,
                     dragHandle: (
                       <StatusCardDragHandle
                         cardId={cardId}
@@ -273,6 +293,45 @@ export function StatusPage() {
       </div>
     </section>
   );
+}
+
+function useStatusSummary() {
+  const [summary, setSummary] = useState<StatusSummary | null>(null);
+  const [loadError, setLoadError] = useState<Error | null>(null);
+
+  async function load(signal?: AbortSignal) {
+    try {
+      const nextSummary = await fetchStatusSummary({ signal });
+      setSummary(nextSummary);
+      setLoadError(null);
+    } catch (error) {
+      if (signal?.aborted) {
+        return;
+      }
+      setLoadError(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    const interval = window.setInterval(() => {
+      void load(controller.signal);
+    }, STATUS_SUMMARY_REFRESH_MS);
+
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  return {
+    summary,
+    loadError,
+    reload: () => {
+      void load();
+    },
+  };
 }
 
 function StatusCardDragHandle({
@@ -312,14 +371,96 @@ function StatusCardDragHandle({
   );
 }
 
-function TelegramApprovalCard({
-  snapshot,
+function SessionsCard({
+  summary,
   dragHandle,
 }: {
-  snapshot: DashboardSnapshot | null;
+  summary: StatusSummary | null;
   dragHandle: ReactNode;
 }) {
-  const requests = snapshot?.pending_access_requests ?? [];
+  const sessions = summary?.sessions ?? [];
+  const runningSessions = sessions.filter((entry) => entry.runtime_status?.ready);
+
+  return (
+    <Card className="w-full">
+      <CardHeader>
+        <CardTitle>Sessions</CardTitle>
+        <CardAction>{dragHandle}</CardAction>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-3 gap-2">
+          <ContextCompositionMetric
+            label="Daemon"
+            value={summary?.daemon.state ?? "loading"}
+            detail={summary ? `:${summary.daemon.port}` : "manager"}
+          />
+          <ContextCompositionMetric
+            label="Sessions"
+            value={formatCompactNumber(sessions.length)}
+            detail={`${formatCompactNumber(runningSessions.length)} ready`}
+          />
+          <ContextCompositionMetric
+            label="Clients"
+            value={formatCompactNumber(summary?.daemon.connected_clients ?? 0)}
+            detail="web/tui"
+          />
+        </div>
+        {sessions.length > 0 ? (
+          <div className="space-y-2">
+            {sessions.map((entry) => (
+              <SessionStatusLine key={entry.session.session_id} entry={entry} />
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No sessions registered.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SessionStatusLine({ entry }: { entry: StatusSessionSummary }) {
+  const runtime = entry.runtime_status;
+  const status = entry.error
+    ? "attention"
+    : runtime?.active_runtime_turn
+      ? "active"
+      : runtime?.ready
+        ? "ready"
+        : "available";
+  const detail = entry.error
+    ? entry.error
+    : runtime
+      ? `${runtime.pending_work_count} pending${runtime.focused_app ? ` · ${runtime.focused_app}` : ""}`
+      : sessionScopeLabel(entry.session);
+
+  return (
+    <div className="flex min-w-0 items-center gap-3 rounded-lg border bg-muted/20 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium">
+          {sessionDisplayName(entry.session)}
+        </div>
+        <div className="truncate text-xs text-muted-foreground">{detail}</div>
+      </div>
+      <span className="shrink-0 rounded-md border px-2 py-1 font-mono text-xs tabular-nums text-muted-foreground">
+        {status}
+      </span>
+    </div>
+  );
+}
+
+function TelegramApprovalCard({
+  summary,
+  onRefresh,
+  dragHandle,
+}: {
+  summary: StatusSummary | null;
+  onRefresh: () => void;
+  dragHandle: ReactNode;
+}) {
+  const requests = summary?.pending_access_requests ?? [];
   const [busyChatId, setBusyChatId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -331,7 +472,8 @@ function TelegramApprovalCard({
     setActionError(null);
 
     try {
-      await runDashboardCommand(`/telegram ${action} ${request.chat_id}`);
+      await runDashboardCommand(`/telegram ${action} ${request.chat_id}`, {});
+      onRefresh();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -410,15 +552,15 @@ function TelegramApprovalCard({
 }
 
 function DailyTokenUsageCard({
-  snapshot,
+  summary,
   dragHandle,
 }: {
-  snapshot: DashboardSnapshot | null;
+  summary: StatusSummary | null;
   dragHandle: ReactNode;
 }) {
   const chartData = useMemo(
-    () => dailyTokenUsageChartData(snapshot),
-    [snapshot],
+    () => dailyTokenUsageChartDataFromSources(tokenUsageSources(summary)),
+    [summary],
   );
   const hasUsage = chartData.some((day) => day.total > 0);
 
@@ -487,16 +629,18 @@ function DailyTokenUsageCard({
 }
 
 function ModelContextCompositionCard({
-  snapshot,
+  summary,
   dragHandle,
 }: {
-  snapshot: DashboardSnapshot | null;
+  summary: StatusSummary | null;
   dragHandle: ReactNode;
 }) {
-  const composition = snapshot?.context_composition;
-  const compositionData = useMemo(
-    () => contextCompositionCardData(snapshot),
-    [snapshot],
+  const entries = useMemo(
+    () =>
+      sessionDashboardEntries(summary).filter(
+        (entry) => entry.dashboard.context_composition,
+      ),
+    [summary],
   );
 
   return (
@@ -506,168 +650,126 @@ function ModelContextCompositionCard({
         <CardAction>{dragHandle}</CardAction>
       </CardHeader>
       <CardContent className="space-y-4">
-        {composition ? (
+        {entries.length > 0 ? (
           <>
-            <div className="grid grid-cols-3 gap-2">
-              <ContextCompositionMetric
-                label="Total"
-                value={formatCompactNumber(composition.total_estimated_tokens)}
-                detail="est. tokens"
+            {entries.map((entry) => (
+              <SessionContextComposition
+                key={entry.session.session_id}
+                entry={entry}
               />
-              <ContextCompositionMetric
-                label="New suffix"
-                value={formatPercent(compositionData.newSuffixRatio)}
-                detail={formatCompactNumber(composition.new_suffix_tokens)}
-              />
-              <ContextCompositionMetric
-                label="Stable prefix"
-                value={formatPercent(compositionData.stablePrefixRatio)}
-                detail={formatCompactNumber(composition.stable_prefix_tokens)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                <span>Prefix reuse vs changed/new request tail</span>
-                <span className="font-mono tabular-nums">
-                  {composition.previous_request_hash
-                    ? "vs previous"
-                    : "first snapshot"}
-                </span>
-              </div>
-              <ChartContainer
-                config={CONTEXT_COMPOSITION_CHART_CONFIG}
-                className="h-12 w-full overflow-visible [&_.recharts-wrapper]:overflow-visible"
-              >
-                <BarChart
-                  accessibilityLayer
-                  data={compositionData.prefixSummaryData}
-                  layout="vertical"
-                  margin={{ top: 8, right: 0, left: 0, bottom: 8 }}
-                  stackOffset="expand"
-                >
-                  <XAxis type="number" hide domain={[0, 1]} />
-                  <YAxis type="category" dataKey="label" hide />
-                  <ChartTooltip
-                    cursor={{ fill: "transparent" }}
-                    wrapperStyle={{ zIndex: 50 }}
-                    content={<ContextPrefixTooltip />}
-                  />
-                  <Bar
-                    dataKey="stable"
-                    stackId="prefix"
-                    fill="var(--color-stable)"
-                    isAnimationActive={false}
-                    radius={[4, 0, 0, 4]}
-                  />
-                  <Bar
-                    dataKey="changed"
-                    stackId="prefix"
-                    fill="var(--color-changed)"
-                    isAnimationActive={false}
-                    radius={[0, 0, 0, 0]}
-                  />
-                  <Bar
-                    dataKey="new"
-                    stackId="prefix"
-                    fill="var(--color-new)"
-                    isAnimationActive={false}
-                    radius={[0, 4, 4, 0]}
-                  />
-                  <Bar
-                    dataKey="unknown"
-                    stackId="prefix"
-                    fill="var(--color-unknown)"
-                    isAnimationActive={false}
-                    radius={[0, 4, 4, 0]}
-                  />
-                </BarChart>
-              </ChartContainer>
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                {compositionData.prefixLegend.map((bar) => (
-                  <div
-                    key={bar.key}
-                    className="flex min-w-0 items-center gap-1.5 text-muted-foreground"
-                  >
-                    <span
-                      className="size-2 shrink-0 rounded-[2px]"
-                      style={{
-                        backgroundColor: `var(--color-${bar.colorKey})`,
-                      }}
-                    />
-                    <span className="truncate">{bar.shortLabel}</span>
-                    <span className="ml-auto font-mono tabular-nums text-foreground">
-                      {formatPercent(bar.ratio)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <ChartContainer
-              config={CONTEXT_COMPOSITION_CHART_CONFIG}
-              className="h-64 w-full overflow-visible [&_.recharts-wrapper]:overflow-visible"
-            >
-              <BarChart
-                accessibilityLayer
-                data={compositionData.segmentChartData}
-                layout="vertical"
-                margin={{ top: 8, right: 12, left: 8, bottom: 0 }}
-                barCategoryGap="24%"
-              >
-                <XAxis
-                  type="number"
-                  hide
-                  domain={[0, compositionData.maxSegmentTokens]}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="shortLabel"
-                  width={118}
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                />
-                <ChartTooltip
-                  cursor={{ fill: "var(--muted)" }}
-                  wrapperStyle={{ zIndex: 50 }}
-                  content={<ContextCompositionTooltip />}
-                />
-                <Bar
-                  dataKey="tokens"
-                  fill="var(--color-tokens)"
-                  radius={[0, 4, 4, 0]}
-                  isAnimationActive={false}
-                />
-              </BarChart>
-            </ChartContainer>
-
-            <div className="grid gap-2 text-xs text-muted-foreground">
-              <ContextCompositionDetailRow
-                label="Messages / tools"
-                value={`${composition.message_count} / ${composition.tool_count}`}
-              />
-              <ContextCompositionDetailRow
-                label="Tool schema"
-                value={`${formatCompactNumber(composition.tools_schema_tokens)} tokens`}
-              />
-              <ContextCompositionDetailRow
-                label="Bytes"
-                value={formatCompactNumber(composition.total_bytes)}
-              />
-              <ContextCompositionDetailRow
-                label="Model"
-                value={composition.model ?? "unknown"}
-              />
-            </div>
+            ))}
           </>
         ) : (
           <p className="text-sm text-muted-foreground">
-            Waiting for the next model request to capture context composition.
+            Waiting for session model requests to capture context composition.
           </p>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function SessionContextComposition({
+  entry,
+}: {
+  entry: SessionDashboardEntry;
+}) {
+  const composition = entry.dashboard.context_composition;
+  const compositionData = useMemo(
+    () => contextCompositionCardData(entry.dashboard),
+    [entry.dashboard],
+  );
+
+  if (!composition) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="truncate text-sm font-medium">
+          {sessionDisplayName(entry.session)}
+        </div>
+        <div className="shrink-0 font-mono text-xs text-muted-foreground">
+          {composition.model ?? "unknown"}
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <ContextCompositionMetric
+          label="Total"
+          value={formatCompactNumber(composition.total_estimated_tokens)}
+          detail="est. tokens"
+        />
+        <ContextCompositionMetric
+          label="New suffix"
+          value={formatPercent(compositionData.newSuffixRatio)}
+          detail={formatCompactNumber(composition.new_suffix_tokens)}
+        />
+        <ContextCompositionMetric
+          label="Stable"
+          value={formatPercent(compositionData.stablePrefixRatio)}
+          detail={formatCompactNumber(composition.stable_prefix_tokens)}
+        />
+      </div>
+      <ChartContainer
+        config={CONTEXT_COMPOSITION_CHART_CONFIG}
+        className="h-10 w-full overflow-visible [&_.recharts-wrapper]:overflow-visible"
+      >
+        <BarChart
+          accessibilityLayer
+          data={compositionData.prefixSummaryData}
+          layout="vertical"
+          margin={{ top: 8, right: 0, left: 0, bottom: 8 }}
+          stackOffset="expand"
+        >
+          <XAxis type="number" hide domain={[0, 1]} />
+          <YAxis type="category" dataKey="label" hide />
+          <ChartTooltip
+            cursor={{ fill: "transparent" }}
+            wrapperStyle={{ zIndex: 50 }}
+            content={<ContextPrefixTooltip />}
+          />
+          <Bar
+            dataKey="stable"
+            stackId="prefix"
+            fill="var(--color-stable)"
+            isAnimationActive={false}
+            radius={[4, 0, 0, 4]}
+          />
+          <Bar
+            dataKey="changed"
+            stackId="prefix"
+            fill="var(--color-changed)"
+            isAnimationActive={false}
+            radius={[0, 0, 0, 0]}
+          />
+          <Bar
+            dataKey="new"
+            stackId="prefix"
+            fill="var(--color-new)"
+            isAnimationActive={false}
+            radius={[0, 4, 4, 0]}
+          />
+          <Bar
+            dataKey="unknown"
+            stackId="prefix"
+            fill="var(--color-unknown)"
+            isAnimationActive={false}
+            radius={[0, 4, 4, 0]}
+          />
+        </BarChart>
+      </ChartContainer>
+      <div className="grid gap-2 text-xs text-muted-foreground">
+        <ContextCompositionDetailRow
+          label="Messages / tools"
+          value={`${composition.message_count} / ${composition.tool_count}`}
+        />
+        <ContextCompositionDetailRow
+          label="Tool schema"
+          value={`${formatCompactNumber(composition.tools_schema_tokens)} tokens`}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -709,19 +811,24 @@ function ContextCompositionDetailRow({
 }
 
 function PrimitiveOptimizationCard({
-  snapshot,
+  summary,
   dragHandle,
 }: {
-  snapshot: DashboardSnapshot | null;
+  summary: StatusSummary | null;
   dragHandle: ReactNode;
 }) {
-  const progressData = useMemo(
-    () => primitiveOptimizationProgressData(snapshot),
-    [snapshot],
+  const rows = useMemo(
+    () =>
+      sessionDashboardEntries(summary).map((entry) => {
+        const progressData = primitiveOptimizationProgressData(entry.dashboard);
+        const total = progressData.reduce((sum, item) => sum + item.value, 0);
+        return { entry, progressData, total };
+      }),
+    [summary],
   );
-  const total = progressData.reduce((sum, item) => sum + item.value, 0);
+  const visibleRows = rows.filter((row) => row.total > 0);
 
-  if (total === 0) {
+  if (visibleRows.length === 0) {
     return (
       <Card className="w-full">
         <CardHeader>
@@ -744,22 +851,16 @@ function PrimitiveOptimizationCard({
         <CardAction>{dragHandle}</CardAction>
       </CardHeader>
       <CardContent>
-        <div className="space-y-3">
-          <OptimizationProgressBar
-            data={progressData}
-            total={total}
-            config={PRIMITIVE_OPTIMIZATION_CHART_CONFIG}
-          />
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <span>Queued</span>
-              <ChevronRight className="h-3 w-3" />
-              <span>Applied</span>
-            </div>
-            <span className="font-mono tabular-nums text-foreground">
-              {formatCompactNumber(total)} total
-            </span>
-          </div>
+        <div className="space-y-4">
+          {visibleRows.map((row) => (
+            <OptimizationSessionRow
+              key={row.entry.session.session_id}
+              label={sessionDisplayName(row.entry.session)}
+              data={row.progressData}
+              total={row.total}
+              config={PRIMITIVE_OPTIMIZATION_CHART_CONFIG}
+            />
+          ))}
         </div>
       </CardContent>
     </Card>
@@ -767,19 +868,24 @@ function PrimitiveOptimizationCard({
 }
 
 function RuntimeOptimizationCard({
-  snapshot,
+  summary,
   dragHandle,
 }: {
-  snapshot: DashboardSnapshot | null;
+  summary: StatusSummary | null;
   dragHandle: ReactNode;
 }) {
-  const progressData = useMemo(
-    () => runtimeOptimizationProgressData(snapshot),
-    [snapshot],
+  const rows = useMemo(
+    () =>
+      sessionDashboardEntries(summary).map((entry) => {
+        const progressData = runtimeOptimizationProgressData(entry.dashboard);
+        const total = progressData.reduce((sum, item) => sum + item.value, 0);
+        return { entry, progressData, total };
+      }),
+    [summary],
   );
-  const total = progressData.reduce((sum, item) => sum + item.value, 0);
+  const visibleRows = rows.filter((row) => row.total > 0);
 
-  if (total === 0) {
+  if (visibleRows.length === 0) {
     return (
       <Card className="w-full">
         <CardHeader>
@@ -802,26 +908,94 @@ function RuntimeOptimizationCard({
         <CardAction>{dragHandle}</CardAction>
       </CardHeader>
       <CardContent>
-        <div className="space-y-3">
-          <OptimizationProgressBar
-            data={progressData}
-            total={total}
-            config={RUNTIME_OPTIMIZATION_CHART_CONFIG}
-          />
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <span>Queued</span>
-              <ChevronRight className="h-3 w-3" />
-              <span>Applied</span>
-            </div>
-            <span className="font-mono tabular-nums text-foreground">
-              {formatCompactNumber(total)} total
-            </span>
-          </div>
+        <div className="space-y-4">
+          {visibleRows.map((row) => (
+            <OptimizationSessionRow
+              key={row.entry.session.session_id}
+              label={sessionDisplayName(row.entry.session)}
+              data={row.progressData}
+              total={row.total}
+              config={RUNTIME_OPTIMIZATION_CHART_CONFIG}
+            />
+          ))}
         </div>
       </CardContent>
     </Card>
   );
+}
+
+function OptimizationSessionRow({
+  label,
+  data,
+  total,
+  config,
+}: {
+  label: string;
+  data: OptimizationProgressDatum[];
+  total: number;
+  config: OptimizationChartConfig;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex min-w-0 items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span className="truncate font-medium text-foreground">{label}</span>
+        <span className="shrink-0 font-mono tabular-nums">
+          {formatCompactNumber(total)} total
+        </span>
+      </div>
+      <OptimizationProgressBar data={data} total={total} config={config} />
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span>Queued</span>
+        <ChevronRight className="h-3 w-3" />
+        <span>Applied</span>
+      </div>
+    </div>
+  );
+}
+
+function sessionDashboardEntries(
+  summary: StatusSummary | null,
+): SessionDashboardEntry[] {
+  return (summary?.sessions ?? [])
+    .filter((entry) => entry.dashboard)
+    .map((entry) => ({
+      session: entry.session,
+      dashboard: entry.dashboard as SessionStatusDashboard,
+    }));
+}
+
+function tokenUsageSources(
+  summary: StatusSummary | null,
+): DailyTokenUsageSource[] {
+  return sessionDashboardEntries(summary).flatMap((entry) => {
+    const tokenUsage = entry.dashboard.token_usage;
+    const sessionLabel = sessionDisplayName(entry.session);
+    return [
+      {
+        label: `${sessionLabel} / ${tokenUsageModelLabel("main", tokenUsage.main_model)}`,
+        info: tokenUsage.main,
+      },
+      {
+        label: `${sessionLabel} / ${tokenUsageModelLabel("judge", tokenUsage.judge_model)}`,
+        info: tokenUsage.judge,
+      },
+    ];
+  });
+}
+
+function tokenUsageModelLabel(role: string, model: string | null | undefined) {
+  return model?.trim() || role;
+}
+
+function sessionDisplayName(session: SessionInfo) {
+  return session.title?.trim() || session.session_id.slice(0, 8);
+}
+
+function sessionScopeLabel(session: SessionInfo) {
+  if (session.scope.kind === "project") {
+    return session.scope.project_dir;
+  }
+  return "general";
 }
 
 function statusCardColumns(order: StatusCardId[]) {
@@ -1108,53 +1282,6 @@ function TokenUsageTooltipRow({
   );
 }
 
-function ContextCompositionTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean;
-  payload?: ContextCompositionTooltipPayloadItem[];
-}) {
-  if (!active) {
-    return null;
-  }
-
-  const datum = payload?.[0]?.payload;
-  if (!datum) {
-    return null;
-  }
-
-  return (
-    <div className="grid min-w-64 gap-1.5 rounded-lg border bg-background px-3 py-2.5 text-xs shadow-xl">
-      <div className="flex items-center gap-2 font-medium text-foreground">
-        <span
-          className="size-2 shrink-0 rounded-[2px]"
-          style={{ backgroundColor: "var(--color-tokens)" }}
-        />
-        <span className="min-w-0 flex-1 truncate">{datum.label}</span>
-        <span className="font-mono tabular-nums">
-          {formatCompactNumber(datum.tokens)}
-        </span>
-      </div>
-      <div className="grid gap-1 text-muted-foreground">
-        <ContextCompositionTooltipRow
-          label="Share"
-          value={formatPercent(datum.percent / 100)}
-        />
-        <ContextCompositionTooltipRow
-          label="Bytes"
-          value={formatCompactNumber(datum.bytes)}
-        />
-        <ContextCompositionTooltipRow label="Source" value={datum.source} />
-        <ContextCompositionTooltipRow
-          label="Cache role"
-          value={datum.cacheRole}
-        />
-      </div>
-    </div>
-  );
-}
-
 function ContextPrefixTooltip({
   active,
   payload,
@@ -1193,23 +1320,6 @@ function ContextPrefixTooltip({
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function ContextCompositionTooltipRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="flex min-w-0 items-center gap-2">
-      <span className="min-w-0 flex-1">{label}</span>
-      <span className="truncate font-mono font-medium tabular-nums text-foreground">
-        {value}
-      </span>
     </div>
   );
 }

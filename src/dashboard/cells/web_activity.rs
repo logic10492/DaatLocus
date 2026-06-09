@@ -125,7 +125,7 @@ pub struct WebActivityTool {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u128>,
+    pub duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -439,7 +439,7 @@ fn apply_live_exec_cell(item: &mut WebActivityItem, cell: &LiveExecActivityCell)
     };
     let duration_ms = cell.started_at_ms.and_then(|started_at_ms| {
         let now = chrono::Utc::now().timestamp_millis();
-        (now >= started_at_ms).then_some((now - started_at_ms) as u128)
+        (now >= started_at_ms).then_some((now - started_at_ms) as u64)
     });
     item.created_at = cell.started_at_ms.unwrap_or(item.created_at);
     item.tool = Some(WebActivityTool {
@@ -1005,4 +1005,29 @@ fn format_patch_summary(files: &[PatchFileUiData]) -> String {
     let removed = files.iter().map(|file| file.removed_lines).sum::<usize>();
     let file_count = files.len();
     format!("{file_count} file(s), +{added} -{removed}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_activity_tool_duration_json_round_trips() {
+        let tool = WebActivityTool {
+            name: "terminal".to_string(),
+            app: Some("Terminal".to_string()),
+            input_preview: None,
+            output_preview: None,
+            output_ref: None,
+            duration_ms: Some(123),
+            exit_code: Some(0),
+            affected_files: Vec::new(),
+        };
+
+        let encoded = serde_json::to_string(&tool).expect("serialize web activity tool");
+        let decoded: WebActivityTool =
+            serde_json::from_str(&encoded).expect("deserialize web activity tool");
+
+        assert_eq!(decoded.duration_ms, Some(123));
+    }
 }

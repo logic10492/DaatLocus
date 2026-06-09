@@ -1,7 +1,11 @@
 import type { AgentAnimationStatus } from "@/components/agent-status-animation";
 import type {
+  DashboardContextCompositionSnapshot,
   DashboardContextCompositionSegment,
+  DashboardPrimitiveOptimizationSnapshot,
+  DashboardRuntimeOptimizationSnapshot,
   DashboardSnapshot,
+  DashboardTokenUsageSnapshot,
   TokenUsage,
   TokenUsageInfo,
 } from "@/lib/daemon-api";
@@ -234,12 +238,39 @@ export function deriveAgentStatus({
   };
 }
 
+type TokenUsageSnapshotInput = {
+  token_usage?: DashboardTokenUsageSnapshot;
+} | null;
+
+type ContextCompositionSnapshotInput = {
+  context_composition?: DashboardContextCompositionSnapshot | null;
+} | null;
+
+type PrimitiveOptimizationSnapshotInput = {
+  primitive_optimization?: DashboardPrimitiveOptimizationSnapshot;
+} | null;
+
+type RuntimeOptimizationSnapshotInput = {
+  runtime_optimization?: DashboardRuntimeOptimizationSnapshot;
+} | null;
+
+export type DailyTokenUsageSource = {
+  label: string;
+  info: TokenUsageInfo | null | undefined;
+};
+
 export function dailyTokenUsageChartData(
-  snapshot: DashboardSnapshot | null,
+  snapshot: TokenUsageSnapshotInput,
+): DailyTokenUsageChartDatum[] {
+  return dailyTokenUsageChartDataFromSources(tokenUsageSources(snapshot));
+}
+
+export function dailyTokenUsageChartDataFromSources(
+  sources: DailyTokenUsageSource[],
 ): DailyTokenUsageChartDatum[] {
   const usageByDate = new Map<string, DailyTokenUsageAccumulator>();
 
-  for (const source of tokenUsageSources(snapshot)) {
+  for (const source of sources) {
     mergeDailyTokenUsage(usageByDate, source);
   }
 
@@ -276,7 +307,7 @@ export function dailyTokenUsageChartData(
 }
 
 export function contextCompositionCardData(
-  snapshot: DashboardSnapshot | null,
+  snapshot: ContextCompositionSnapshotInput,
 ): ContextCompositionCardData {
   const composition = snapshot?.context_composition;
   const totalTokens = Math.max(0, composition?.total_estimated_tokens ?? 0);
@@ -363,7 +394,7 @@ export function contextCompositionCardData(
 }
 
 export function primitiveOptimizationProgressData(
-  snapshot: DashboardSnapshot | null,
+  snapshot: PrimitiveOptimizationSnapshotInput,
 ): PrimitiveOptimizationChartDatum[] {
   const primitive = snapshot?.primitive_optimization;
   const patchCandidates = Math.max(
@@ -454,7 +485,7 @@ export function primitiveOptimizationDonutData(
 }
 
 export function runtimeOptimizationProgressData(
-  snapshot: DashboardSnapshot | null,
+  snapshot: RuntimeOptimizationSnapshotInput,
 ): RuntimeOptimizationChartDatum[] {
   const runtime = snapshot?.runtime_optimization;
   const appliedAdditions = Math.max(
@@ -633,14 +664,9 @@ type DailyTokenUsageAccumulator = {
   models: Map<string, TokenUsage>;
 };
 
-type TokenUsageSource = {
-  label: string;
-  info: TokenUsageInfo | null | undefined;
-};
-
 function tokenUsageSources(
-  snapshot: DashboardSnapshot | null,
-): TokenUsageSource[] {
+  snapshot: TokenUsageSnapshotInput,
+): DailyTokenUsageSource[] {
   const tokenUsage = snapshot?.token_usage;
 
   return [
@@ -663,7 +689,7 @@ function tokenUsageModelLabel(role: string, model: string | null | undefined) {
 
 function mergeDailyTokenUsage(
   usageByDate: Map<string, DailyTokenUsageAccumulator>,
-  source: TokenUsageSource,
+  source: DailyTokenUsageSource,
 ) {
   for (const day of source.info?.daily_token_usage ?? []) {
     const accumulator =
@@ -750,4 +776,3 @@ function parseDateKey(value: string) {
 
   return Number.isNaN(date.getTime()) ? null : date;
 }
-

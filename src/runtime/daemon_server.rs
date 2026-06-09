@@ -1,420 +1,161 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use miette::{Result, miette};
+use tokio::sync::{mpsc, oneshot, watch};
+
 use crate::{
-    app::AppManager,
-    context::Context,
     daemon::{
-        DAEMON_HOST_DISPLAY, DaemonControlCommand as RuntimeDaemonControlCommand,
-        DaemonLifecycleHandle, DaemonLifecycleState, DaemonLock, DaemonServerHandle,
-        DaemonServerStartParams, spawn_detached_daemon_process, start_server,
-    },
-    dashboard::render::{
-        current_plan_step_for_dashboard, primitive_optimization_snapshot_for_dashboard,
-        render_activity_for_dashboard, render_app_status_outputs_for_dashboard,
-        render_dashboard_footer_context, render_sleep_status_output_for_dashboard,
-        render_status_command_output_for_dashboard, render_system_prompt_output_for_dashboard,
-        render_telegram_status_for_dashboard, runtime_activity_for_dashboard,
-        runtime_optimization_snapshot_for_dashboard, token_usage_snapshot_for_dashboard,
+        DAEMON_HOST_DISPLAY, DaemonControlCommand, DaemonLifecycleHandle, DaemonLifecycleState,
+        DaemonLock, DaemonServerStartParams, SessionTokenStore, session, session_client_for_id,
+        session_ipc, spawn_detached_daemon_process, start_server,
     },
     dashboard::{
-        DashboardActivityHistoryStore, DashboardControlCommand, DashboardRuntimeActivity,
-        DashboardRuntimeActivityStatus, DashboardRuntimeStatusLevel, DashboardState, ReducedMotion,
-        activity_cells_from_history_items, dashboard_agent_name, sync_web_activity_state,
+        DashboardControlCommand, DashboardRuntimeActivity, DashboardRuntimeActivityStatus,
+        DashboardRuntimeStatusLevel, DashboardState, dashboard_agent_name, sync_web_activity_state,
     },
-    events::EventStore,
-    memory::Memory,
-    pending_work::PendingWorkQueue,
-    plan::Plan,
-    preturn_state::PreTurnState,
-    providers::build_llm,
-    runtime::bootstrap::load_token_estimate_baseline,
-    runtime_context::build_preturn_context_text,
-    sleep_status::{SleepStatusSnapshot, load_sleep_status_snapshot},
+    events::{EventStatus, TelegramIncomingEvent},
+    runtime::bootstrap::{bootstrap_telegram_transport_state_from_acl, emit_startup_progress},
     telegram_acl::TelegramAclHandle,
-    telegram_transport::TelegramTransport,
-    telegram_transport::state::TelegramTransportState,
-    workflow::PrimitiveStore,
-    workspace_app::paths::{resolve_runtime_workspace_dir, workspace_apps_dir},
-    workspace_app::{WorkspaceAppInvalidation, start_workspace_app_watcher},
+    telegram_transport::{
+        TelegramDeliveryClient, TelegramInputRouter, TelegramTransport,
+        state::{PendingOutboundMessage, TelegramTransportState},
+    },
 };
-use miette::{Result, miette};
 
-use crate::browser_install::maybe_setup_browser_runtime;
-use crate::runtime::bootstrap::{
-    bootstrap_telegram_transport_state_from_acl, build_runtime_apps, emit_startup_progress,
-    load_compiled_prompts_only, sandbox_policy_for_runtime,
-};
-use crate::runtime::runtime_loop::{
-    SleepTaskResult, daat_locus_loop, handle_dashboard_control_command, handle_sleep_task_result,
-    reset_cancelled_runtime_turn,
-};
+struct ManagerTelegramInputRouter {
+    sessions: session::SessionRegistry,
+    session_tokens: SessionTokenStore,
+    telegram_defaults: session::TelegramSessionDefaults,
+}
+
+#[async_trait::async_trait]
+impl TelegramInputRouter for ManagerTelegramInputRouter {
+    async fn route_telegram_event(&self, event: TelegramIncomingEvent) -> Result<()> {
+        let chat_id = event.chat_id.clone();
+        let session_id = match self.telegram_defaults.get(&chat_id) {
+            Some(session_id) if self.sessions.get(&session_id).is_some() => session_id,
+            _ => {
+                let info = self
+                    .sessions
+                    .create(
+                        session::SessionScope::General,
+                        Some(format!("Telegram {}", event.chat_title.trim())),
+                    )
+                    .await?;
+                self.telegram_defaults
+                    .set(chat_id.clone(), info.session_id.clone())
+                    .await?;
+                info.session_id
+            }
+        };
+        let client =
+            session_client_for_id(&self.sessions, &self.session_tokens, session_id.as_str())
+                .await?;
+        match client
+            .request(session_ipc::SessionIpcRequest::EnqueueTelegramEvent { event })
+            .await?
+        {
+            session_ipc::SessionIpcResponse::Submitted { .. } => Ok(()),
+            session_ipc::SessionIpcResponse::Error { message, .. } => {
+                Err(miette!("session rejected telegram event: {message}"))
+            }
+            _ => Err(miette!("unexpected session IPC telegram route response")),
+        }
+    }
+}
 
 pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()> {
     let mut lock = DaemonLock::acquire().await?;
     let daemon_token_registry = crate::daemon::load_or_create_daemon_token_registry().await?;
     let daemon_lifecycle = DaemonLifecycleHandle::new(DaemonLifecycleState::Initializing);
-    let mut startup_failure_guard = DaemonStartupFailureGuard::new(daemon_lifecycle.clone());
 
-    // Load telegram_acl first, create all channels, and start the HTTP server
-    // immediately on the fixed local port so wait_for_daemon_ready can return
-    // before expensive initialization starts.
     let telegram_acl = TelegramAclHandle::load().await;
-    let events = EventStore::new().await;
-    let pending_work = PendingWorkQueue::new().await;
-    let dashboard_history = DashboardActivityHistoryStore::new().await?;
-    let initial_activity_history = dashboard_history.load_initial_window();
-    let (tx, _rx) = tokio::sync::watch::channel(DashboardState {
-        agent_name: dashboard_agent_name(),
-        runtime_status: Some("Daemon initializing".to_string()),
-        runtime_status_level: Some(DashboardRuntimeStatusLevel::Info),
-        runtime_activity: DashboardRuntimeActivity::new(
-            DashboardRuntimeActivityStatus::Running,
-            "Running",
-            Some("Daemon initializing".to_string()),
-        ),
-        footer_context: "Daemon is initializing; runtime commands are disabled until ready."
-            .to_string(),
-        activity_history: initial_activity_history,
-        ..DashboardState::default()
-    });
+    let sessions = session::SessionRegistry::load().await?;
+    let telegram_defaults = session::TelegramSessionDefaults::load().await?;
+    let session_tokens: SessionTokenStore = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+    hydrate_session_tokens(&sessions, &session_tokens).await;
+    let telegram_sessions = sessions.clone();
+    let telegram_session_tokens = session_tokens.clone();
+    let (dashboard_tx, _dashboard_rx) = watch::channel(manager_dashboard_state(&telegram_acl));
     let (dashboard_control_tx, mut dashboard_control_rx) =
-        tokio::sync::mpsc::unbounded_channel::<DashboardControlCommand>();
-    let (sleep_result_tx, mut sleep_result_rx) =
-        tokio::sync::mpsc::unbounded_channel::<SleepTaskResult>();
-    let (workspace_app_invalidation_tx, mut workspace_app_invalidation_rx) =
-        tokio::sync::mpsc::unbounded_channel::<WorkspaceAppInvalidation>();
+        mpsc::unbounded_channel::<DashboardControlCommand>();
     let (daemon_control_tx, mut daemon_control_rx) =
-        tokio::sync::mpsc::unbounded_channel::<RuntimeDaemonControlCommand>();
-    let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
+        mpsc::unbounded_channel::<DaemonControlCommand>();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel();
 
-    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let daemon_server = start_server(DaemonServerStartParams {
         port: config.daemon.port,
         auth_registry: daemon_token_registry,
         lifecycle: daemon_lifecycle.clone(),
-        dashboard_rx: tx.subscribe(),
-        dashboard_history: dashboard_history.clone(),
+        dashboard_rx: dashboard_tx.subscribe(),
         telegram_acl: telegram_acl.clone(),
-        events: events.clone(),
-        pending_work: pending_work.clone(),
         dashboard_control_tx: dashboard_control_tx.clone(),
         daemon_control_tx: daemon_control_tx.clone(),
+        sessions: sessions.clone(),
+        session_tokens: session_tokens.clone(),
         shutdown_rx: server_shutdown_rx,
-        shutdown_notify: shutdown_notify.clone(),
     })
     .await?;
     emit_startup_progress(format!(
-        "[daemon] listening on http://{}:{}",
+        "[manager] listening on http://{}:{}",
         DAEMON_HOST_DISPLAY, daemon_server.port
     ));
 
-    // Register signal handling before expensive initialization so Ctrl+C /
-    // SIGTERM still works during cold-start compile. During startup we exit
-    // directly; after entering the main loop this task is aborted and signal
-    // handling is owned by the main select!. The DaemonLock file may remain, but
-    // acquire() removes it on the next startup via stale PID detection.
-    #[cfg(unix)]
-    let mut early_sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|err| miette!("failed to install early SIGTERM handler: {err}"))?;
-    let early_shutdown_handle = tokio::spawn(async move {
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => {
-                match result {
-                    Ok(()) => tracing::info!("daemon received SIGINT during startup, exiting"),
-                    Err(err) => {
-                        tracing::warn!("ctrl_c listener failed during startup: {err}");
-                        return;
-                    }
-                }
-            }
-            _ = {
-                #[cfg(unix)] { early_sigterm.recv() }
-                #[cfg(not(unix))] { std::future::pending::<Option<()>>() }
-            } => {
-                tracing::info!("daemon received SIGTERM during startup, exiting");
-            }
-        }
-        std::process::exit(0);
-    });
-
-    // Auto-install the browser runtime when it is missing.
-    maybe_setup_browser_runtime().await;
-
-    // Refresh models.dev catalog cache in background.
     tokio::spawn(async {
         if let Err(err) = crate::model_catalog::refresh_models_dev_cache().await {
             tracing::warn!("models.dev cache refresh failed: {err}");
         }
     });
 
-    // Check for restart/shutdown requested during browser setup.
-    if daemon_lifecycle.get() != DaemonLifecycleState::Initializing {
-        tracing::info!("daemon restart/shutdown requested during init, aborting startup");
-        return shutdown_early(
-            lock,
-            daemon_lifecycle,
-            shutdown_notify,
-            tx,
-            server_shutdown_tx,
-            daemon_server,
-            &mut daemon_control_rx,
-            None,
-        )
-        .await;
-    }
-    emit_startup_progress("[prompt-compile] loading compiled prompts before daemon startup...");
-    let compiled_prompts = match load_compiled_prompts_only(&config).await {
-        Ok(store) => store,
-        Err(err) => {
-            tracing::error!("failed to load compiled prompts: {err:?}");
-            return Err(err);
-        }
-    };
-
-    // Check for restart/shutdown after prompt compilation.
-    if daemon_lifecycle.get() != DaemonLifecycleState::Initializing {
-        tracing::info!(
-            "daemon restart/shutdown requested during init (after prompt compile), aborting startup"
-        );
-        return shutdown_early(
-            lock,
-            daemon_lifecycle,
-            shutdown_notify,
-            tx,
-            server_shutdown_tx,
-            daemon_server,
-            &mut daemon_control_rx,
-            None,
-        )
-        .await;
-    }
-
-    let memory = Memory::new().await;
-    let plan = Plan::new().await;
-    let workflows = PrimitiveStore::new().await;
-    let telegram = TelegramTransportState::new();
-    let telegram_handle = telegram.handle();
-    bootstrap_telegram_transport_state_from_acl(&telegram_handle, &telegram_acl);
-    let client = build_llm(&config.main_model, &config)?;
-    let judge_model_key = config
-        .judge
-        .model
-        .as_deref()
-        .unwrap_or(&config.main_model)
-        .to_string();
-    let judge_client = build_llm(&judge_model_key, &config)?;
-    let execution_cwd = resolve_runtime_workspace_dir()?;
-    tokio::fs::create_dir_all(&execution_cwd)
-        .await
-        .map_err(|err| {
-            miette!(
-                "failed to create runtime workspace {}: {err}",
-                execution_cwd.display()
+    let telegram_transport = if config.telegram.enabled && config.telegram.has_real_credentials() {
+        let telegram = TelegramTransportState::new();
+        let telegram_handle = telegram.handle();
+        bootstrap_telegram_transport_state_from_acl(&telegram_handle, &telegram_acl);
+        Some(tokio::spawn(
+            TelegramTransport::new(
+                config.telegram.clone(),
+                telegram_handle,
+                telegram_acl.clone(),
+                Arc::new(ManagerTelegramInputRouter {
+                    sessions: telegram_sessions,
+                    session_tokens: telegram_session_tokens,
+                    telegram_defaults,
+                }),
+                dashboard_tx.subscribe(),
+                dashboard_control_tx.clone(),
             )
-        })?;
-    tokio::fs::create_dir_all(workspace_apps_dir(&execution_cwd))
-        .await
-        .map_err(|err| {
-            miette!(
-                "failed to create workspace apps directory {}: {err}",
-                workspace_apps_dir(&execution_cwd).display()
-            )
-        })?;
-    let sandbox_policy = sandbox_policy_for_runtime(&config).await;
-    let runtime_apps = build_runtime_apps(&execution_cwd, &sandbox_policy);
-    let apps = AppManager::new(None, runtime_apps.apps).await?;
-    let mut context = Context {
-        llm: client,
-        judge_llm: judge_client,
-        config,
-        memory,
-        plan,
-        events,
-        pending_work,
-        workflows,
-        bound_primitive_composition: None,
-        bound_primitive_id: None,
-        active_primitive_run: None,
-        pending_primitive_run_flushes: Vec::new(),
-        current_work_origin: None,
-        workflow_step_started_bound_id: None,
-        apps,
-        workspace_apps: runtime_apps.workspace_registry,
-        telegram: telegram_handle,
-        telegram_acl: telegram_acl.clone(),
-        compiled_prompts,
-        execution_cwd,
-        sandbox_policy,
-        dashboard_tx: Some(tx.clone()),
-        dashboard_history: Some(dashboard_history.clone()),
-        daemon_control_tx: daemon_control_tx.clone(),
-        latest_context_composition: None,
-        active_runtime_turn: false,
-        active_runtime_phase: None,
-        runtime_turn_started_at: None,
-        runtime_turn_epoch: 0,
-        active_app_notices: std::collections::HashMap::new(),
-        runtime_overflow_failures: std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        runtime_model_request_failures: std::sync::Arc::new(
-            parking_lot::Mutex::new(HashMap::new()),
-        ),
-        suppressed_app_notices: std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        live_progress_tx: std::sync::Arc::new(parking_lot::Mutex::new(None)),
-        telegram_live_drafts: std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        claimed_event_ids: Vec::new(),
-        claimed_app_notices: Vec::new(),
-        afterclaim_context_fingerprint: None,
-        idle_since: None,
-        last_idle_sleep_at: None,
-        token_estimate_baseline: load_token_estimate_baseline().await,
+            .run(),
+        ))
+    } else {
+        None
     };
-
-    let mut sleep_status = load_sleep_status_snapshot().await;
-
-    // Replace the placeholder dashboard state with real state after context is built.
-    let startup_preturn_state = PreTurnState::new(&mut context).await;
-
-    // Check for restart/shutdown after PreTurnState (can be slow).
-    if daemon_lifecycle.get() != DaemonLifecycleState::Initializing {
-        tracing::info!(
-            "daemon restart/shutdown requested during init (after PreTurnState), aborting startup"
-        );
-        return shutdown_early(
-            lock,
-            daemon_lifecycle,
-            shutdown_notify,
-            tx,
-            server_shutdown_tx,
-            daemon_server,
-            &mut daemon_control_rx,
-            None,
-        )
-        .await;
-    }
-
-    let startup_preturn_context_output =
-        build_preturn_context_text(&context, &startup_preturn_state);
-    let app_renders = context.apps.state_renders();
-    let activity_history = dashboard_history.load_initial_window();
-    tx.send_modify(|state| {
-        *state = DashboardState {
-            agent_name: dashboard_agent_name(),
-            focused_app: context.apps.focused(),
-            status_output: render_status_command_output_for_dashboard(&context, &app_renders),
-            sleep_status_output: render_sleep_status_output_for_dashboard(&context, &sleep_status),
-            inspect_telegram_output: render_telegram_status_for_dashboard(&context),
-            system_prompt_output: render_system_prompt_output_for_dashboard(&context),
-            preturn_context_output: startup_preturn_context_output,
-            app_status_outputs: render_app_status_outputs_for_dashboard(&context),
-            pending_access_requests: context.telegram_acl.pending_requests(),
-            activity_cells: if activity_history.items.is_empty() {
-                render_activity_for_dashboard(&context)
-            } else {
-                activity_cells_from_history_items(&activity_history.items)
-            },
-            live_activity_cells: Vec::new(),
-            web_activity_version: crate::dashboard::default_web_activity_version(),
-            web_activity_items: Vec::new(),
-            live_web_activity_items: Vec::new(),
-            activity_history,
-            last_cycle_elapsed_ms: None,
-            runtime_status: None,
-            runtime_status_level: None,
-            runtime_activity: runtime_activity_for_dashboard(&context, &sleep_status, None, None),
-            current_plan_step: current_plan_step_for_dashboard(&context),
-            token_usage: token_usage_snapshot_for_dashboard(&context),
-            runtime_optimization: runtime_optimization_snapshot_for_dashboard(&sleep_status),
-            primitive_optimization: primitive_optimization_snapshot_for_dashboard(&sleep_status),
-            context_composition: None,
-            reduced_motion: ReducedMotion::default(),
-            footer_context: render_dashboard_footer_context(&context, None),
-            footer_estimated_input_tokens: None,
-        };
-        sync_web_activity_state(state);
-    });
-
-    let workspace_app_watcher = match start_workspace_app_watcher(
-        workspace_apps_dir(&context.execution_cwd),
-        workspace_app_invalidation_tx,
-    ) {
-        Ok(watcher) => Some(watcher),
-        Err(err) => {
-            tracing::warn!("failed to start workspace app watcher: {err:?}");
-            None
-        }
-    };
-
-    let telegram_transport =
-        if context.config.telegram.enabled && context.config.telegram.has_real_credentials() {
-            Some(tokio::spawn(
-                TelegramTransport::new(
-                    context.config.telegram.clone(),
-                    context.telegram.clone(),
-                    telegram_acl,
-                    context.events.clone(),
-                    context.pending_work.clone(),
-                    tx.subscribe(),
-                    dashboard_control_tx.clone(),
-                )
-                .run(),
-            ))
+    let telegram_outbox_delivery =
+        if config.telegram.enabled && config.telegram.has_real_credentials() {
+            Some(tokio::spawn(run_session_telegram_outbox_delivery(
+                TelegramDeliveryClient::new(config.telegram.clone(), telegram_acl.clone()),
+                sessions.clone(),
+                session_tokens.clone(),
+            )))
         } else {
             None
         };
+    let session_health_checks = tokio::spawn(run_session_health_checks(
+        sessions.clone(),
+        session_tokens.clone(),
+    ));
 
-    // Startup is complete; runtime commands may now be accepted.
     daemon_lifecycle.mark_ready();
-    startup_failure_guard.disarm();
 
-    // Abort early signal handling so the main loop owns it.
-    early_shutdown_handle.abort();
-
-    // SIGTERM -> graceful shutdown on Unix. Other platforms use pending() so the
-    // select! structure stays uniform.
     #[cfg(unix)]
-    let mut sigterm = {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|err| miette!("failed to install SIGTERM handler: {err}"))?
-    };
-    let mut sleep_running = sleep_status.running;
-    let mut shutdown_completion_tx = None;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|err| miette!("failed to install SIGTERM handler: {err}"))?;
     let mut ctrl_c_disabled = false;
     let mut restart_requested = false;
-    loop {
-        // Sleep results and dashboard commands are boundary work: applying them
-        // must not drop an in-flight foreground turn.
-        if (BoundaryRuntimeControlDrain {
-            context: &mut context,
-            tx: &tx,
-            sleep_result_tx: &sleep_result_tx,
-            sleep_running: &mut sleep_running,
-            sleep_status: &mut sleep_status,
-            dashboard_control_rx: &mut dashboard_control_rx,
-            sleep_result_rx: &mut sleep_result_rx,
-            daemon_control_rx: &mut daemon_control_rx,
-            shutdown_completion_tx: &mut shutdown_completion_tx,
-            restart_requested: &mut restart_requested,
-        })
-        .drain()
-        .await
-        {
-            break;
-        }
+    let mut shutdown_completion_tx = None;
 
-        // Only daemon control and OS shutdown signals may interrupt a cycle, and
-        // those paths explicitly reset active turn state before stopping.
+    loop {
         tokio::select! {
-            _ = daat_locus_loop(
-                &mut context,
-                &tx,
-                &sleep_result_tx,
-                &mut sleep_running,
-                &mut sleep_status,
-                &mut workspace_app_invalidation_rx,
-            ) => {}
             Some(command) = daemon_control_rx.recv() => {
-                reset_runtime_turn_if_active(&mut context, "daemon control interrupt");
                 apply_daemon_control_command(
                     command,
                     &mut shutdown_completion_tx,
@@ -422,16 +163,28 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
                 );
                 break;
             }
+            Some(command) = dashboard_control_rx.recv() => {
+                match command {
+                    DashboardControlCommand::RestartDaemon => {
+                        restart_requested = true;
+                        break;
+                    }
+                    DashboardControlCommand::RunSleep => {
+                        tracing::warn!("manager received sleep run command, but sleep runs inside sessions");
+                    }
+                    DashboardControlCommand::ClearConversation => {
+                        tracing::warn!("manager received clear conversation command, but conversation state is session-scoped");
+                    }
+                }
+            }
             signal = tokio::signal::ctrl_c(), if !ctrl_c_disabled => {
                 match signal {
                     Ok(()) => {
-                        tracing::info!("daemon received SIGINT, shutting down");
-                        reset_runtime_turn_if_active(&mut context, "SIGINT interrupt");
+                        tracing::info!("manager received SIGINT, shutting down");
                         break;
                     }
                     Err(err) => {
                         tracing::warn!("ctrl_c listener failed: {err}");
-                        reset_runtime_turn_if_active(&mut context, "ctrl_c listener failure");
                         ctrl_c_disabled = true;
                     }
                 }
@@ -440,35 +193,26 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
                 #[cfg(unix)] { sigterm.recv() }
                 #[cfg(not(unix))] { std::future::pending::<Option<()>>() }
             } => {
-                tracing::info!("daemon received SIGTERM, shutting down");
-                reset_runtime_turn_if_active(&mut context, "SIGTERM interrupt");
+                tracing::info!("manager received SIGTERM, shutting down");
                 break;
             }
         }
     }
 
     daemon_lifecycle.mark_stopping();
-    drop(workspace_app_watcher);
     if let Some(handle) = telegram_transport {
         handle.abort();
     }
-    // Clear the dashboard watch sender clone in context so it doesn't
-    // keep the channel alive during shutdown.
-    context.dashboard_tx = None;
-    context.shutdown().await;
+    if let Some(handle) = telegram_outbox_delivery {
+        handle.abort();
+    }
+    session_health_checks.abort();
     lock.release();
     if let Some(completion_tx) = shutdown_completion_tx.take() {
         let _ = completion_tx.send(());
     }
-    // Notify all WebSocket connections to shut down, then drop the
-    // dashboard watch sender so that any active connections that are
-    // still in rx.changed() see a closed channel and exit promptly.
-    shutdown_notify.notify_waiters();
-    drop(tx);
+    drop(dashboard_tx);
     let _ = server_shutdown_tx.send(());
-    // Wait for the axum server to fully shut down, but don't hang
-    // indefinitely. If connections don't drain within 15 seconds,
-    // proceed anyway — the process is about to exit.
     let _ = tokio::time::timeout(Duration::from_secs(15), daemon_server.shutdown()).await;
     if restart_requested {
         spawn_detached_daemon_process().await?;
@@ -476,154 +220,277 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     Ok(())
 }
 
-/// Early shutdown path used when a restart/shutdown is requested during daemon
-/// initialization, before the main loop starts.
-#[allow(clippy::too_many_arguments)]
-async fn shutdown_early(
-    mut lock: DaemonLock,
-    daemon_lifecycle: DaemonLifecycleHandle,
-    shutdown_notify: Arc<tokio::sync::Notify>,
-    tx: tokio::sync::watch::Sender<DashboardState>,
-    server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
-    daemon_server: DaemonServerHandle,
-    daemon_control_rx: &mut tokio::sync::mpsc::UnboundedReceiver<RuntimeDaemonControlCommand>,
-    _unused_cleanup: Option<()>,
-) -> Result<()> {
-    let mut restart_requested = false;
-    while let Ok(command) = daemon_control_rx.try_recv() {
-        if matches!(command, RuntimeDaemonControlCommand::RestartRequested) {
-            restart_requested = true;
-        }
-    }
-
-    daemon_lifecycle.mark_stopping();
-
-    lock.release();
-    shutdown_notify.notify_waiters();
-    drop(tx);
-    let _ = server_shutdown_tx.send(());
-    let _ = tokio::time::timeout(Duration::from_secs(15), daemon_server.shutdown()).await;
-
-    if restart_requested {
-        spawn_detached_daemon_process().await?;
-    }
-    Ok(())
-}
-
-struct BoundaryRuntimeControlDrain<'a> {
-    context: &'a mut Context,
-    tx: &'a tokio::sync::watch::Sender<DashboardState>,
-    sleep_result_tx: &'a tokio::sync::mpsc::UnboundedSender<SleepTaskResult>,
-    sleep_running: &'a mut bool,
-    sleep_status: &'a mut SleepStatusSnapshot,
-    dashboard_control_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<DashboardControlCommand>,
-    sleep_result_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<SleepTaskResult>,
-    daemon_control_rx: &'a mut tokio::sync::mpsc::UnboundedReceiver<RuntimeDaemonControlCommand>,
-    shutdown_completion_tx: &'a mut Option<tokio::sync::oneshot::Sender<()>>,
-    restart_requested: &'a mut bool,
-}
-
-impl BoundaryRuntimeControlDrain<'_> {
-    async fn drain(&mut self) -> bool {
-        loop {
-            if drain_daemon_control_commands(
-                self.daemon_control_rx,
-                self.shutdown_completion_tx,
-                self.restart_requested,
-            ) {
-                return true;
+async fn run_session_health_checks(
+    sessions: session::SessionRegistry,
+    session_tokens: SessionTokenStore,
+) {
+    loop {
+        for info in sessions.list() {
+            if !info.status.is_process_backed() {
+                continue;
             }
-
-            let mut drained = false;
-            while let Ok(result) = self.sleep_result_rx.try_recv() {
-                *self.sleep_running = false;
-                handle_sleep_task_result(self.context, self.tx, self.sleep_status, result).await;
-                drained = true;
-            }
-
-            while let Ok(command) = self.dashboard_control_rx.try_recv() {
-                handle_dashboard_control_command(
-                    self.context,
-                    self.tx,
-                    self.sleep_result_tx,
-                    self.sleep_running,
-                    self.sleep_status,
-                    command,
-                )
-                .await;
-                drained = true;
-                if drain_daemon_control_commands(
-                    self.daemon_control_rx,
-                    self.shutdown_completion_tx,
-                    self.restart_requested,
-                ) {
-                    return true;
+            let Some(ipc_name) = info.ipc_name.clone() else {
+                let _ = sessions.mark_dead(&info.session_id).await;
+                continue;
+            };
+            let Some(ipc_token) = session_tokens.read().get(&info.session_id).cloned() else {
+                let _ = sessions.mark_dead(&info.session_id).await;
+                continue;
+            };
+            let client =
+                session_ipc::SessionIpcClient::new(info.session_id.clone(), ipc_name, ipc_token)
+                    .with_timeout(Duration::from_secs(2));
+            match client.request(session_ipc::SessionIpcRequest::Status).await {
+                Ok(session_ipc::SessionIpcResponse::Status { runtime_status })
+                    if runtime_status.ready =>
+                {
+                    let _ = sessions.mark_ready(&info.session_id).await;
+                }
+                Ok(session_ipc::SessionIpcResponse::Status { .. }) => {}
+                Ok(session_ipc::SessionIpcResponse::Error { message, .. }) => {
+                    tracing::warn!("session {} health check error: {message}", info.session_id);
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!("session {} health check failed: {err:?}", info.session_id);
+                    session_tokens.write().remove(&info.session_id);
+                    let _ = sessions.mark_dead(&info.session_id).await;
                 }
             }
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
 
-            if !drained {
-                return false;
+async fn run_session_telegram_outbox_delivery(
+    delivery: TelegramDeliveryClient,
+    sessions: session::SessionRegistry,
+    session_tokens: SessionTokenStore,
+) {
+    loop {
+        for info in sessions.list() {
+            if !info.status.is_process_backed()
+                || !session_tokens.read().contains_key(&info.session_id)
+            {
+                continue;
+            }
+            let client =
+                match session_client_for_id(&sessions, &session_tokens, info.session_id.as_str())
+                    .await
+                {
+                    Ok(client) => client,
+                    Err(err) => {
+                        tracing::debug!(
+                            "skip telegram outbox drain for session {}: {err:?}",
+                            info.session_id
+                        );
+                        continue;
+                    }
+                };
+            let messages = match client
+                .request(session_ipc::SessionIpcRequest::DrainTelegramOutbox)
+                .await
+            {
+                Ok(session_ipc::SessionIpcResponse::TelegramOutbox { messages }) => messages,
+                Ok(session_ipc::SessionIpcResponse::Error { message, .. }) => {
+                    tracing::warn!(
+                        "session {} rejected telegram outbox drain: {message}",
+                        info.session_id
+                    );
+                    continue;
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "session {} returned unexpected telegram outbox response",
+                        info.session_id
+                    );
+                    continue;
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        "telegram outbox drain failed for session {}: {err:?}",
+                        info.session_id
+                    );
+                    continue;
+                }
+            };
+
+            for message in messages {
+                if let Err(err) =
+                    deliver_session_telegram_message(&client, &delivery, message).await
+                {
+                    tracing::warn!(
+                        "telegram delivery failed for session {}: {err:?}",
+                        info.session_id
+                    );
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+async fn deliver_session_telegram_message(
+    client: &session_ipc::SessionIpcClient,
+    delivery: &TelegramDeliveryClient,
+    message: PendingOutboundMessage,
+) -> Result<()> {
+    match delivery.send_pending_outbound(&message).await {
+        Ok(()) => {
+            if let Some(event_id) = message.related_event_id.as_deref() {
+                record_telegram_delivery(
+                    client,
+                    event_id,
+                    message
+                        .settle_status_on_delivery
+                        .unwrap_or(EventStatus::Resolved),
+                    message.settle_note_on_delivery.clone(),
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let reason = format!("{err:?}");
+            if let Some(event_id) = message.related_event_id.as_deref() {
+                let _ = record_telegram_delivery(
+                    client,
+                    event_id,
+                    EventStatus::AwaitingDelivery,
+                    Some(reason.clone()),
+                )
+                .await;
+            }
+            requeue_telegram_outbound(client, message).await?;
+            Err(miette!("telegram outbound delivery failed: {reason}"))
+        }
+    }
+}
+
+async fn record_telegram_delivery(
+    client: &session_ipc::SessionIpcClient,
+    event_id: &str,
+    status: EventStatus,
+    note: Option<String>,
+) -> Result<()> {
+    match client
+        .request(session_ipc::SessionIpcRequest::RecordTelegramDelivery {
+            event_id: event_id.to_string(),
+            status,
+            note,
+        })
+        .await?
+    {
+        session_ipc::SessionIpcResponse::DeliveryRecorded => Ok(()),
+        session_ipc::SessionIpcResponse::Error { message, .. } => {
+            Err(miette!("record telegram delivery failed: {message}"))
+        }
+        _ => Err(miette!("unexpected telegram delivery record response")),
+    }
+}
+
+async fn requeue_telegram_outbound(
+    client: &session_ipc::SessionIpcClient,
+    message: PendingOutboundMessage,
+) -> Result<()> {
+    match client
+        .request(session_ipc::SessionIpcRequest::RequeueTelegramOutbound { message })
+        .await?
+    {
+        session_ipc::SessionIpcResponse::TelegramOutboundRequeued => Ok(()),
+        session_ipc::SessionIpcResponse::Error { message, .. } => {
+            Err(miette!("requeue telegram outbound failed: {message}"))
+        }
+        _ => Err(miette!("unexpected telegram outbound requeue response")),
+    }
+}
+
+async fn hydrate_session_tokens(
+    sessions: &session::SessionRegistry,
+    session_tokens: &SessionTokenStore,
+) {
+    for info in sessions.list() {
+        if !info.status.is_process_backed() {
+            continue;
+        }
+        match session::load_session_ipc_token(&info.session_id).await {
+            Ok(Some(token)) => {
+                if info
+                    .ipc_token_hash
+                    .as_deref()
+                    .is_some_and(|hash| hash == session::hash_ipc_token(&token))
+                {
+                    session_tokens.write().insert(info.session_id, token);
+                } else {
+                    tracing::warn!(
+                        "discarding IPC token for session {} because its hash does not match registry",
+                        info.session_id
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    "failed to load IPC token for session {}: {err:?}",
+                    info.session_id
+                );
             }
         }
     }
 }
 
-fn drain_daemon_control_commands(
-    daemon_control_rx: &mut tokio::sync::mpsc::UnboundedReceiver<RuntimeDaemonControlCommand>,
-    shutdown_completion_tx: &mut Option<tokio::sync::oneshot::Sender<()>>,
-    restart_requested: &mut bool,
-) -> bool {
-    let mut should_stop = false;
-    while let Ok(command) = daemon_control_rx.try_recv() {
-        apply_daemon_control_command(command, shutdown_completion_tx, restart_requested);
-        should_stop = true;
+fn manager_dashboard_state(telegram_acl: &TelegramAclHandle) -> DashboardState {
+    let mut state = DashboardState {
+        agent_name: dashboard_agent_name(),
+        status_output:
+            "Manager daemon is running.\nSelect or create a session to view runtime state."
+                .to_string(),
+        inspect_telegram_output: manager_telegram_status_output(telegram_acl),
+        pending_access_requests: telegram_acl.pending_requests(),
+        runtime_status: Some("Manager ready".to_string()),
+        runtime_status_level: Some(DashboardRuntimeStatusLevel::Info),
+        runtime_activity: DashboardRuntimeActivity::new(
+            DashboardRuntimeActivityStatus::Idle,
+            "Manager",
+            Some("Routing session traffic".to_string()),
+        ),
+        footer_context:
+            "Manager daemon: session runtime state is available through selected sessions."
+                .to_string(),
+        ..DashboardState::default()
+    };
+    sync_web_activity_state(&mut state);
+    state
+}
+
+fn manager_telegram_status_output(telegram_acl: &TelegramAclHandle) -> String {
+    let pending = telegram_acl.pending_requests();
+    if pending.is_empty() {
+        return "Telegram ACL: no pending access requests".to_string();
     }
-    should_stop
+
+    let mut lines = vec!["Telegram ACL pending access requests:".to_string()];
+    lines.extend(pending.into_iter().map(|request| {
+        format!(
+            "  {} | {} | {} | {}",
+            request.chat_id, request.title, request.sender, request.last_message_preview
+        )
+    }));
+    lines.join("\n")
 }
 
 fn apply_daemon_control_command(
-    command: RuntimeDaemonControlCommand,
-    shutdown_completion_tx: &mut Option<tokio::sync::oneshot::Sender<()>>,
+    command: DaemonControlCommand,
+    shutdown_completion_tx: &mut Option<oneshot::Sender<()>>,
     restart_requested: &mut bool,
 ) {
     match command {
-        RuntimeDaemonControlCommand::ShutdownRequested { completion_tx } => {
+        DaemonControlCommand::ShutdownRequested { completion_tx } => {
             *shutdown_completion_tx = Some(completion_tx);
         }
-        RuntimeDaemonControlCommand::RestartRequested => {
+        DaemonControlCommand::RestartRequested => {
             *restart_requested = true;
-        }
-    }
-}
-
-fn reset_runtime_turn_if_active(context: &mut Context, reason: &str) {
-    if context.active_runtime_turn {
-        reset_cancelled_runtime_turn(context, reason);
-    }
-}
-
-struct DaemonStartupFailureGuard {
-    lifecycle: DaemonLifecycleHandle,
-    armed: bool,
-}
-
-impl DaemonStartupFailureGuard {
-    fn new(lifecycle: DaemonLifecycleHandle) -> Self {
-        Self {
-            lifecycle,
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for DaemonStartupFailureGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            self.lifecycle.mark_failed_if_initializing();
         }
     }
 }

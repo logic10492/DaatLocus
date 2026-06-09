@@ -24,12 +24,34 @@ pub enum PersistenceFileMode {
 
 impl PersistenceStore {
     pub async fn runtime() -> Self {
+        Self::for_session(None).await
+    }
+
+    pub fn runtime_sync() -> Self {
+        Self::for_session_sync(None)
+    }
+
+    pub async fn for_session(session_id: Option<&str>) -> Self {
+        if let Some(id) = session_id {
+            let paths = DaatLocusPaths::for_session(id);
+            let _ = tokio::fs::create_dir_all(paths.state_dir()).await;
+            let _ = tokio::fs::create_dir_all(paths.memory_dir()).await;
+            let _ = tokio::fs::create_dir_all(paths.cache_dir()).await;
+            return Self { paths };
+        }
         Self {
             paths: daat_locus_paths().await,
         }
     }
 
-    pub fn runtime_sync() -> Self {
+    pub fn for_session_sync(session_id: Option<&str>) -> Self {
+        if let Some(id) = session_id {
+            let paths = DaatLocusPaths::for_session(id);
+            let _ = fs::create_dir_all(paths.state_dir());
+            let _ = fs::create_dir_all(paths.memory_dir());
+            let _ = fs::create_dir_all(paths.cache_dir());
+            return Self { paths };
+        }
         Self {
             paths: daat_locus_paths_sync(),
         }

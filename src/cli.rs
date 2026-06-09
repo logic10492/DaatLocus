@@ -27,12 +27,26 @@ pub(crate) fn parse_args() -> Cli {
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Option<DaatLocusCommand>,
+    #[arg(long, hide = true)]
+    session_id: Option<String>,
+    #[arg(long, hide = true)]
+    ipc_name: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    ipc_token: Option<String>,
+    #[arg(long, hide = true)]
+    session_project_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
 enum DaatLocusCommand {
     /// Start the foreground runtime flow.
     Run,
+    /// Open a coding session tied to a project directory.
+    #[command(name = "code")]
+    Code {
+        /// Project directory path.
+        project_dir: PathBuf,
+    },
     /// Attach to an already-running daemon.
     Attach,
     /// Send a one-shot message to the running agent and wait for its reply.
@@ -227,7 +241,7 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
         }
         Some(DaatLocusCommand::Attach) => {
             let client = connect_existing_daemon().await?;
-            attach_to_daemon(client).await?;
+            run_session_selector(client, None).await?;
             return Ok(());
         }
         Some(DaatLocusCommand::Send { raw, json, prompt }) => {
@@ -240,7 +254,7 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
     if matches!(cli.command, None | Some(DaatLocusCommand::Run))
         && let Ok(client) = connect_existing_daemon().await
     {
-        attach_to_daemon(client).await?;
+        run_session_selector(client, None).await?;
         return Ok(());
     }
 
@@ -282,21 +296,59 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
         target: DaemonTarget::Serve,
     }) = cli.command.as_ref()
     {
+        if let Some(session_id) = cli.session_id.clone() {
+            let ipc_name = cli
+                .ipc_name
+                .clone()
+                .ok_or_else(|| miette!("--ipc-name is required for session serve"))?;
+            let ipc_token = cli
+                .ipc_token
+                .clone()
+                .ok_or_else(|| miette!("--ipc-token is required for session serve"))?;
+            crate::runtime::session_server::run_session_serve(
+                config,
+                crate::runtime::session_server::SessionServeArgs {
+                    session_id,
+                    ipc_name: ipc_name.display().to_string(),
+                    ipc_token,
+                    project_dir: cli.session_project_dir.clone(),
+                },
+            )
+            .await?;
+            return Ok(());
+        }
         crate::runtime::daemon_server::run_daemon_serve(config).await?;
+        return Ok(());
+    }
+
+    if let Some(DaatLocusCommand::Code { project_dir }) = cli.command.as_ref() {
+        run_code_command(project_dir.clone()).await?;
         return Ok(());
     }
 
     if matches!(cli.command, None | Some(DaatLocusCommand::Run)) {
         let client = connect_or_start_daemon().await?;
-        attach_to_daemon(client).await?;
+        run_session_selector(client, None).await?;
         return Ok(());
     }
     Ok(())
 }
 
+async fn run_code_command(project_dir: PathBuf) -> Result<()> {
+    let project_dir_abs = std::fs::canonicalize(&project_dir).map_err(|err| {
+        miette!(
+            "cannot resolve project directory {}: {err}",
+            project_dir.display()
+        )
+    })?;
+    let client = connect_or_start_daemon().await?;
+    run_session_selector(client, Some(project_dir_abs)).await
+}
+
 async fn run_send_command(prompt: &[String], raw: bool, json: bool) -> Result<()> {
     let message = read_send_message(prompt)?;
     let client = connect_or_start_daemon().await?;
+    let client = default_general_session_client(client).await?;
     let response = client.send_message(&message).await?;
 
     if json {
@@ -315,6 +367,19 @@ async fn run_send_command(prompt: &[String], raw: bool, json: bool) -> Result<()
         print_terminal_markdown(&reply);
     }
     Ok(())
+}
+
+async fn default_general_session_client(client: DaemonClient) -> Result<DaemonClient> {
+    let sessions = client.list_sessions().await?;
+    if let Some(session) = sessions
+        .iter()
+        .find(|session| matches!(session.scope, crate::daemon::session::SessionScope::General))
+    {
+        return Ok(client.with_session(session.session_id.as_str().to_string()));
+    }
+
+    let session = client.create_session(None, Some("CLI Send")).await?;
+    Ok(client.with_session(session.session_id.as_str().to_string()))
 }
 
 fn read_send_message(prompt: &[String]) -> Result<String> {
@@ -350,6 +415,243 @@ fn print_terminal_markdown(markdown: &str) {
             .collect::<String>();
         println!("{text}");
     }
+}
+
+async fn run_session_selector(client: DaemonClient, project_dir: Option<PathBuf>) -> Result<()> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind};
+    use ratatui::{
+        DefaultTerminal,
+        layout::{Constraint, Layout},
+        style::{Color, Modifier, Style, Stylize},
+        text::Line,
+        widgets::{Block, Borders, List, ListState, Paragraph},
+    };
+
+    let mut sessions = filtered_sessions(&client, project_dir.as_deref()).await;
+    let mut state = ListState::default();
+    if !sessions.is_empty() {
+        state.select(Some(0));
+    }
+
+    let mut terminal: Option<DefaultTerminal> = None;
+    let mut last_refresh = std::time::Instant::now();
+    let refresh_interval = std::time::Duration::from_secs(2);
+
+    let result: Result<()> = async {
+        loop {
+            let now = std::time::Instant::now();
+            if now.duration_since(last_refresh) >= refresh_interval {
+                sessions = filtered_sessions(&client, project_dir.as_deref()).await;
+                last_refresh = now;
+                if state.selected().unwrap_or(0) >= sessions.len() && !sessions.is_empty() {
+                    state.select(Some(sessions.len() - 1));
+                }
+            }
+            if terminal.is_none() {
+                let _ = ratatui::try_restore();
+                terminal =
+                    Some(ratatui::try_init().map_err(|e| miette!("failed to init terminal: {e}"))?);
+                while crossterm::event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
+                    let _ = crossterm::event::read();
+                }
+            }
+            let t = terminal.as_mut().unwrap();
+            let title = if let Some(project_dir) = project_dir.as_ref() {
+                format!(" Daat Locus Code Sessions: {} ", project_dir.display())
+            } else {
+                " Daat Locus Sessions ".to_string()
+            };
+
+            t.draw(|frame| {
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(Line::from(vec![title.as_str().bold().cyan()]));
+                let inner = block.inner(frame.area());
+                frame.render_widget(block, frame.area());
+
+                let layout = Layout::vertical([
+                    Constraint::Min(3),
+                    Constraint::Length(1),
+                    Constraint::Length(2),
+                ])
+                .split(inner);
+
+                if sessions.is_empty() {
+                    let p =
+                        Paragraph::new("(no sessions)").style(Style::default().fg(Color::DarkGray));
+                    frame.render_widget(p, layout[0]);
+                } else {
+                    let items: Vec<String> = sessions
+                        .iter()
+                        .map(|s| {
+                            let name = s
+                                .title
+                                .as_deref()
+                                .filter(|title| !title.trim().is_empty())
+                                .unwrap_or_else(|| s.session_id.as_str());
+                            match &s.scope {
+                                crate::daemon::session::SessionScope::General => name.to_string(),
+                                crate::daemon::session::SessionScope::Project { project_dir } => {
+                                    format!("{name}  [{}]", project_dir.display())
+                                }
+                            }
+                        })
+                        .collect();
+
+                    let list = List::new(items)
+                        .block(Block::default())
+                        .highlight_symbol("> ")
+                        .highlight_style(
+                            Style::default()
+                                .fg(Color::White)
+                                .bg(Color::DarkGray)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                        .repeat_highlight_symbol(true);
+                    frame.render_stateful_widget(list, layout[0], &mut state);
+                }
+
+                let help = Paragraph::new("n new  d delete  t title  Enter attach  q quit")
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(help, layout[2]);
+            })
+            .map_err(|e| miette!("render error: {e}"))?;
+
+            let ev = crossterm::event::read().map_err(|e| miette!("input error: {e}"))?;
+            let key = match ev {
+                Event::Key(k) if k.kind == KeyEventKind::Press => k,
+                _ => continue,
+            };
+
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('n') => {
+                    let title = project_dir
+                        .as_ref()
+                        .and_then(|path| path.file_name())
+                        .and_then(|name| name.to_str());
+                    if client
+                        .create_session(project_dir.as_deref(), title)
+                        .await
+                        .is_ok()
+                    {
+                        sessions = filtered_sessions(&client, project_dir.as_deref()).await;
+                        if !sessions.is_empty() {
+                            state.select(Some(sessions.len() - 1));
+                        }
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if let Some(idx) = state.selected()
+                        && let Some(s) = sessions.get(idx)
+                        && client.delete_session(s.session_id.as_str()).await.is_ok()
+                    {
+                        sessions = filtered_sessions(&client, project_dir.as_deref()).await;
+                        if state.selected().unwrap_or(0) >= sessions.len() && !sessions.is_empty() {
+                            state.select(Some(sessions.len() - 1));
+                        }
+                    }
+                }
+                KeyCode::Char('t') => {
+                    if let Some(idx) = state.selected()
+                        && let Some(s) = sessions.get(idx)
+                    {
+                        let session_id = s.session_id.as_str().to_string();
+                        let current_title = s.title.clone().unwrap_or_default();
+                        drop(terminal.take());
+                        let _ = ratatui::try_restore();
+                        print!(
+                            "Title [{}]: ",
+                            if current_title.is_empty() {
+                                session_id.as_str()
+                            } else {
+                                current_title.as_str()
+                            }
+                        );
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        let mut input = String::new();
+                        if std::io::stdin().read_line(&mut input).is_ok() {
+                            let title = input.trim().to_string();
+                            if !title.is_empty() {
+                                let _ = client.set_session_title(&session_id, &title).await;
+                            }
+                        }
+                        sessions = filtered_sessions(&client, project_dir.as_deref()).await;
+                        terminal = Some(
+                            ratatui::try_init()
+                                .map_err(|e| miette!("failed to reinit terminal: {e}"))?,
+                        );
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let current = state.selected().unwrap_or(0);
+                    let next = if current == 0 {
+                        sessions.len().saturating_sub(1)
+                    } else {
+                        current - 1
+                    };
+                    state.select(if sessions.is_empty() {
+                        None
+                    } else {
+                        Some(next)
+                    });
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let current = state.selected().unwrap_or(0);
+                    let next = if current + 1 >= sessions.len() {
+                        0
+                    } else {
+                        current + 1
+                    };
+                    state.select(if sessions.is_empty() {
+                        None
+                    } else {
+                        Some(next)
+                    });
+                }
+                KeyCode::Enter => {
+                    if let Some(idx) = state.selected()
+                        && let Some(s) = sessions.get(idx)
+                    {
+                        let session_id = s.session_id.as_str().to_string();
+                        drop(terminal.take());
+                        let _ = ratatui::try_restore();
+                        return attach_to_daemon(client.clone().with_session(session_id)).await;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    let _ = ratatui::try_restore();
+    result
+}
+
+async fn filtered_sessions(
+    client: &DaemonClient,
+    project_dir: Option<&std::path::Path>,
+) -> Vec<crate::daemon::session::SessionSummary> {
+    let Ok(sessions) = client.list_sessions().await else {
+        return Vec::new();
+    };
+    sessions
+        .into_iter()
+        .filter(|session| match (&session.scope, project_dir) {
+            (crate::daemon::session::SessionScope::General, None) => true,
+            (
+                crate::daemon::session::SessionScope::Project {
+                    project_dir: stored,
+                },
+                Some(project_dir),
+            ) => stored == project_dir,
+            _ => false,
+        })
+        .collect()
 }
 
 async fn run_config_command(target: Option<&ConfigTarget>) -> Result<()> {

@@ -167,6 +167,15 @@ pub struct EventView {
 impl EventStore {
     pub async fn new() -> Self {
         let persistence = PersistenceStore::runtime().await;
+        Self::open_with_persistence(persistence).await
+    }
+
+    pub async fn with_session(session_id: &str) -> Self {
+        let persistence = PersistenceStore::for_session(Some(session_id)).await;
+        Self::open_with_persistence(persistence).await
+    }
+
+    async fn open_with_persistence(persistence: PersistenceStore) -> Self {
         let path = persistence.state_file(EVENTS_FILE_NAME);
         let mut state: PersistedEventStore = persistence
             .read_postcard_state_or_default(EVENTS_FILE_NAME, "events")
@@ -361,10 +370,6 @@ impl EventStore {
                 };
             Ok(())
         })
-    }
-
-    pub fn mark_delivery_failed(&self, event_id: &str, reason: impl Into<String>) -> Result<()> {
-        self.set_status(event_id, EventStatus::Failed, Some(reason.into()))
     }
 
     pub fn requeue_if_claimed(&self, event_id: &str) -> Result<bool> {

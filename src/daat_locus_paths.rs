@@ -158,6 +158,14 @@ impl DaatLocusPaths {
     pub fn logs_file(&self, file_name: &str) -> PathBuf {
         self.logs_dir().join(file_name)
     }
+
+    pub fn for_session(session_id: &str) -> Self {
+        Self {
+            root: resolve_daat_locus_home_root()
+                .join("sessions")
+                .join(session_id),
+        }
+    }
 }
 
 fn resolve_daat_locus_home_root() -> PathBuf {

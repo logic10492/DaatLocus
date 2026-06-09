@@ -1,34 +1,110 @@
 pub mod state;
 
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use miette::{Result, bail, miette};
 use reqwest::{Client, header::CONTENT_TYPE};
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 
-use crate::telegram_transport::state::{TelegramTransportStateHandle, split_telegram_message_text};
+use crate::telegram_transport::state::{
+    PendingOutboundMessage, TelegramTransportStateHandle, split_telegram_message_text,
+};
 use crate::{
     config::TelegramConfig,
     daat_locus_paths::daat_locus_paths_sync,
     dashboard::{
         DashboardControlCommand, DashboardState, execute_control_command, remote_dashboard_commands,
     },
-    events::{
-        EventStatus, EventStore, TelegramIncomingAttachment, TelegramIncomingAttachmentKind,
-        TelegramIncomingEvent,
-    },
-    pending_work::{PendingWork, PendingWorkQueue},
+    events::{TelegramIncomingAttachment, TelegramIncomingAttachmentKind, TelegramIncomingEvent},
     telegram_acl::{AccessDecision, TelegramAclHandle},
 };
+
+#[async_trait]
+pub trait TelegramInputRouter: Send + Sync {
+    async fn route_telegram_event(&self, event: TelegramIncomingEvent) -> Result<()>;
+}
+
+#[derive(Clone)]
+pub struct TelegramDeliveryClient {
+    client: Client,
+    config: TelegramConfig,
+    acl: TelegramAclHandle,
+}
+
+impl TelegramDeliveryClient {
+    pub fn new(config: TelegramConfig, acl: TelegramAclHandle) -> Self {
+        Self {
+            client: Client::new(),
+            config,
+            acl,
+        }
+    }
+
+    pub async fn send_pending_outbound(&self, message: &PendingOutboundMessage) -> Result<()> {
+        let chat_id = message
+            .chat_id
+            .parse::<i64>()
+            .map_err(|err| miette!("invalid telegram chat id {}: {err}", message.chat_id))?;
+        if self.acl.classify(chat_id) != AccessDecision::Approved {
+            return Err(miette!("chat is not approved in telegram acl"));
+        }
+        self.send_text(chat_id, &message.text).await
+    }
+
+    async fn send_text(&self, chat_id: i64, text: &str) -> Result<()> {
+        for chunk in split_telegram_message_text(text) {
+            self.send_message(chat_id, &chunk).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_message(&self, chat_id: i64, text: &str) -> Result<()> {
+        let response = self
+            .client
+            .post(self.endpoint("sendMessage"))
+            .json(&serde_json::json!({
+                "chat_id": chat_id,
+                "text": render_markdown_as_telegram_html(text),
+                "parse_mode": "HTML",
+            }))
+            .send()
+            .await
+            .map_err(|err| miette!("telegram sendMessage request failed: {}", err.without_url()))?
+            .error_for_status()
+            .map_err(|err| miette!("telegram sendMessage http error: {}", err.without_url()))?;
+
+        let payload: TelegramApiResponse<serde_json::Value> = response
+            .json()
+            .await
+            .map_err(|err| miette!("telegram sendMessage json decode failed: {err}"))?;
+        if payload.ok {
+            Ok(())
+        } else {
+            bail!(
+                "telegram sendMessage failed: {}",
+                payload
+                    .description
+                    .unwrap_or_else(|| "unknown api error".to_string())
+            );
+        }
+    }
+
+    fn endpoint(&self, method: &str) -> String {
+        format!(
+            "https://api.telegram.org/bot{}/{}",
+            self.config.bot_token, method
+        )
+    }
+}
 
 pub struct TelegramTransport {
     client: Client,
     config: TelegramConfig,
     acl: TelegramAclHandle,
     handle: TelegramTransportStateHandle,
-    events: EventStore,
-    pending_work: PendingWorkQueue,
+    input_router: Arc<dyn TelegramInputRouter>,
     command_state_rx: watch::Receiver<DashboardState>,
     command_control_tx: mpsc::UnboundedSender<DashboardControlCommand>,
     offset: Option<i64>,
@@ -41,8 +117,7 @@ impl TelegramTransport {
         config: TelegramConfig,
         handle: TelegramTransportStateHandle,
         acl: TelegramAclHandle,
-        events: EventStore,
-        pending_work: PendingWorkQueue,
+        input_router: Arc<dyn TelegramInputRouter>,
         command_state_rx: watch::Receiver<DashboardState>,
         command_control_tx: mpsc::UnboundedSender<DashboardControlCommand>,
     ) -> Self {
@@ -52,8 +127,7 @@ impl TelegramTransport {
             config,
             acl,
             handle,
-            events,
-            pending_work,
+            input_router,
             command_state_rx,
             command_control_tx,
             offset,
@@ -128,42 +202,14 @@ impl TelegramTransport {
                 .parse::<i64>()
                 .map_err(|err| miette!("invalid telegram chat id {}: {err}", message.chat_id))?;
             if self.acl.classify(chat_id) != AccessDecision::Approved {
-                let reason = "chat is not approved in telegram acl".to_string();
-                if let Some(event_id) = message.related_event_id.as_deref()
-                    && let Err(err) = self.events.mark_delivery_failed(event_id, reason)
-                {
-                    tracing::error!("mark telegram event failed failed: {err:?}");
-                }
+                tracing::warn!("dropping telegram outbound message for unapproved chat {chat_id}");
                 continue;
             }
 
             match self.send_message(chat_id, &message.text).await {
-                Ok(()) => {
-                    if let Some(event_id) = message.related_event_id.as_deref()
-                        && let Err(err) = self.events.set_status(
-                            event_id,
-                            message
-                                .settle_status_on_delivery
-                                .unwrap_or(EventStatus::Resolved),
-                            message.settle_note_on_delivery.clone(),
-                        )
-                    {
-                        tracing::error!("mark telegram event delivered failed: {err:?}");
-                    }
-                }
+                Ok(()) => {}
                 Err(err) => {
                     let reason = truncate_reason(&format!("{err:?}"));
-                    if let Some(event_id) = message.related_event_id.as_deref()
-                        && let Err(mark_err) = self.events.set_status(
-                            event_id,
-                            EventStatus::AwaitingDelivery,
-                            Some(reason.clone()),
-                        )
-                    {
-                        tracing::error!(
-                            "mark telegram event awaiting delivery failed: {mark_err:?}"
-                        );
-                    }
                     if let Err(requeue_err) = self.handle.requeue_outbound_front(message) {
                         tracing::error!(
                             "requeue telegram outbound message failed: {requeue_err:?}"
@@ -213,8 +259,8 @@ impl TelegramTransport {
                     .download_incoming_attachments(update.update_id, &message)
                     .await;
                 match self
-                    .events
-                    .register_telegram_incoming(TelegramIncomingEvent {
+                    .input_router
+                    .route_telegram_event(TelegramIncomingEvent {
                         chat_id: chat_id.clone(),
                         chat_kind: message.chat.kind.clone(),
                         chat_title: chat_title.clone(),
@@ -224,15 +270,12 @@ impl TelegramTransport {
                         telegram_message_id: message.message_id,
                         telegram_message_date: message.date,
                         attachments,
-                    }) {
-                    Ok(event_id) => {
-                        if let Err(err) = self.pending_work.enqueue(PendingWork::Event { event_id })
-                        {
-                            tracing::error!("enqueue pending telegram work failed: {err:?}");
-                        }
-                    }
+                    })
+                    .await
+                {
+                    Ok(()) => {}
                     Err(err) => {
-                        tracing::error!("register telegram event failed: {err:?}");
+                        tracing::error!("route telegram event failed: {err:?}");
                     }
                 }
                 self.handle

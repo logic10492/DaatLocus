@@ -89,6 +89,7 @@ rust-i18n = "4.0.0"
 regex = "1.12.3"
 tokio-stream = "0.1.18"
 scope-engine = { version = "0.1.0", path = "crates/scope-engine" }
+interprocess = { version = "2.4.2", features = ["tokio"] }
 
 [dev-dependencies]
 tempfile = "3.23.0"

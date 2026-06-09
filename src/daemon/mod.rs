@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::Ipv4Addr,
     path::{Path as StdPath, PathBuf},
     process::Stdio,
@@ -17,7 +18,7 @@ use axum::{
     },
     http::{HeaderMap, HeaderValue, StatusCode, header::AUTHORIZATION},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use axum::{
     body::Body,
@@ -36,7 +37,7 @@ use sha2::{Digest, Sha256};
 use sysinfo::{Pid, System};
 use tokio::{
     net::TcpListener,
-    sync::{Notify, mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -45,19 +46,21 @@ use crate::{
     config::{Config, ModelConfig, ProviderConfig, load_config},
     daat_locus_paths::{daat_locus_paths, daat_locus_paths_sync},
     dashboard::{
-        DashboardActivityHistoryPage, DashboardActivityHistoryStore, DashboardCommandRunner,
-        DashboardControlCommand, DashboardHistoryLoader, DashboardIncomingAttachment,
-        DashboardState, execute_remote_command, execute_remote_message,
+        DashboardActivityHistoryPage, DashboardCommandRunner, DashboardControlCommand,
+        DashboardHistoryLoader, DashboardIncomingAttachment, DashboardState,
+        execute_control_command,
     },
-    events::EventStore,
     model_catalog::catalog_model_capacity,
-    pending_work::PendingWorkQueue,
     sandbox::StrongFilesystemSandboxMode,
-    telegram_acl::TelegramAclHandle,
+    telegram_acl::{PendingAccessRequest, TelegramAclHandle},
 };
 
 mod auth;
 mod logs;
+pub mod session;
+pub mod session_ipc;
+
+pub(crate) type SessionTokenStore = Arc<parking_lot::RwLock<HashMap<session::SessionId, String>>>;
 
 pub use auth::{
     CreatedDaemonToken, DaemonAuthToken, DaemonTokenListEntry, DaemonTokenRegistryHandle,
@@ -68,9 +71,9 @@ pub use auth::{
 pub const DAEMON_BIND_HOST: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
 pub const DAEMON_CLIENT_HOST: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
 pub const DAEMON_HOST_DISPLAY: &str = "0.0.0.0";
-/// Daemon cold start can include browser runtime install and workspace app
-/// initialization, so keep the outer readiness window generous.
-const READY_TIMEOUT: Duration = Duration::from_secs(900);
+/// Manager startup should be quick because runtime initialization belongs to
+/// session workers. Keep this short so startup failures do not look like hangs.
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const DAEMON_MAIN_LOG: &str = "daat-locus.log";
@@ -95,6 +98,41 @@ pub struct StatusResponse {
     pub port: u16,
     pub state: DaemonLifecycleState,
     pub connected_clients: usize,
+}
+
+#[derive(Serialize)]
+pub struct StatusSummaryResponse {
+    pub loaded_at_ms: i64,
+    pub daemon: StatusResponse,
+    pub pending_access_requests: Vec<PendingAccessRequest>,
+    pub sessions: Vec<StatusSessionSummary>,
+}
+
+#[derive(Serialize)]
+pub struct StatusSessionSummary {
+    pub session: session::SessionSummary,
+    pub runtime_status: Option<StatusSessionRuntimeSummary>,
+    pub dashboard: Option<session_ipc::SessionStatusDashboard>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct StatusSessionRuntimeSummary {
+    pub ready: bool,
+    pub focused_app: Option<String>,
+    pub pending_work_count: usize,
+    pub active_runtime_turn: bool,
+}
+
+impl From<session_ipc::SessionRuntimeStatus> for StatusSessionRuntimeSummary {
+    fn from(status: session_ipc::SessionRuntimeStatus) -> Self {
+        Self {
+            ready: status.ready,
+            focused_app: status.focused_app,
+            pending_work_count: status.pending_work_count,
+            active_runtime_turn: status.active_runtime_turn,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -180,6 +218,7 @@ impl DaemonLifecycleHandle {
         self.set(DaemonLifecycleState::Stopping);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn mark_failed_if_initializing(&self) {
         let _ = self.state.compare_exchange(
             DaemonLifecycleState::Initializing.as_u8(),
@@ -195,11 +234,15 @@ pub struct CommandRequest {
     pub command: String,
     #[serde(default)]
     pub attachments: Vec<CommandAttachmentRequest>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SendRequest {
     pub message: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -320,6 +363,7 @@ pub struct SettingsTelegramSummary {
 #[derive(Debug, Deserialize)]
 struct DashboardStreamQuery {
     token: Option<String>,
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -327,6 +371,12 @@ struct DashboardActivityHistoryQuery {
     before: Option<i64>,
     after: Option<i64>,
     limit: Option<usize>,
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DashboardSnapshotQuery {
+    session_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -343,14 +393,12 @@ struct ServerState {
     auth_registry: DaemonTokenRegistryHandle,
     lifecycle: DaemonLifecycleHandle,
     dashboard_rx: watch::Receiver<DashboardState>,
-    dashboard_history: DashboardActivityHistoryStore,
     telegram_acl: TelegramAclHandle,
-    events: EventStore,
-    pending_work: PendingWorkQueue,
     dashboard_control_tx: mpsc::UnboundedSender<DashboardControlCommand>,
     daemon_control_tx: mpsc::UnboundedSender<DaemonControlCommand>,
     connected_clients: Arc<std::sync::atomic::AtomicUsize>,
-    shutdown_notify: Arc<Notify>,
+    sessions: session::SessionRegistry,
+    session_tokens: SessionTokenStore,
 }
 
 pub struct DaemonServerHandle {
@@ -363,14 +411,12 @@ pub struct DaemonServerStartParams {
     pub auth_registry: DaemonTokenRegistryHandle,
     pub lifecycle: DaemonLifecycleHandle,
     pub dashboard_rx: watch::Receiver<DashboardState>,
-    pub dashboard_history: DashboardActivityHistoryStore,
     pub telegram_acl: TelegramAclHandle,
-    pub events: EventStore,
-    pub pending_work: PendingWorkQueue,
     pub dashboard_control_tx: mpsc::UnboundedSender<DashboardControlCommand>,
     pub daemon_control_tx: mpsc::UnboundedSender<DaemonControlCommand>,
+    pub sessions: session::SessionRegistry,
+    pub session_tokens: SessionTokenStore,
     pub shutdown_rx: oneshot::Receiver<()>,
-    pub shutdown_notify: Arc<Notify>,
 }
 
 impl DaemonServerHandle {
@@ -394,6 +440,29 @@ impl DaemonLock {
     pub async fn acquire() -> Result<Self> {
         let paths = daat_locus_paths().await;
         let path = paths.daemon_lock_file();
+        Self::acquire_at_path(path).await
+    }
+
+    pub async fn acquire_with_suffix(suffix: &str) -> Result<Self> {
+        let paths = daat_locus_paths().await;
+        let mut path = paths.daemon_lock_file();
+        if let Some(parent) = path.parent() {
+            let stem = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let ext = path.extension().unwrap_or_default().to_string_lossy();
+            path = if ext.is_empty() {
+                parent.join(format!("{stem}-{suffix}"))
+            } else {
+                parent.join(format!("{stem}-{suffix}.{ext}"))
+            };
+        }
+        Self::acquire_at_path(path).await
+    }
+
+    async fn acquire_at_path(path: PathBuf) -> Result<Self> {
         let started_at_ms = chrono::Utc::now().timestamp_millis();
         let pid = std::process::id();
         let state = LockFileState { pid, started_at_ms };
@@ -468,14 +537,12 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
         auth_registry,
         lifecycle,
         dashboard_rx,
-        dashboard_history,
         telegram_acl,
-        events,
-        pending_work,
         dashboard_control_tx,
         daemon_control_tx,
+        sessions,
+        session_tokens,
         shutdown_rx,
-        shutdown_notify,
     } = params;
 
     let listener = TcpListener::bind((DAEMON_BIND_HOST, port))
@@ -499,19 +566,18 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
         auth_registry,
         lifecycle,
         dashboard_rx,
-        dashboard_history,
         telegram_acl,
-        events,
-        pending_work,
         dashboard_control_tx,
         daemon_control_tx,
         connected_clients: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        shutdown_notify,
+        sessions,
+        session_tokens,
     };
 
     let router = Router::new()
         .route("/health", get(health_handler))
         .route("/status", get(status_handler))
+        .route("/status/summary", get(status_summary_handler))
         .route("/dashboard/snapshot", get(snapshot_handler))
         .route("/dashboard/stream", get(stream_handler))
         .route("/dashboard/activity-history", get(activity_history_handler))
@@ -526,6 +592,10 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
         .route("/send", post(send_handler))
         .route("/daemon/shutdown", post(shutdown_handler))
         .route("/daemon/restart", post(restart_handler))
+        .route("/sessions", get(session_list_handler))
+        .route("/sessions", post(session_create_handler))
+        .route("/sessions/{session_id}", delete(session_delete_handler))
+        .route("/sessions/{session_id}/title", post(session_title_handler))
         .with_state(app_state.clone());
 
     let router = router.fallback(get(embedded_webui_handler));
@@ -604,7 +674,14 @@ fn looks_like_static_asset_path(path: &str) -> bool {
 fn is_daemon_api_path(path: &str) -> bool {
     matches!(
         path.split('/').next().unwrap_or_default(),
-        "commands" | "daemon" | "dashboard" | "health" | "logs" | "settings" | "status"
+        "commands"
+            | "daemon"
+            | "dashboard"
+            | "health"
+            | "logs"
+            | "sessions"
+            | "settings"
+            | "status"
     )
 }
 
@@ -851,7 +928,11 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 async fn status_handler(State(state): State<ServerState>) -> impl IntoResponse {
-    Json(StatusResponse {
+    Json(status_response(&state)).into_response()
+}
+
+fn status_response(state: &ServerState) -> StatusResponse {
+    StatusResponse {
         pid: std::process::id(),
         started_at_ms: state.started_at_ms,
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -861,18 +942,128 @@ async fn status_handler(State(state): State<ServerState>) -> impl IntoResponse {
         connected_clients: state
             .connected_clients
             .load(std::sync::atomic::Ordering::Relaxed),
-    })
-    .into_response()
+    }
 }
 
-async fn snapshot_handler(
+async fn status_summary_handler(
     State(state): State<ServerState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if !state.auth_registry.authorize_headers(&headers).await {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    Json(state.dashboard_rx.borrow().clone()).into_response()
+
+    let session_tasks = state.sessions.list().into_iter().map(|info| {
+        status_session_summary(state.sessions.clone(), state.session_tokens.clone(), info)
+    });
+    let sessions = futures_util::future::join_all(session_tasks).await;
+
+    Json(StatusSummaryResponse {
+        loaded_at_ms: chrono::Utc::now().timestamp_millis(),
+        daemon: status_response(&state),
+        pending_access_requests: state.telegram_acl.pending_requests(),
+        sessions,
+    })
+    .into_response()
+}
+
+async fn status_session_summary(
+    sessions: session::SessionRegistry,
+    session_tokens: SessionTokenStore,
+    mut info: session::SessionInfo,
+) -> StatusSessionSummary {
+    let mut runtime_status = None;
+    let mut dashboard = None;
+    let mut error = None;
+
+    if info.status.is_process_backed() {
+        match live_session_client(&session_tokens, &info.session_id, &info) {
+            Ok(client) => {
+                let client = client.with_timeout(Duration::from_secs(2));
+                match client
+                    .request(session_ipc::SessionIpcRequest::StatusSummary)
+                    .await
+                {
+                    Ok(session_ipc::SessionIpcResponse::StatusSummary { summary }) => {
+                        let summary = *summary;
+                        runtime_status = Some(summary.runtime_status.into());
+                        dashboard = Some(summary.dashboard);
+                    }
+                    Ok(session_ipc::SessionIpcResponse::Error { message, .. }) => {
+                        error = Some(message);
+                    }
+                    Ok(_) => {
+                        error = Some("unexpected session IPC status summary response".to_string());
+                    }
+                    Err(err) => {
+                        error = Some(format!("{err:?}"));
+                        session_tokens.write().remove(&info.session_id);
+                        let _ = sessions.mark_dead(&info.session_id).await;
+                        info.pid = None;
+                        info.status = session::SessionStatus::Dead;
+                        info.ipc_name = None;
+                        info.ipc_token_hash = None;
+                        info.last_seen_at_ms = Some(chrono::Utc::now().timestamp_millis());
+                    }
+                }
+            }
+            Err(err) => {
+                error = Some(format!("{err:?}"));
+                session_tokens.write().remove(&info.session_id);
+                let _ = sessions.mark_dead(&info.session_id).await;
+                info.pid = None;
+                info.status = session::SessionStatus::Dead;
+                info.ipc_name = None;
+                info.ipc_token_hash = None;
+                info.last_seen_at_ms = Some(chrono::Utc::now().timestamp_millis());
+            }
+        }
+    }
+
+    StatusSessionSummary {
+        session: session::SessionSummary::from(info),
+        runtime_status,
+        dashboard,
+        error,
+    }
+}
+
+async fn snapshot_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Query(query): Query<DashboardSnapshotQuery>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Some(session_id) = query.session_id.as_deref() {
+        match session_client_for_request(&state, session_id).await {
+            Ok(client) => match client
+                .request(session_ipc::SessionIpcRequest::DashboardSnapshot)
+                .await
+            {
+                Ok(session_ipc::SessionIpcResponse::DashboardSnapshot { state }) => {
+                    Json(*state).into_response()
+                }
+                Ok(session_ipc::SessionIpcResponse::Error { message, .. }) => {
+                    (StatusCode::BAD_GATEWAY, message).into_response()
+                }
+                Ok(_) => (
+                    StatusCode::BAD_GATEWAY,
+                    "unexpected session IPC dashboard snapshot response",
+                )
+                    .into_response(),
+                Err(err) => (StatusCode::BAD_GATEWAY, format!("{err:?}")).into_response(),
+            },
+            Err(err) => (StatusCode::NOT_FOUND, format!("{err:?}")).into_response(),
+        }
+    } else {
+        (
+            StatusCode::BAD_REQUEST,
+            "session_id is required for dashboard snapshot",
+        )
+            .into_response()
+    }
 }
 
 async fn activity_history_handler(
@@ -884,23 +1075,37 @@ async fn activity_history_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    let result = if let Some(after) = query.after {
-        state
-            .dashboard_history
-            .query_after(Some(after), query.limit.unwrap_or(80))
+    if let Some(session_id) = query.session_id.as_deref() {
+        match session_client_for_request(&state, session_id).await {
+            Ok(client) => match client
+                .request(session_ipc::SessionIpcRequest::DashboardHistoryPage {
+                    before: query.before,
+                    after: query.after,
+                    limit: query.limit.unwrap_or(80),
+                })
+                .await
+            {
+                Ok(session_ipc::SessionIpcResponse::DashboardHistoryPage { page }) => {
+                    Json(page).into_response()
+                }
+                Ok(session_ipc::SessionIpcResponse::Error { message, .. }) => {
+                    (StatusCode::BAD_GATEWAY, message).into_response()
+                }
+                Ok(_) => (
+                    StatusCode::BAD_GATEWAY,
+                    "unexpected session IPC dashboard history response",
+                )
+                    .into_response(),
+                Err(err) => (StatusCode::BAD_GATEWAY, format!("{err:?}")).into_response(),
+            },
+            Err(err) => (StatusCode::NOT_FOUND, format!("{err:?}")).into_response(),
+        }
     } else {
-        state
-            .dashboard_history
-            .query_before(query.before, query.limit.unwrap_or(80))
-    };
-
-    match result {
-        Ok(page) => Json(page).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("dashboard activity history query failed: {err:?}"),
+        (
+            StatusCode::BAD_REQUEST,
+            "session_id is required for dashboard activity history",
         )
-            .into_response(),
+            .into_response()
     }
 }
 
@@ -949,7 +1154,17 @@ async fn stream_handler(
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    ws.on_upgrade(move |socket| dashboard_ws(socket, state))
+    if let Some(session_id) = query.session_id.as_deref() {
+        return match session_client_for_request(&state, session_id).await {
+            Ok(client) => ws.on_upgrade(move |socket| session_dashboard_ws(socket, client)),
+            Err(err) => (StatusCode::NOT_FOUND, format!("{err:?}")).into_response(),
+        };
+    }
+    (
+        StatusCode::BAD_REQUEST,
+        "session_id is required for dashboard stream",
+    )
+        .into_response()
 }
 
 async fn command_handler(
@@ -973,21 +1188,67 @@ async fn command_handler(
                 .into_response();
         }
     };
-    if !attachments.is_empty() {
-        let output = execute_remote_message(
-            &request.command,
-            attachments,
-            &state.events,
-            &state.pending_work,
-        );
+    if let Some(session_id) = request.session_id.as_deref() {
+        let client = match session_client_for_request(&state, session_id).await {
+            Ok(client) => client,
+            Err(err) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(CommandResponse {
+                        output: format!("{err:?}"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let response = client
+            .request(session_ipc::SessionIpcRequest::SubmitUserInput {
+                origin: session_ipc::UserInputOrigin::WebUi,
+                text: request.command,
+                attachments: attachments
+                    .into_iter()
+                    .map(|attachment| session_ipc::InputAttachment {
+                        media_type: attachment.media_type,
+                        local_path: attachment.local_path,
+                        description: attachment.description,
+                    })
+                    .collect(),
+                wait_for_reply: false,
+            })
+            .await;
+        let output = match response {
+            Ok(session_ipc::SessionIpcResponse::Submitted { event_id, .. }) => {
+                format!("queued session message as event {event_id}")
+            }
+            Ok(session_ipc::SessionIpcResponse::Error { message, .. }) => message,
+            Ok(_) => "unexpected session IPC command response".to_string(),
+            Err(err) => format!("session command failed: {err:?}"),
+        };
         return Json(CommandResponse { output }).into_response();
     }
+    if !attachments.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CommandResponse {
+                output: "session_id is required for user input with attachments".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let trimmed = request.command.trim();
+    let Some(command) = trimmed.strip_prefix('/') else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CommandResponse {
+                output: "session_id is required for user input".to_string(),
+            }),
+        )
+            .into_response();
+    };
     let snapshot = state.dashboard_rx.borrow().clone();
-    let output = execute_remote_command(
-        &request.command,
+    let output = execute_control_command(
+        command.trim(),
         &state.telegram_acl,
-        &state.events,
-        &state.pending_work,
         &snapshot,
         &state.dashboard_control_tx,
     );
@@ -1019,73 +1280,85 @@ async fn send_handler(
             .into_response();
     }
 
-    let event_id = match crate::dashboard::enqueue_local_send_message(
-        &state.events,
-        &state.pending_work,
-        message,
-    ) {
-        Ok(event_id) => event_id,
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
+    if let Some(session_id) = request.session_id.as_deref() {
+        let client = match session_client_for_request(&state, session_id).await {
+            Ok(client) => client,
+            Err(err) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(SendResponse {
+                        event_id: String::new(),
+                        status: "failed".to_string(),
+                        reply_message: None,
+                        note: Some(format!("{err:?}")),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        return match client
+            .request(session_ipc::SessionIpcRequest::SubmitUserInput {
+                origin: session_ipc::UserInputOrigin::CliSend,
+                text: message.to_string(),
+                attachments: Vec::new(),
+                wait_for_reply: true,
+            })
+            .await
+        {
+            Ok(session_ipc::SessionIpcResponse::Submitted {
+                event_id,
+                reply_message,
+                terminal_status,
+            }) => Json(SendResponse {
+                event_id,
+                status: "resolved".to_string(),
+                reply_message,
+                note: terminal_status,
+            })
+            .into_response(),
+            Ok(session_ipc::SessionIpcResponse::Error { message, .. }) => (
+                StatusCode::BAD_GATEWAY,
                 Json(SendResponse {
                     event_id: String::new(),
                     status: "failed".to_string(),
                     reply_message: None,
-                    note: Some(err),
+                    note: Some(message),
                 }),
             )
-                .into_response();
-        }
-    };
-
-    wait_for_send_reply(state.events.clone(), event_id)
-        .await
-        .into_response()
-}
-
-async fn wait_for_send_reply(
-    events: EventStore,
-    event_id: uuid::Uuid,
-) -> (StatusCode, Json<SendResponse>) {
-    const SEND_POLL_INTERVAL: Duration = Duration::from_millis(250);
-    loop {
-        match events.view(&event_id.to_string()) {
-            Ok(event) if event.status.is_send_terminal_status() => {
-                let status_code = match event.status {
-                    crate::events::EventStatus::Resolved => StatusCode::OK,
-                    crate::events::EventStatus::Failed => StatusCode::INTERNAL_SERVER_ERROR,
-                    crate::events::EventStatus::Dismissed => StatusCode::OK,
-                    crate::events::EventStatus::AwaitingDelivery => StatusCode::OK,
-                    crate::events::EventStatus::Pending | crate::events::EventStatus::Claimed => {
-                        StatusCode::OK
-                    }
-                };
-                return (
-                    status_code,
-                    Json(SendResponse {
-                        event_id: event_id.to_string(),
-                        status: event.status.as_snake_case().to_string(),
-                        reply_message: event.reply_message,
-                        note: event.last_error,
-                    }),
-                );
-            }
-            Ok(_) => {}
-            Err(err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(SendResponse {
-                        event_id: event_id.to_string(),
-                        status: "failed".to_string(),
-                        reply_message: None,
-                        note: Some(format!("failed to inspect send event: {err}")),
-                    }),
-                );
-            }
-        }
-        tokio::time::sleep(SEND_POLL_INTERVAL).await;
+                .into_response(),
+            Ok(_) => (
+                StatusCode::BAD_GATEWAY,
+                Json(SendResponse {
+                    event_id: String::new(),
+                    status: "failed".to_string(),
+                    reply_message: None,
+                    note: Some("unexpected session IPC send response".to_string()),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::BAD_GATEWAY,
+                Json(SendResponse {
+                    event_id: String::new(),
+                    status: "failed".to_string(),
+                    reply_message: None,
+                    note: Some(format!("{err:?}")),
+                }),
+            )
+                .into_response(),
+        };
     }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(SendResponse {
+            event_id: String::new(),
+            status: "failed".to_string(),
+            reply_message: None,
+            note: Some("session_id is required for /send".to_string()),
+        }),
+    )
+        .into_response()
 }
 
 async fn shutdown_handler(
@@ -1126,6 +1399,243 @@ async fn restart_handler(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     (StatusCode::ACCEPTED, "daemon restart scheduled").into_response()
+}
+
+async fn session_list_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(
+        state
+            .sessions
+            .list()
+            .into_iter()
+            .map(session::SessionSummary::from)
+            .collect::<Vec<_>>(),
+    )
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionCreateBody {
+    project_dir: Option<PathBuf>,
+    title: Option<String>,
+}
+
+async fn session_create_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(body): Json<SessionCreateBody>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let scope = match body.project_dir {
+        Some(project_dir) => match std::fs::canonicalize(&project_dir) {
+            Ok(project_dir) => session::SessionScope::Project { project_dir },
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("cannot canonicalize project_dir: {err}")
+                    })),
+                )
+                    .into_response();
+            }
+        },
+        None => session::SessionScope::General,
+    };
+    match state.sessions.create(scope, body.title).await {
+        Ok(info) => (
+            StatusCode::CREATED,
+            Json(session::SessionSummary::from(info)),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionTitleBody {
+    title: String,
+}
+
+async fn session_title_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(body): Json<SessionTitleBody>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let session_id = match session::SessionId::from_string(session_id) {
+        Ok(session_id) => session_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": format!("{err:?}") })),
+            )
+                .into_response();
+        }
+    };
+    match state.sessions.set_title(&session_id, body.title).await {
+        Ok(true) => Json(serde_json::json!({ "session_id": session_id.as_str() })).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "session not found" })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn session_delete_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let session_id = match session::SessionId::from_string(session_id) {
+        Ok(session_id) => session_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": format!("{err:?}") })),
+            )
+                .into_response();
+        }
+    };
+    let ipc_token = state.session_tokens.read().get(&session_id).cloned();
+    if let Some(info) = state.sessions.get(&session_id)
+        && info.status.is_process_backed()
+        && let Some(ipc_name) = info.ipc_name.clone()
+        && let Some(ipc_token) = ipc_token
+    {
+        let client = session_ipc::SessionIpcClient::new(session_id.clone(), ipc_name, ipc_token);
+        let _ = client
+            .request(session_ipc::SessionIpcRequest::Shutdown {
+                reason: "session deleted".to_string(),
+            })
+            .await;
+    }
+    state.session_tokens.write().remove(&session_id);
+    match state.sessions.remove(&session_id).await {
+        Ok(Some(_)) => {
+            let session_dir = session::session_state_paths(&session_id)
+                .root()
+                .to_path_buf();
+            if session_dir.exists()
+                && let Err(err) = std::fs::remove_dir_all(&session_dir)
+            {
+                tracing::warn!(
+                    "failed to remove session directory {}: {err}",
+                    session_dir.display()
+                );
+            }
+            Json(serde_json::json!({ "deleted": session_id.as_str() })).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "session not found" })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn spawn_session_process(
+    sessions: session::SessionRegistry,
+    session_tokens: SessionTokenStore,
+    session_id: session::SessionId,
+    info: session::SessionInfo,
+) -> Result<u32> {
+    let ipc_path = session::session_ipc_path(&session_id).await?;
+    let ipc_name = ipc_path.display().to_string();
+    let ipc_token = session::generate_ipc_token();
+    let binary = std::env::current_exe()
+        .map_err(|err| miette!("resolve current executable failed: {err}"))?;
+    let mut command = std::process::Command::new(binary);
+    command
+        .arg("--session-id")
+        .arg(session_id.as_str())
+        .arg("--ipc-name")
+        .arg(&ipc_name)
+        .arg("--ipc-token")
+        .arg(&ipc_token);
+    if let Some(project_dir) = info.project_dir.as_ref() {
+        command.arg("--session-project-dir").arg(project_dir);
+    }
+    command
+        .arg("daemon")
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = command
+        .spawn()
+        .map_err(|err| miette!("spawn session process failed: {err}"))?;
+    let pid = child.id();
+    session_tokens
+        .write()
+        .insert(session_id.clone(), ipc_token.clone());
+    session::store_session_ipc_token(&session_id, &ipc_token).await?;
+    sessions
+        .mark_starting(&session_id, pid, ipc_name.clone(), &ipc_token)
+        .await?;
+
+    let client = session_ipc::SessionIpcClient::new(session_id.clone(), ipc_name, ipc_token)
+        .with_timeout(Duration::from_secs(2));
+    if let Err(err) = wait_for_session_ready(&client).await {
+        let _ = sessions.mark_dead(&session_id).await;
+        return Err(err);
+    }
+    sessions.mark_ready(&session_id).await?;
+    Ok(pid)
+}
+
+async fn wait_for_session_ready(client: &session_ipc::SessionIpcClient) -> Result<()> {
+    const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(30);
+    let deadline = Instant::now() + SESSION_READY_TIMEOUT;
+    while Instant::now() < deadline {
+        match client.request(session_ipc::SessionIpcRequest::Status).await {
+            Ok(session_ipc::SessionIpcResponse::Status { runtime_status })
+                if runtime_status.ready =>
+            {
+                return Ok(());
+            }
+            Ok(session_ipc::SessionIpcResponse::Status { .. }) => {}
+            Ok(session_ipc::SessionIpcResponse::Error { message, .. }) => {
+                tracing::warn!("session status returned error during startup: {message}");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::debug!("session status probe failed during startup: {err:?}");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(miette!(
+        "session did not become ready within {}s",
+        SESSION_READY_TIMEOUT.as_secs()
+    ))
 }
 
 fn runtime_not_ready_response(state: DaemonLifecycleState) -> axum::response::Response {
@@ -1387,42 +1897,41 @@ fn strong_filesystem_mode_label(value: StrongFilesystemSandboxMode) -> &'static 
     }
 }
 
-async fn dashboard_ws(mut socket: WebSocket, state: ServerState) {
-    state
-        .connected_clients
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut rx = state.dashboard_rx.clone();
-    let shutdown_notify = state.shutdown_notify.clone();
-    let initial_snapshot = rx.borrow_and_update().clone();
-    if send_dashboard_ws_snapshot(&mut socket, &initial_snapshot)
-        .await
-        .is_ok()
-    {
-        loop {
-            tokio::select! {
-                result = rx.changed() => {
-                    match result {
-                        Ok(()) => {
-                            let snapshot = rx.borrow().clone();
-                            if send_dashboard_ws_snapshot(&mut socket, &snapshot)
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                _ = shutdown_notify.notified() => {
+async fn session_dashboard_ws(mut socket: WebSocket, client: session_ipc::SessionIpcClient) {
+    let mut stream = match client.subscribe_dashboard().await {
+        Ok(stream) => stream,
+        Err(err) => {
+            let _ = socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "runtime_status": format!("session dashboard stream failed: {err:?}")
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await;
+            let _ = socket.send(Message::Close(None)).await;
+            return;
+        }
+    };
+    loop {
+        match session_ipc::read_stream_event(&mut stream).await {
+            Ok(session_ipc::SessionIpcStreamEvent::DashboardSnapshot { state }) => {
+                if send_dashboard_ws_snapshot(&mut socket, state.as_ref())
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
+            Ok(session_ipc::SessionIpcStreamEvent::DashboardClosed { .. }) => break,
+            Ok(session_ipc::SessionIpcStreamEvent::Error { message, .. }) => {
+                let _ = socket.send(Message::Text(message.into())).await;
+                break;
+            }
+            Err(_) => break,
         }
     }
-    state
-        .connected_clients
-        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 async fn send_dashboard_ws_snapshot(
@@ -1439,11 +1948,75 @@ async fn send_dashboard_ws_snapshot(
         .map_err(|_| ())
 }
 
+async fn session_client_for_request(
+    state: &ServerState,
+    session_id: &str,
+) -> Result<session_ipc::SessionIpcClient> {
+    session_client_for_id(&state.sessions, &state.session_tokens, session_id).await
+}
+
+pub(crate) async fn session_client_for_id(
+    sessions: &session::SessionRegistry,
+    session_tokens: &SessionTokenStore,
+    session_id: &str,
+) -> Result<session_ipc::SessionIpcClient> {
+    let session_id = session::SessionId::from_string(session_id.to_string())?;
+    let mut info = sessions
+        .get(&session_id)
+        .ok_or_else(|| miette!("session `{session_id}` not found"))?;
+
+    if let Ok(client) = live_session_client(session_tokens, &session_id, &info) {
+        return Ok(client);
+    }
+
+    if info.status.is_process_backed() {
+        sessions.mark_dead(&session_id).await?;
+        info.status = session::SessionStatus::Dead;
+        info.pid = None;
+        info.ipc_name = None;
+        info.ipc_token_hash = None;
+    }
+
+    spawn_session_process(
+        sessions.clone(),
+        session_tokens.clone(),
+        session_id.clone(),
+        info,
+    )
+    .await?;
+    let info = sessions
+        .get(&session_id)
+        .ok_or_else(|| miette!("session `{session_id}` not found after spawn"))?;
+    live_session_client(session_tokens, &session_id, &info)
+}
+
+fn live_session_client(
+    session_tokens: &SessionTokenStore,
+    session_id: &session::SessionId,
+    info: &session::SessionInfo,
+) -> Result<session_ipc::SessionIpcClient> {
+    let ipc_name = info
+        .ipc_name
+        .clone()
+        .ok_or_else(|| miette!("session `{session_id}` is not running"))?;
+    let ipc_token = session_tokens
+        .read()
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| miette!("session `{session_id}` has no live IPC token"))?;
+    Ok(session_ipc::SessionIpcClient::new(
+        session_id.clone(),
+        ipc_name,
+        ipc_token,
+    ))
+}
+
 #[derive(Clone)]
 pub struct DaemonClient {
     port: u16,
     http: reqwest::Client,
     auth_token: Option<DaemonAuthToken>,
+    session_id: Option<String>,
 }
 
 impl DaemonClient {
@@ -1455,6 +2028,7 @@ impl DaemonClient {
                 .build()
                 .expect("build daemon http client"),
             auth_token: None,
+            session_id: None,
         }
     }
 
@@ -1466,6 +2040,7 @@ impl DaemonClient {
                 .build()
                 .map_err(|err| miette!("build daemon http client failed: {err}"))?,
             auth_token: Some(load_daemon_auth_token().await?),
+            session_id: None,
         })
     }
 
@@ -1473,12 +2048,22 @@ impl DaemonClient {
         self.port
     }
 
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
     fn base_url(&self) -> String {
         format!("http://{}:{}", DAEMON_CLIENT_HOST, self.port)
     }
 
     fn ws_url(&self) -> String {
-        format!("ws://{}:{}/dashboard/stream", DAEMON_CLIENT_HOST, self.port)
+        let mut url = format!("ws://{}:{}/dashboard/stream", DAEMON_CLIENT_HOST, self.port);
+        if let Some(session_id) = self.session_id.as_deref() {
+            url.push_str("?session_id=");
+            url.push_str(session_id);
+        }
+        url
     }
 
     fn with_auth(&self, request: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
@@ -1518,18 +2103,20 @@ impl DaemonClient {
     }
 
     pub async fn snapshot(&self) -> Result<DashboardState> {
-        self.with_auth(
-            self.http
-                .get(format!("{}/dashboard/snapshot", self.base_url())),
-        )?
-        .send()
-        .await
-        .map_err(|err| miette!("dashboard snapshot request failed: {err}"))?
-        .error_for_status()
-        .map_err(|err| miette!("dashboard snapshot returned error: {err}"))?
-        .json::<DashboardState>()
-        .await
-        .map_err(|err| miette!("decode dashboard snapshot failed: {err}"))
+        let mut url = format!("{}/dashboard/snapshot", self.base_url());
+        if let Some(session_id) = self.session_id.as_deref() {
+            url.push_str("?session_id=");
+            url.push_str(session_id);
+        }
+        self.with_auth(self.http.get(url))?
+            .send()
+            .await
+            .map_err(|err| miette!("dashboard snapshot request failed: {err}"))?
+            .error_for_status()
+            .map_err(|err| miette!("dashboard snapshot returned error: {err}"))?
+            .json::<DashboardState>()
+            .await
+            .map_err(|err| miette!("decode dashboard snapshot failed: {err}"))
     }
 
     pub async fn send_command(&self, command: &str) -> Result<String> {
@@ -1540,6 +2127,7 @@ impl DaemonClient {
                     .json(&CommandRequest {
                         command: command.to_string(),
                         attachments: Vec::new(),
+                        session_id: self.session_id.clone(),
                     }),
             )?
             .send()
@@ -1558,6 +2146,7 @@ impl DaemonClient {
             self.with_auth(self.http.post(format!("{}/send", self.base_url())).json(
                 &SendRequest {
                     message: message.to_string(),
+                    session_id: self.session_id.clone(),
                 },
             ))?
             .send()
@@ -1597,6 +2186,69 @@ impl DaemonClient {
         }
     }
 
+    pub async fn list_sessions(&self) -> Result<Vec<session::SessionSummary>> {
+        self.with_auth(self.http.get(format!("{}/sessions", self.base_url())))?
+            .send()
+            .await
+            .map_err(|err| miette!("list sessions request failed: {err}"))?
+            .error_for_status()
+            .map_err(|err| miette!("list sessions returned error: {err}"))?
+            .json::<Vec<session::SessionSummary>>()
+            .await
+            .map_err(|err| miette!("decode session list failed: {err}"))
+    }
+
+    pub async fn create_session(
+        &self,
+        project_dir: Option<&std::path::Path>,
+        title: Option<&str>,
+    ) -> Result<session::SessionSummary> {
+        let body = serde_json::json!({
+            "project_dir": project_dir.map(|path| path.display().to_string()),
+            "title": title,
+        });
+        self.with_auth(
+            self.http
+                .post(format!("{}/sessions", self.base_url()))
+                .json(&body),
+        )?
+        .send()
+        .await
+        .map_err(|err| miette!("create session request failed: {err}"))?
+        .error_for_status()
+        .map_err(|err| miette!("create session returned error: {err}"))?
+        .json::<session::SessionSummary>()
+        .await
+        .map_err(|err| miette!("decode create session response failed: {err}"))
+    }
+
+    pub async fn delete_session(&self, session_id: &str) -> Result<()> {
+        self.with_auth(
+            self.http
+                .delete(format!("{}/sessions/{session_id}", self.base_url())),
+        )?
+        .send()
+        .await
+        .map_err(|err| miette!("delete session request failed: {err}"))?
+        .error_for_status()
+        .map_err(|err| miette!("delete session returned error: {err}"))?;
+        Ok(())
+    }
+
+    pub async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()> {
+        self.with_auth(
+            self.http
+                .post(format!("{}/sessions/{session_id}/title", self.base_url()))
+                .json(&serde_json::json!({ "title": title })),
+        )?
+        .send()
+        .await
+        .map_err(|err| miette!("set session title request failed: {err}"))?
+        .error_for_status()
+        .map_err(|err| miette!("set session title returned error: {err}"))?;
+        Ok(())
+    }
+
     pub async fn activity_history_before(
         &self,
         before: Option<i64>,
@@ -1609,6 +2261,10 @@ impl DaemonClient {
         );
         if let Some(before) = before {
             url.push_str(&format!("&before={}", before));
+        }
+        if let Some(session_id) = self.session_id.as_deref() {
+            url.push_str("&session_id=");
+            url.push_str(session_id);
         }
         self.with_auth(self.http.get(&url))?
             .send()

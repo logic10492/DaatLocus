@@ -75,8 +75,8 @@ const AGENT_CHAT_COMPOSER_DEFAULT_HEIGHT_PX = 60;
 const AGENT_CHAT_COMPOSER_BOTTOM_GAP_PX = 16;
 const AGENT_CHAT_PREVIEW_NOTICE_VISIBLE_MS = 3000;
 const AGENT_CHAT_PREVIEW_NOTICE_FADE_MS = 300;
-export function AgentPage() {
-  const { isLoading, loadError, snapshot } = useDashboardSnapshot();
+export function AgentPage({ sessionId }: { sessionId: string }) {
+  const { isLoading, loadError, snapshot } = useDashboardSnapshot(sessionId);
   const chatPanelRef = useRef<HTMLDivElement>(null);
   const [chatComposerHeight, setChatComposerHeight] = useState(
     AGENT_CHAT_COMPOSER_DEFAULT_HEIGHT_PX,
@@ -170,6 +170,7 @@ export function AgentPage() {
       className="relative flex min-h-screen w-full items-center justify-center overflow-hidden px-6 py-10"
     >
       <AgentChatBubbles
+        sessionId={sessionId}
         snapshot={snapshot}
         isFocused={isChatFocused}
         panelRef={chatPanelRef}
@@ -225,6 +226,7 @@ export function AgentPage() {
         </span>
       </div>
       <AgentChatComposer
+        sessionId={sessionId}
         agentName={snapshot?.agent_name}
         supportsVision={supportsVision}
         isFocused={isChatFocused}
@@ -370,6 +372,7 @@ type AgentChatDisplayItem =
     };
 
 function AgentChatComposer({
+  sessionId,
   agentName,
   supportsVision = true,
   isFocused,
@@ -378,6 +381,7 @@ function AgentChatComposer({
   onHeightChange,
   onSendResult,
 }: {
+  sessionId: string;
   agentName?: string;
   supportsVision?: boolean;
   isFocused: boolean;
@@ -557,7 +561,10 @@ function AgentChatComposer({
 
     try {
       const attachments = await commandAttachmentsFromPendingImages();
-      const output = await runDashboardCommand(trimmed, { attachments });
+      const output = await runDashboardCommand(trimmed, {
+        attachments,
+        sessionId,
+      });
       const sendResultText = agentChatSendResultText(output);
       setMessage("");
       setImageAttachments((current) => {
@@ -855,11 +862,13 @@ function formatFileSize(bytes: number) {
 }
 
 function AgentChatBubbles({
+  sessionId,
   snapshot,
   isFocused,
   panelRef,
   composerHeight,
 }: {
+  sessionId: string;
   snapshot: DashboardSnapshot | null;
   isFocused: boolean;
   panelRef: RefObject<HTMLDivElement | null>;
@@ -969,6 +978,7 @@ function AgentChatBubbles({
       const page = await fetchDashboardActivityHistory({
         before: oldestCursor,
         limit: AGENT_CHAT_HISTORY_PAGE_LIMIT,
+        sessionId,
       });
       setHistoryBubbles((current) =>
         mergeAgentChatBubbles(agentChatBubblesFromHistoryPage(page), current),
@@ -981,7 +991,14 @@ function AgentChatBubbles({
     } finally {
       setIsLoadingHistory(false);
     }
-  }, [hasMoreBefore, isFocused, isLoadingHistory, oldestCursor, panelRef]);
+  }, [
+    hasMoreBefore,
+    isFocused,
+    isLoadingHistory,
+    oldestCursor,
+    panelRef,
+    sessionId,
+  ]);
 
   useEffect(() => {
     const panel = panelRef.current;
@@ -1013,7 +1030,7 @@ function AgentChatBubbles({
     setHasMoreBefore(Boolean(historyWindow?.has_more_before));
     setHistoryError(null);
     restoreAfterPrependRef.current = null;
-  }, [snapshot?.activity_history?.newest_cursor]);
+  }, [sessionId, snapshot?.activity_history?.newest_cursor]);
 
   useEffect(() => {
     if (!isFocused) {

@@ -7,7 +7,7 @@ import {
 
 const DASHBOARD_STREAM_RECONNECT_MS = 1500;
 
-export function useDashboardSnapshot() {
+export function useDashboardSnapshot(sessionId: string) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<Error | null>(null);
@@ -21,6 +21,7 @@ export function useDashboardSnapshot() {
     function connect() {
       try {
         subscription = subscribeDashboardSnapshots({
+          sessionId,
           onSnapshot: (nextSnapshot) => {
             if (!isActive) {
               return;
@@ -81,7 +82,7 @@ export function useDashboardSnapshot() {
       }
       subscription?.close();
     };
-  }, []);
+  }, [sessionId]);
 
   return { isLoading, loadError, snapshot };
 }

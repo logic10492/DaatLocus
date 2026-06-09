@@ -66,6 +66,15 @@ impl PendingWork {
 impl PendingWorkQueue {
     pub async fn new() -> Self {
         let persistence = PersistenceStore::runtime().await;
+        Self::open_with_persistence(persistence).await
+    }
+
+    pub async fn with_session(session_id: &str) -> Self {
+        let persistence = PersistenceStore::for_session(Some(session_id)).await;
+        Self::open_with_persistence(persistence).await
+    }
+
+    async fn open_with_persistence(persistence: PersistenceStore) -> Self {
         let path = persistence.state_file(PENDING_WORK_FILE_NAME);
         let mut state: PersistedPendingWorkQueue = persistence
             .read_postcard_state_or_default(PENDING_WORK_FILE_NAME, "pending work queue")
