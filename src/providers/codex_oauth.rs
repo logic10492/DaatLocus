@@ -1437,6 +1437,19 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
+    fn json_contains_key(value: &Value, needle: &str) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.contains_key(needle)
+                    || object
+                        .values()
+                        .any(|value| json_contains_key(value, needle))
+            }
+            Value::Array(values) => values.iter().any(|value| json_contains_key(value, needle)),
+            _ => false,
+        }
+    }
+
     fn thinking_budget(value: &str) -> ThinkingBudget {
         serde_json::from_value(serde_json::json!(value)).expect("thinking budget deserializes")
     }
@@ -1555,6 +1568,28 @@ mod tests {
 
         assert_eq!(payload["reasoning"]["effort"], "xhigh");
     }
+
+    #[test]
+    fn terminal_write_stdin_schema_sent_to_codex_has_no_one_of() {
+        let tool = crate::reasoning::runtime::AgentToolSpec {
+            name: "terminal__terminal_write_stdin".to_string(),
+            description: "Continue terminal session".to_string(),
+            input_spec: AgentToolInputSpec::JsonSchema {
+                schema: serde_json::to_value(schemars::schema_for!(
+                    crate::core::TerminalWriteStdinArgs
+                ))
+                .unwrap(),
+            },
+        };
+
+        let payload = agent_tool_to_responses_tool(tool);
+
+        assert!(
+            !json_contains_key(&payload["parameters"], "oneOf"),
+            "{payload:#}"
+        );
+    }
+
     #[test]
     fn agent_payload_preserves_responses_tool_call_history() {
         let client = test_client();

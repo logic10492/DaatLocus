@@ -974,6 +974,19 @@ mod tests {
         }
     }
 
+    fn json_contains_key(value: &Value, needle: &str) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.contains_key(needle)
+                    || object
+                        .values()
+                        .any(|value| json_contains_key(value, needle))
+            }
+            Value::Array(values) => values.iter().any(|value| json_contains_key(value, needle)),
+            _ => false,
+        }
+    }
+
     #[test]
     fn apply_patch_tool_uses_lark_envelope_grammar() {
         let spec = ApplyPatchRuntimeTool.spec();
@@ -1090,6 +1103,50 @@ mod tests {
 
         assert_eq!(status.icon, glyph::ERROR);
         assert_eq!(status.text, "Primitive Activation Failed");
+    }
+
+    #[tokio::test]
+    async fn terminal_write_stdin_tool_schema_does_not_use_schema_composition() {
+        let isolated = IsolatedTestContext::new(AppId::terminal()).await;
+
+        let spec = build_runtime_tool_specs(&isolated.context)
+            .into_iter()
+            .find(|tool| tool.name == "terminal__terminal_write_stdin")
+            .expect("terminal write stdin tool");
+        let AgentToolInputSpec::JsonSchema { schema } = spec.input_spec else {
+            panic!("terminal_write_stdin should use json schema");
+        };
+
+        for key in ["oneOf", "anyOf", "allOf"] {
+            assert!(!json_contains_key(&schema, key), "{schema:#}");
+        }
+    }
+
+    #[tokio::test]
+    async fn exposed_runtime_tool_schemas_do_not_use_one_of() {
+        for focused in [AppId::terminal(), AppId::coding()] {
+            let isolated = IsolatedTestContext::new(focused).await;
+            for spec in build_runtime_tool_specs(&isolated.context) {
+                match spec.input_spec {
+                    AgentToolInputSpec::JsonSchema { schema } => {
+                        assert!(
+                            !json_contains_key(&schema, "oneOf"),
+                            "tool={} schema={schema:#}",
+                            spec.name
+                        );
+                    }
+                    AgentToolInputSpec::FreeformGrammar {
+                        fallback_schema, ..
+                    } => {
+                        assert!(
+                            !json_contains_key(&fallback_schema, "oneOf"),
+                            "tool={} fallback_schema={fallback_schema:#}",
+                            spec.name
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]

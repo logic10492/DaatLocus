@@ -1,7 +1,9 @@
+use std::borrow::Cow;
+
 use async_trait::async_trait;
 use chrono::Local;
 use miette::{Result, miette};
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -42,13 +44,30 @@ pub struct TerminalWriteStdinArgs {
     pub max_chars: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalWaitMode {
     /// Return after new output arrives, the process exits, or the yield window expires.
     AnyOutput,
     /// Wait until the yield window expires or the process exits; do not stream intermediate output updates.
     Timeout,
+}
+
+impl JsonSchema for TerminalWaitMode {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "TerminalWaitMode".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "enum": ["any_output", "timeout"],
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
