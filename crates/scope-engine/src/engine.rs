@@ -152,286 +152,67 @@ fn open_existing_source_files_for_lsp(lsp: &dyn Analyzer, root: &Path, lsp_lang:
     }
 }
 
-pub fn dispatch(
-    req: &JsonRpcRequest,
-    project_root: Option<&Path>,
-    propagation_state: &Mutex<PropagationState>,
+pub fn open_project(
+    project_root: &Path,
+    current_project_root: Option<&Path>,
     lsp_analyzer: &Mutex<Option<Box<dyn Analyzer + Send>>>,
-) -> JsonRpcResponse {
-    match req.method.as_str() {
-        "open_project" => {
-            let params: OpenProjectRequest = match serde_json::from_value(req.params.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    return JsonRpcResponse::err(
-                        req.id.clone(),
-                        -32602,
-                        format!("Invalid params: {e}"),
-                    );
-                }
-            };
-
-            let root = Path::new(&params.project_root);
-            if project_root == Some(root) {
-                return JsonRpcResponse::ok(
-                    req.id.clone(),
-                    serde_json::json!({
-                        "status": "already_open",
-                        "project_root": params.project_root,
-                    }),
-                );
-            }
-
-            let detected_lsp_language = detect_project_lsp_language(root);
-            let Some(config) = detected_lsp_language.and_then(lsp_config_for_language) else {
-                if let Ok(mut lsp_guard) = lsp_analyzer.lock() {
-                    *lsp_guard = None;
-                }
-                return JsonRpcResponse::ok(
-                    req.id.clone(),
-                    serde_json::json!({
-                        "status": "opened",
-                        "project_root": params.project_root,
-                        "detected_lsp_language": detected_lsp_language,
-                        "lsp": "unsupported",
-                    }),
-                );
-            };
-            {
-                let mut lsp_guard = match lsp_analyzer.lock() {
-                    Ok(g) => g,
-                    Err(_) => return JsonRpcResponse::err(req.id.clone(), -32603, "lock poisoned"),
-                };
-                // Drop previous LSP analyzer — its Drop impl sends shutdown.
-                *lsp_guard = None;
-                let new_lsp = LspAnalyzer::new(root, config.as_ref());
-                *lsp_guard = Some(Box::new(new_lsp));
-            }
-
-            {
-                let lsp_guard = match lsp_analyzer.lock() {
-                    Ok(g) => g,
-                    Err(_) => return JsonRpcResponse::err(req.id.clone(), -32603, "lock poisoned"),
-                };
-                if let (Some(lsp), Some(lsp_lang)) = (&*lsp_guard, detected_lsp_language) {
-                    open_existing_source_files_for_lsp(lsp.as_ref(), root, lsp_lang);
-                }
-            }
-
-            JsonRpcResponse::ok(
-                req.id.clone(),
-                serde_json::json!({
-                    "status": "opened",
-                    "project_root": params.project_root,
-                    "detected_lsp_language": detected_lsp_language,
-                }),
-            )
-        }
-        "read_code" => {
-            let params: ReadCodeRequest = match serde_json::from_value(req.params.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    return JsonRpcResponse::err(
-                        req.id.clone(),
-                        -32602,
-                        format!("Invalid params: {e}"),
-                    );
-                }
-            };
-            handle_read_code(req, &params, project_root)
-        }
-        "search_code" => {
-            let params: SearchCodeRequest = match serde_json::from_value(req.params.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    return JsonRpcResponse::err(
-                        req.id.clone(),
-                        -32602,
-                        format!("Invalid params: {e}"),
-                    );
-                }
-            };
-            handle_search_code(req, &params, project_root)
-        }
-        "grep_code" => {
-            let params: GrepCodeRequest = match serde_json::from_value(req.params.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    return JsonRpcResponse::err(
-                        req.id.clone(),
-                        -32602,
-                        format!("Invalid params: {e}"),
-                    );
-                }
-            };
-            handle_grep_code(req, &params, project_root)
-        }
-        "glob_files" => {
-            let params: GlobFilesRequest = match serde_json::from_value(req.params.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    return JsonRpcResponse::err(
-                        req.id.clone(),
-                        -32602,
-                        format!("Invalid params: {e}"),
-                    );
-                }
-            };
-            handle_glob_files(req, &params, project_root)
-        }
-        "is_responsible_source" => {
-            let params: IsResponsibleSourceRequest =
-                match serde_json::from_value(req.params.clone()) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return JsonRpcResponse::err(
-                            req.id.clone(),
-                            -32602,
-                            format!("Invalid params: {e}"),
-                        );
-                    }
-                };
-            handle_is_responsible_source(req, &params, project_root)
-        }
-        "edit_code" => {
-            let params: EditCodeRequest = match serde_json::from_value(req.params.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    return JsonRpcResponse::err(
-                        req.id.clone(),
-                        -32602,
-                        format!("Invalid params: {e}"),
-                    );
-                }
-            };
-            handle_edit_code(req, &params, project_root, propagation_state, lsp_analyzer)
-        }
-        "ack_next_event" => {
-            let params: NextReviewRequest = if req.params.is_null() {
-                NextReviewRequest { limit: None }
-            } else {
-                match serde_json::from_value(req.params.clone()) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return JsonRpcResponse::err(
-                            req.id.clone(),
-                            -32602,
-                            format!("Invalid params: {e}"),
-                        );
-                    }
-                }
-            };
-            let limit = params
-                .limit
-                .unwrap_or(DEFAULT_REVIEW_LIMIT)
-                .clamp(1, MAX_REVIEW_LIMIT);
-            let mut state = match propagation_state.lock() {
-                Ok(s) => s,
-                Err(_) => return JsonRpcResponse::err(req.id.clone(), -32603, "lock poisoned"),
-            };
-            let reviews = state.next_reviews(limit);
-            let review = reviews.first().cloned();
-            let returned = reviews.len();
-            let remaining = state.pending_count();
-            JsonRpcResponse::ok(
-                req.id.clone(),
-                serde_json::to_value(NextReviewResponse {
-                    review,
-                    reviews,
-                    returned,
-                    remaining,
-                })
-                .unwrap(),
-            )
-        }
-        "get_config_hints" => handle_get_config_hints(req),
-        "get_usage" | "scope_usage" => JsonRpcResponse::ok(
-            req.id.clone(),
-            serde_json::to_value(crate::usage::usage_response()).unwrap(),
-        ),
-        _ => JsonRpcResponse::err(
-            req.id.clone(),
-            -32601,
-            format!("Method not found: {}", req.method),
-        ),
+) -> Result<OpenProjectResponse, String> {
+    if current_project_root == Some(project_root) {
+        return Ok(OpenProjectResponse {
+            status: "already_open".to_string(),
+            project_root: project_root.to_string_lossy().into_owned(),
+            detected_lsp_language: None,
+            lsp: None,
+        });
     }
+
+    let detected_lsp_language = detect_project_lsp_language(project_root);
+    let Some(config) = detected_lsp_language.and_then(lsp_config_for_language) else {
+        let mut lsp_guard = lsp_analyzer
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        *lsp_guard = None;
+        return Ok(OpenProjectResponse {
+            status: "opened".to_string(),
+            project_root: project_root.to_string_lossy().into_owned(),
+            detected_lsp_language: detected_lsp_language.map(str::to_string),
+            lsp: Some("unsupported".to_string()),
+        });
+    };
+
+    {
+        let mut lsp_guard = lsp_analyzer
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        *lsp_guard = None;
+        let new_lsp = LspAnalyzer::new(project_root, config.as_ref());
+        *lsp_guard = Some(Box::new(new_lsp));
+    }
+
+    {
+        let lsp_guard = lsp_analyzer
+            .lock()
+            .map_err(|_| "lock poisoned".to_string())?;
+        if let (Some(lsp), Some(lsp_lang)) = (&*lsp_guard, detected_lsp_language) {
+            open_existing_source_files_for_lsp(lsp.as_ref(), project_root, lsp_lang);
+        }
+    }
+
+    Ok(OpenProjectResponse {
+        status: "opened".to_string(),
+        project_root: project_root.to_string_lossy().into_owned(),
+        detected_lsp_language: detected_lsp_language.map(str::to_string),
+        lsp: None,
+    })
 }
 
-fn handle_search_code(
-    req: &JsonRpcRequest,
+pub fn search_code(
+    project_root: &Path,
     params: &SearchCodeRequest,
-    project_root: Option<&Path>,
-) -> JsonRpcResponse {
-    let project_root = match project_root {
-        Some(r) => r,
-        None => {
-            return JsonRpcResponse::err(
-                req.id.clone(),
-                -32000,
-                "No project open; call open_project first",
-            );
-        }
-    };
-
+) -> Result<SearchCodeResponse, String> {
     let limit = normalize_search_limit(params.limit);
-
-    let matches = match search_project(project_root, &params.query, None, None, limit) {
-        Ok(matches) => matches,
-        Err(e) => return JsonRpcResponse::err(req.id.clone(), -32001, e),
-    };
-
-    JsonRpcResponse::ok(
-        req.id.clone(),
-        serde_json::to_value(SearchCodeResponse { matches }).unwrap(),
-    )
-}
-
-fn handle_grep_code(
-    req: &JsonRpcRequest,
-    params: &GrepCodeRequest,
-    project_root: Option<&Path>,
-) -> JsonRpcResponse {
-    let project_root = match project_root {
-        Some(r) => r,
-        None => {
-            return JsonRpcResponse::err(
-                req.id.clone(),
-                -32000,
-                "No project open; call open_project first",
-            );
-        }
-    };
-
-    match grep_code(project_root, params) {
-        Ok(response) => {
-            JsonRpcResponse::ok(req.id.clone(), serde_json::to_value(response).unwrap())
-        }
-        Err(e) => JsonRpcResponse::err(req.id.clone(), -32001, e),
-    }
-}
-
-fn handle_glob_files(
-    req: &JsonRpcRequest,
-    params: &GlobFilesRequest,
-    project_root: Option<&Path>,
-) -> JsonRpcResponse {
-    let project_root = match project_root {
-        Some(r) => r,
-        None => {
-            return JsonRpcResponse::err(
-                req.id.clone(),
-                -32000,
-                "No project open; call open_project first",
-            );
-        }
-    };
-
-    match glob_files(project_root, params) {
-        Ok(response) => {
-            JsonRpcResponse::ok(req.id.clone(), serde_json::to_value(response).unwrap())
-        }
-        Err(e) => JsonRpcResponse::err(req.id.clone(), -32001, e),
-    }
+    let matches = search_project(project_root, &params.query, None, None, limit)?;
+    Ok(SearchCodeResponse { matches })
 }
 
 pub fn grep_code(
@@ -473,30 +254,6 @@ pub fn glob_files(
     files.truncate(DEFAULT_FILE_SEARCH_LIMIT);
     let files = files.into_iter().map(|(path, _)| path).collect::<Vec<_>>();
     Ok(GlobFilesResponse { files, truncated })
-}
-
-fn handle_is_responsible_source(
-    req: &JsonRpcRequest,
-    params: &IsResponsibleSourceRequest,
-    project_root: Option<&Path>,
-) -> JsonRpcResponse {
-    let project_root = match project_root {
-        Some(r) => r,
-        None => {
-            return JsonRpcResponse::err(
-                req.id.clone(),
-                -32000,
-                "No project open; call open_project first",
-            );
-        }
-    };
-
-    match is_responsible_source(project_root, params) {
-        Ok(response) => {
-            JsonRpcResponse::ok(req.id.clone(), serde_json::to_value(response).unwrap())
-        }
-        Err(e) => JsonRpcResponse::err(req.id.clone(), -32001, e),
-    }
 }
 
 pub fn is_responsible_source(
@@ -896,51 +653,18 @@ fn read_line_range(content: &str, start_line: usize, end_line: usize) -> String 
     snippet
 }
 
-fn handle_read_code(
-    req: &JsonRpcRequest,
+pub fn read_code(
+    project_root: &Path,
     params: &ReadCodeRequest,
-    project_root: Option<&Path>,
-) -> JsonRpcResponse {
-    let parsed = match selector::parse_selector(&params.selector) {
-        Ok(s) => s,
-        Err(e) => {
-            return JsonRpcResponse::err(req.id.clone(), -32602, format!("Bad selector: {e}"));
-        }
-    };
-
-    let project_root = match project_root {
-        Some(r) => r,
-        None => {
-            return JsonRpcResponse::err(
-                req.id.clone(),
-                -32000,
-                "No project open; call open_project first",
-            );
-        }
-    };
-
-    let (full_path, _ext) = match selector::resolve_file(&parsed, project_root) {
-        Ok(p) => p,
-        Err(e) => return JsonRpcResponse::err(req.id.clone(), -32001, e),
-    };
-
-    let file_content = match std::fs::read_to_string(&full_path) {
-        Ok(c) => c,
-        Err(e) => {
-            return JsonRpcResponse::err(
-                req.id.clone(),
-                -32001,
-                format!("Failed to read {}: {e}", full_path.display()),
-            );
-        }
-    };
-
+) -> Result<ReadCodeResponse, String> {
+    let parsed =
+        selector::parse_selector(&params.selector).map_err(|e| format!("Bad selector: {e}"))?;
+    let (full_path, _ext) = selector::resolve_file(&parsed, project_root)?;
+    let file_content = std::fs::read_to_string(&full_path)
+        .map_err(|e| format!("Failed to read {}: {e}", full_path.display()))?;
     let analyzer = TreeSitterAnalyzer::new();
     let resolved =
-        match resolve_read_selection(&analyzer, &full_path, project_root, &file_content, &parsed) {
-            Ok(resolved) => resolved,
-            Err(e) => return JsonRpcResponse::err(req.id.clone(), -32002, e),
-        };
+        resolve_read_selection(&analyzer, &full_path, project_root, &file_content, &parsed)?;
     let raw_content = resolved
         .content_override
         .clone()
@@ -949,14 +673,10 @@ fn handle_read_code(
     let path = relative_file_path(project_root, &full_path);
     let prefixed_content = prefix_lines_with_hash(&raw_content, resolved.start_line);
 
-    JsonRpcResponse::ok(
-        req.id.clone(),
-        serde_json::to_value(ReadCodeResponse {
-            path,
-            content: prefixed_content,
-        })
-        .unwrap(),
-    )
+    Ok(ReadCodeResponse {
+        path,
+        content: prefixed_content,
+    })
 }
 
 fn line_hash(line_content: &str) -> String {
@@ -984,24 +704,12 @@ fn prefix_lines_with_hash(content: &str, start_line: usize) -> String {
         }
 }
 
-fn handle_edit_code(
-    req: &JsonRpcRequest,
+pub fn edit_code(
+    project_root: &Path,
     params: &EditCodeRequest,
-    project_root: Option<&Path>,
     propagation_state: &Mutex<PropagationState>,
     lsp_analyzer: &Mutex<Option<Box<dyn Analyzer + Send>>>,
-) -> JsonRpcResponse {
-    let project_root = match project_root {
-        Some(r) => r,
-        None => {
-            return JsonRpcResponse::err(
-                req.id.clone(),
-                -32000,
-                "No project open; call open_project first",
-            );
-        }
-    };
-
+) -> Result<PropagationResponse, String> {
     match patch::edit_code_apply(&params.edits, project_root, lsp_analyzer) {
         Ok(results) => {
             if !results.is_empty()
@@ -1009,19 +717,15 @@ fn handle_edit_code(
             {
                 state.accumulate(results.clone());
             }
-            JsonRpcResponse::ok(
-                req.id.clone(),
-                serde_json::to_value(PropagationResponse {
-                    propagation_results: results,
-                })
-                .unwrap(),
-            )
+            Ok(PropagationResponse {
+                propagation_results: results,
+            })
         }
-        Err(e) => JsonRpcResponse::err(req.id.clone(), -32001, e),
+        Err(e) => Err(e),
     }
 }
 
-pub fn handle_get_config_hints(req: &JsonRpcRequest) -> JsonRpcResponse {
+pub fn config_hints() -> serde_json::Value {
     use crate::language::LanguageRegistry;
     use crate::lsp::{
         GoplsConfig, JdtlsConfig, LspServerConfig, PyrightConfig, RustAnalyzerConfig, TsJsConfig,
@@ -1080,17 +784,32 @@ pub fn handle_get_config_hints(req: &JsonRpcRequest) -> JsonRpcResponse {
         languages.push(lang_entry);
     }
 
-    JsonRpcResponse::ok(
-        req.id.clone(),
-        serde_json::json!({
-            "tree_sitter_languages": ts_langs,
-            "lsp_languages": languages,
-        }),
-    )
+    serde_json::json!({
+        "tree_sitter_languages": ts_langs,
+        "lsp_languages": languages,
+    })
 }
-/// Public convenience wrapper for `handle_get_config_hints`.
-pub fn dispatch_get_config_hints(req: &JsonRpcRequest) -> JsonRpcResponse {
-    handle_get_config_hints(req)
+
+pub fn ack_next_events(
+    propagation_state: &Mutex<PropagationState>,
+    limit: Option<usize>,
+) -> Result<NextReviewResponse, String> {
+    let limit = limit
+        .unwrap_or(DEFAULT_REVIEW_LIMIT)
+        .clamp(1, MAX_REVIEW_LIMIT);
+    let mut state = propagation_state
+        .lock()
+        .map_err(|_| "lock poisoned".to_string())?;
+    let reviews = state.next_reviews(limit);
+    let review = reviews.first().cloned();
+    let returned = reviews.len();
+    let remaining = state.pending_count();
+    Ok(NextReviewResponse {
+        review,
+        reviews,
+        returned,
+        remaining,
+    })
 }
 
 #[cfg(test)]
@@ -1107,54 +826,22 @@ mod tests {
             "[package]\nname = \"tmp\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "open_project".to_string(),
-            params: serde_json::json!({
-                "project_root": dir.path(),
-            }),
-        };
-        let propagation_state = Mutex::new(PropagationState::new());
         let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
 
-        let response = dispatch(&req, None, &propagation_state, &lsp_analyzer);
+        let response = open_project(dir.path(), None, &lsp_analyzer).unwrap();
 
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.unwrap();
-        assert_eq!(result["detected_lsp_language"], "rust");
-        assert!(result.get("language").is_none());
+        assert_eq!(response.detected_lsp_language.as_deref(), Some("rust"));
     }
 
     #[test]
     fn open_project_is_idempotent_for_current_project_root() {
         let dir = tempfile::tempdir().unwrap();
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "open_project".to_string(),
-            params: serde_json::json!({
-                "project_root": dir.path(),
-            }),
-        };
-        let propagation_state = Mutex::new(PropagationState::new());
         let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
 
-        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
+        let response = open_project(dir.path(), Some(dir.path()), &lsp_analyzer).unwrap();
 
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.unwrap();
-        assert_eq!(result["status"], "already_open");
-        assert!(result.get("language").is_none());
-        assert!(result.get("detected_lsp_language").is_none());
+        assert_eq!(response.status, "already_open");
+        assert_eq!(response.detected_lsp_language, None);
     }
 
     #[test]
@@ -1268,23 +955,15 @@ mod tests {
         )
         .unwrap();
 
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "search_code".to_string(),
-            params: serde_json::json!({"query": "needle", "limit": 2}),
-        };
-        let propagation_state = Mutex::new(PropagationState::new());
-        let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-
-        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.expect("search_code should return a result");
-        assert_eq!(result["matches"].as_array().unwrap().len(), 2);
+        let response = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                limit: Some(2),
+            },
+        )
+        .unwrap();
+        assert_eq!(response.matches.len(), 2);
     }
 
     #[test]
@@ -1296,23 +975,15 @@ mod tests {
         )
         .unwrap();
 
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "search_code".to_string(),
-            params: serde_json::json!({"query": "needle", "limit": 0}),
-        };
-        let propagation_state = Mutex::new(PropagationState::new());
-        let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-
-        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.expect("search_code should return a result");
-        assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+        let response = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                limit: Some(0),
+            },
+        )
+        .unwrap();
+        assert_eq!(response.matches.len(), 1);
     }
 
     #[test]
@@ -1321,25 +992,16 @@ mod tests {
         let source = "pub fn first() {\n    println!(\"first\");\n}\n\npub fn second() {\n    println!(\"second\");\n}\n";
         std::fs::write(dir.path().join("lib.rs"), source).unwrap();
 
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "read_code".to_string(),
-            params: serde_json::json!({"selector": "lib.rs::fn second"}),
-        };
-        let propagation_state = Mutex::new(PropagationState::new());
-        let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
+        let result = read_code(
+            dir.path(),
+            &ReadCodeRequest {
+                selector: "lib.rs::fn second".to_string(),
+            },
+        )
+        .expect("read_code should return a result");
 
-        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.expect("read_code should return a result");
-
-        assert_eq!(result["path"], "lib.rs");
-        let content = result["content"].as_str().unwrap();
+        assert_eq!(result.path, "lib.rs");
+        let content = result.content.as_str();
         assert!(
             content.contains("pub fn second()"),
             "should contain fn second, got: {content}"
@@ -1359,29 +1021,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let source = "pub fn first() {\n    println!(\"first\");\n}\n\npub fn second() {\n    println!(\"second\");\n}\n";
         std::fs::write(dir.path().join("lib.rs"), source).unwrap();
-        let propagation_state = Mutex::new(PropagationState::new());
-        let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
 
-        let range_req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "read_code".to_string(),
-            params: serde_json::json!({"selector": "lib.rs#L5-L7"}),
-        };
-        let response = dispatch(
-            &range_req,
-            Some(dir.path()),
-            &propagation_state,
-            &lsp_analyzer,
-        );
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.unwrap();
-        assert_eq!(result["path"], "lib.rs");
-        let content = result["content"].as_str().unwrap();
+        let result = read_code(
+            dir.path(),
+            &ReadCodeRequest {
+                selector: "lib.rs#L5-L7".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.path, "lib.rs");
+        let content = result.content.as_str();
         assert!(
             content.contains("pub fn second()"),
             "should contain fn second, got: {content}"
@@ -1391,62 +1040,34 @@ mod tests {
             "should not contain fn first"
         );
 
-        let enclosing_req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(2),
-            method: "read_code".to_string(),
-            params: serde_json::json!({"selector": "lib.rs#enclosing:L6"}),
-        };
-        let response = dispatch(
-            &enclosing_req,
-            Some(dir.path()),
-            &propagation_state,
-            &lsp_analyzer,
-        );
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.unwrap();
-        assert_eq!(result["path"], "lib.rs");
-        let content = result["content"].as_str().unwrap();
+        let result = read_code(
+            dir.path(),
+            &ReadCodeRequest {
+                selector: "lib.rs#enclosing:L6".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.path, "lib.rs");
+        let content = result.content.as_str();
         assert!(
             content.contains("pub fn second()"),
             "enclosing should contain fn second, got: {content}"
         );
 
-        let outline_req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(3),
-            method: "read_code".to_string(),
-            params: serde_json::json!({"selector": "lib.rs#outline"}),
-        };
-        let response = dispatch(
-            &outline_req,
-            Some(dir.path()),
-            &propagation_state,
-            &lsp_analyzer,
-        );
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.unwrap();
-        assert_eq!(result["path"], "lib.rs");
-        assert!(
-            result["content"]
-                .as_str()
-                .unwrap()
-                .contains("fn second #L5-L7")
-        );
+        let result = read_code(
+            dir.path(),
+            &ReadCodeRequest {
+                selector: "lib.rs#outline".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(result.path, "lib.rs");
+        assert!(result.content.contains("fn second #L5-L7"));
     }
 
     #[test]
     fn ack_next_event_can_return_a_limited_batch() {
         let propagation_state = Mutex::new(PropagationState::new());
-        let lsp_analyzer = Mutex::new(None);
         propagation_state.lock().unwrap().accumulate(vec![
             PropagationResult {
                 selector: "src/a.rs::fn foo".to_string(),
@@ -1476,45 +1097,23 @@ mod tests {
                 project_files: None,
             },
         ]);
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "ack_next_event".to_string(),
-            params: serde_json::json!({ "limit": 2 }),
-        };
 
-        let response = dispatch(&req, None, &propagation_state, &lsp_analyzer);
+        let result = ack_next_events(&propagation_state, Some(2)).unwrap();
 
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.unwrap();
-        assert_eq!(result["returned"], 2);
-        assert_eq!(result["remaining"], 1);
-        assert_eq!(result["reviews"].as_array().unwrap().len(), 2);
-        assert_eq!(result["review"]["modified_symbol"], "src/c.rs::fn baz");
+        assert_eq!(result.returned, 2);
+        assert_eq!(result.remaining, 1);
+        assert_eq!(result.reviews.len(), 2);
+        match result.review.unwrap() {
+            ReviewEvent::KnownReferences {
+                modified_symbol, ..
+            } => assert_eq!(modified_symbol, "src/c.rs::fn baz"),
+            _ => panic!("expected KnownReferences review"),
+        }
     }
 
     #[test]
-    fn scope_usage_is_available_over_dispatch() {
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "get_usage".to_string(),
-            params: serde_json::json!({}),
-        };
-        let propagation_state = Mutex::new(PropagationState::new());
-        let lsp_analyzer: Mutex<Option<Box<dyn Analyzer + Send>>> = Mutex::new(None);
-
-        let response = dispatch(&req, None, &propagation_state, &lsp_analyzer);
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result = response.result.unwrap();
+    fn scope_usage_is_available() {
+        let result = serde_json::to_value(crate::usage::usage_response()).unwrap();
         assert!(
             result["usage_markdown"]
                 .as_str()
@@ -1533,24 +1132,14 @@ mod tests {
     #[test]
     fn is_responsible_source_reports_scope_owned_source() {
         let dir = tempfile::tempdir().unwrap();
-        let propagation_state = Mutex::new(PropagationState::new());
-        let lsp_analyzer = Mutex::new(None);
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "is_responsible_source".to_string(),
-            params: serde_json::json!({ "path": "src/lib.rs" }),
-        };
 
-        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
-
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result: IsResponsibleSourceResponse =
-            serde_json::from_value(response.result.unwrap()).unwrap();
+        let result = is_responsible_source(
+            dir.path(),
+            &IsResponsibleSourceRequest {
+                path: "src/lib.rs".to_string(),
+            },
+        )
+        .unwrap();
         assert!(result.is_responsible);
         assert_eq!(result.path, "src/lib.rs");
         assert_eq!(result.extension.as_deref(), Some("rs"));
@@ -1560,24 +1149,14 @@ mod tests {
     #[test]
     fn is_responsible_source_reports_non_source_file() {
         let dir = tempfile::tempdir().unwrap();
-        let propagation_state = Mutex::new(PropagationState::new());
-        let lsp_analyzer = Mutex::new(None);
-        let req = JsonRpcRequest {
-            _jsonrpc: "2.0".to_string(),
-            id: serde_json::json!(1),
-            method: "is_responsible_source".to_string(),
-            params: serde_json::json!({ "path": "README.md" }),
-        };
 
-        let response = dispatch(&req, Some(dir.path()), &propagation_state, &lsp_analyzer);
-
-        assert!(
-            response.error.is_none(),
-            "unexpected error: {:?}",
-            response.error
-        );
-        let result: IsResponsibleSourceResponse =
-            serde_json::from_value(response.result.unwrap()).unwrap();
+        let result = is_responsible_source(
+            dir.path(),
+            &IsResponsibleSourceRequest {
+                path: "README.md".to_string(),
+            },
+        )
+        .unwrap();
         assert!(!result.is_responsible);
         assert_eq!(result.path, "README.md");
         assert_eq!(result.extension.as_deref(), Some("md"));

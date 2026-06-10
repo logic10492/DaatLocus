@@ -506,24 +506,8 @@ impl CodingApp {
 
         let root_instructions = load_instruction_documents_in_dir(&project_root)?;
         let root_instruction_fingerprint = project_instruction_fingerprint(&root_instructions);
-        let response = self.scope.open_project(project_root.clone());
-        if let Some(error) = response.error {
-            return Err(miette!(
-                "scope-engine open_project failed: {}",
-                error.message
-            ));
-        }
-
-        let config_hints_response = ScopeClient::get_config_hints();
-        if let Some(error) = config_hints_response.error {
-            return Err(miette!(
-                "scope-engine get_config_hints failed: {}",
-                error.message
-            ));
-        }
-        let config_hints = config_hints_response
-            .result
-            .unwrap_or(serde_json::Value::Null);
+        let response = self.scope.open_project(project_root.clone())?;
+        let config_hints = ScopeClient::get_config_hints();
         let config_hint_summary = CodingConfigHintSummary::from_hints(&config_hints);
 
         self.project_root = Some(project_root.clone());
@@ -564,7 +548,7 @@ impl CodingApp {
             payload: json!({
                 "status": "opened",
                 "project_root": project_root,
-                "scope_response": response.result,
+                "scope_response": response,
                 "config_hints": config_hints,
                 "root_project_instruction_fingerprint": root_instruction_fingerprint,
                 "root_project_instructions": root_instructions.iter().map(instruction_payload).collect::<Vec<_>>(),
