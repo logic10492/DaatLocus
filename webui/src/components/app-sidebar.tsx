@@ -154,9 +154,6 @@ function AppSidebarBody({
       <SidebarHeader className="h-14 flex-row items-center justify-between border-b border-sidebar-border px-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold">Daat Locus</div>
-          <div className="truncate text-xs text-sidebar-foreground/65">
-            {sessions.length} session{sessions.length === 1 ? "" : "s"}
-          </div>
         </div>
       </SidebarHeader>
 
