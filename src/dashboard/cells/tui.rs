@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use ratatui::{
     buffer::Buffer,
@@ -15,8 +15,9 @@ use super::{
     apps::{AppAttentionActivityCell, BrowserActivityCell, LiveBrowserActivityCell},
     common::{
         AssistantActivityCell, CodingEditActivityCell, CodingOpenProjectActivityCell,
-        CodingReviewActivityCell, CodingToolGroupActivityCell, ErrorActivityCell,
-        GenericAppActivityCell, TerminalWaitActivityCell, ThinkingActivityCell, UserActivityCell,
+        CodingReviewActivityCell, CodingToolCallActivityCell, CodingToolGroupActivityCell,
+        ErrorActivityCell, GenericAppActivityCell, TerminalWaitActivityCell, ThinkingActivityCell,
+        UserActivityCell,
     },
     exec::{ExecResultActivityCell, LiveExecActivityCell},
     highlight::{DiffScopeBackgrounds, diff_scope_backgrounds, highlight_patch_lines},
@@ -556,47 +557,16 @@ fn render_coding_tool_group_cell_lines(cell: &CodingToolGroupActivityCell) -> Ve
         ),
     ])];
 
-    let mut action_counts = BTreeMap::new();
-    for call in &cell.calls {
-        *action_counts
-            .entry(call.tool_name.as_str())
-            .or_insert(0usize) += 1;
-    }
-    let action_summary = action_counts
-        .iter()
-        .map(|(action, count)| {
-            if *count == 1 {
-                (*action).to_string()
-            } else {
-                format!("{action}×{count}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" · ");
-    if !action_summary.is_empty() {
-        lines.push(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(action_summary, Style::default().fg(Color::DarkGray)),
-        ]));
-    }
-
     for (index, call) in cell.calls.iter().take(12).enumerate() {
         let branch = if index == 0 { "└ " } else { "  " };
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(branch, Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{} ", call.tool_name),
-                Style::default().fg(Color::LightCyan),
+                coding_tool_call_display(call),
+                Style::default().fg(Color::Gray),
             ),
-            Span::styled(call.summary.clone(), Style::default().fg(Color::Gray)),
         ]));
-        for detail in call.detail_lines.iter().take(2) {
-            lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(detail.clone(), Style::default().fg(Color::DarkGray)),
-            ]));
-        }
     }
 
     if cell.calls.len() > 12 {
@@ -610,6 +580,59 @@ fn render_coding_tool_group_cell_lines(cell: &CodingToolGroupActivityCell) -> Ve
     }
 
     lines
+}
+
+fn coding_tool_call_display(call: &CodingToolCallActivityCell) -> String {
+    let tool_name = call.tool_name.trim();
+    let summary = call.summary.trim();
+    match tool_name {
+        "Read" => format!("Read {}", compact_coding_summary_path(summary)),
+        "Search" => format_coding_search_summary(summary),
+        _ if summary.is_empty() => tool_name.to_string(),
+        _ => format!("{tool_name} {summary}"),
+    }
+}
+
+fn format_coding_search_summary(summary: &str) -> String {
+    let (query_part, path) = summary
+        .rsplit_once(" in ")
+        .map(|(query, path)| (query, Some(path)))
+        .unwrap_or((summary, None));
+    let query = strip_coding_result_count(query_part);
+    match path {
+        Some(path) => format!("Search {} in {}", query, compact_coding_summary_path(path)),
+        None => format!("Search {query}"),
+    }
+}
+
+fn strip_coding_result_count(summary: &str) -> &str {
+    summary
+        .rsplit_once(" — ")
+        .map(|(query, _)| query.trim())
+        .unwrap_or_else(|| summary.trim())
+}
+
+fn compact_coding_summary_path(summary: &str) -> String {
+    let target = summary
+        .split_once(" -> ")
+        .map(|(target, _)| target)
+        .unwrap_or(summary)
+        .trim();
+    let path = target
+        .split_once(":L")
+        .map(|(path, _)| path)
+        .unwrap_or(target);
+    let path = path
+        .split_once('#')
+        .map(|(path, _)| path)
+        .unwrap_or(path)
+        .trim();
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+        .to_string()
 }
 
 fn render_coding_edit_cell_lines(cell: &CodingEditActivityCell) -> Vec<Line<'static>> {
@@ -1684,6 +1707,64 @@ That's it.";
                 .skip(1)
                 .all(|line| line_display_width(line) <= 34),
             "wide-unicode thinking lines should fit the requested terminal width: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn coding_tool_group_renders_codex_style_exploration_lines() {
+        let cell = CodingToolGroupActivityCell {
+            stable_id: "coding-tools-dashboard".to_string(),
+            title: "Explored".to_string(),
+            calls: vec![
+                CodingToolCallActivityCell {
+                    tool_name: "Read".to_string(),
+                    summary: "src/dashboard/mod.rs:L1268+83".to_string(),
+                    detail_lines: vec!["83 lines".to_string()],
+                    detail_title: None,
+                },
+                CodingToolCallActivityCell {
+                    tool_name: "Read".to_string(),
+                    summary: "src/dashboard/mod.rs:L286+25".to_string(),
+                    detail_lines: vec!["25 lines".to_string()],
+                    detail_title: None,
+                },
+                CodingToolCallActivityCell {
+                    tool_name: "Search".to_string(),
+                    summary: "push_command_input_display_text|command_input_display_text|display_text — 3 targets in src/dashboard/mod.rs".to_string(),
+                    detail_lines: Vec::new(),
+                    detail_title: None,
+                },
+                CodingToolCallActivityCell {
+                    tool_name: "Read".to_string(),
+                    summary: "src/dashboard/mod.rs".to_string(),
+                    detail_lines: Vec::new(),
+                    detail_title: None,
+                },
+            ],
+        };
+
+        let rendered = render_coding_tool_group_cell_lines(&cell)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "◎  Explored",
+                "  └ Read mod.rs",
+                "    Read mod.rs",
+                "    Search push_command_input_display_text|command_input_display_text|display_text in mod.rs",
+                "    Read mod.rs",
+            ]
+        );
+        assert!(
+            rendered.iter().all(|line| !line.contains("Read×")),
+            "coding exploration should not render an aggregate action count: {rendered:?}"
+        );
+        assert!(
+            rendered.iter().all(|line| !line.contains("lines")),
+            "coding exploration should not render read line-count details: {rendered:?}"
         );
     }
 

@@ -944,7 +944,7 @@ impl App for CodingApp {
                     model_content: Some(model_content),
                     ui_event: self.coding_tool_group_event(
                         "Read",
-                        coding_target_summary(&summary_target),
+                        coding_target_summary(&result.path),
                         vec![format!(
                             "{} lines",
                             coding_count_label(result.content.lines().count(), "line", "lines")
