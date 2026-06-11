@@ -655,15 +655,110 @@ It is an `App` because:
 Coding app must render its key state into `AppStateRender` so that:
 
 1. **Turn re-entry sees critical state immediately** — after context compression or turn interruption, the model can read the current project, LSP status, and pending propagation events from `<preturn_context>` or `<afterclaim_context>` without relying on conversation history.
-2. **Tool return values carry immediate feedback** — `edit_code`, `search_code`, and `read_code` return `PropagationResult` lists in their tool result so the model sees impact scope mid-turn.
+2. **Tool return values carry immediate feedback** — `search_code` returns stable read handles, `read_code` returns hash-anchored source lines, and `edit_code` returns propagation results so the model sees impact scope mid-turn.
 3. **Notice is NOT for propagation review** — Coding app uses `notice_reason()` only for background events like "LSP server crashed" or "project index ready". Propagation review is handled through tool return values and state rendering, not through notice-triggered turn interrupts.
 
 Operational constraints:
 
-- Coding tools (`read_code`, `edit_code`, `search_code`, `find_references`) must go through the Coding app, requiring `focus_app("coding")` first.
+- Coding tools (`search_code`, `read_code`, `edit_code`, and review tools) must go through the Coding app, requiring `focus_app("coding")` first.
 - `apply_patch` is a raw patch runtime tool, not a semantic code editing primitive. When Coding is focused, use Coding tools for SCOPE-owned source files; raw patches are reserved for non-source files or cases outside SCOPE responsibility.
 - Coding app `render_state()` must include: project_root, open_languages, lsp_status, propagation_pending_count, and up to N recent propagation events.
 - LSP process lifecycle (start, crash recovery, shutdown) belongs to Coding app internals, not to tool return values.
+
+### Coding Search / Read / Edit Protocol
+
+The Coding tool protocol must not require the model to write SCOPE positioning
+syntax. Canonical target labels remain an internal and display-level positioning
+format, but model operations should use stable handles produced by code.
+
+`search_code` is the model-visible search primitive. It replaces separate
+model-visible `grep` and `glob` tools.
+
+Search input is content-oriented, with optional narrowing fields such as path,
+include pattern, and limit. Search output must be a compact list of stable read
+handles plus display labels:
+
+```text
+code::search("run_tui_dashboard")
+-> 1268#k7Qp|src/dashboard/mod.rs::fn run_tui_dashboard #L1268-L1320
+-> 286#b91Z|src/dashboard/mod.rs::trait DashboardHistoryLoader #L286-L302
+-> 1#a0F2|src/dashboard/mod.rs#L1-L24
+```
+
+Rules:
+
+- The handle format is `start_line#hash4`, for example `1268#k7Qp`.
+- The handle is a read capability for a canonical target, not a content
+  fingerprint.
+- The hash input is only the canonical target label, such as
+  `src/dashboard/mod.rs::fn run_tui_dashboard #L1268-L1320` or
+  `src/dashboard/mod.rs#L1-L24`.
+- The handle must not include the target body, search query, session salt, file
+  mtime, read timestamp, line hashes, or any other freshness material.
+- The line number is part of handle identity. Do not add salted collision
+  fallback, random suffixes, or automatic hash extension logic.
+- The same canonical target in the same project must produce the same handle.
+- Search results inside an AST symbol should point at that canonical symbol
+  target label.
+- Search results outside an AST symbol, such as imports or top-level statements,
+  should point at a small canonical line-range target.
+- Multiple matches inside the same target should be deduplicated before
+  rendering.
+- The display label is for human/model reading and for copying the path into
+  `edit_code`; it is not syntax the model is expected to author.
+
+`read_code` reads a handle or an explicit path range. Reading by handle is the
+normal path:
+
+```text
+code::read("1268#k7Qp")
+-> 1268#7a|fn run_tui_dashboard(...) {
+   1269#c1|    ...
+```
+
+Path-range read remains as a fallback for imports, top-level code, search misses,
+and user-specified locations:
+
+```text
+code::read("src/dashboard/mod.rs", 1, 24)
+-> 1#a8|use std::collections::HashMap;
+   2#3c|use std::time::Duration;
+```
+
+Rules:
+
+- `read_code` output should not repeat the read handle, canonical target label,
+  or path when the model already obtained them from search.
+- `read_code` output lines use the existing `line#hash2|source line` format.
+- Line hashes stay short. They are stale-edit guards, not identity handles.
+- Read-handle freshness and edit freshness are separate. Search handles locate
+  targets; line hashes guard edits against stale source.
+- Avoid JSON Schema `oneOf`/`anyOf` for read input. If the tool accepts both
+  handle and path-range modes, expose one flat object schema and validate the
+  allowed field combinations in code.
+
+`edit_code` keeps its current API and semantics. It must not be changed to
+accept read handles:
+
+```text
+code::edit({
+  edits: [{
+    path: "src/dashboard/mod.rs",
+    op: "replace",
+    start: "1268#7a",
+    end: "1320#d4",
+    content: "..."
+  }]
+})
+```
+
+The model copies `path` from the search display label and copies `start`/`end`
+line anchors from `read_code`. Existing replace/append/prepend semantics, line
+hash verification, parse validation, and propagation analysis remain unchanged.
+
+The read-handle registry belongs to the Coding session state, not to global
+state. It is cleared when the project changes and is not persisted as a
+long-term identity database.
 
 ### App Composition
 
@@ -671,7 +766,7 @@ An app may declare that it *contains* other apps, making their tools available w
 
 When `Coding` is focused, the tool scope includes:
 
-- Coding's own tools: `read_code`, `edit_code`, `search_code`, `find_references`
+- Coding's own tools: `search_code`, `read_code`, `edit_code`, review tools
 - Terminal's delegated tools: `terminal_exec`, `terminal_write_stdin`, `terminal_terminate`
 - Browser's tools: **not** available unless the model explicitly focuses Browser
 
@@ -683,21 +778,20 @@ Rationale:
 - Forcing `focus_app("terminal")` back-and-forth would be an unnecessary interruption.
 - Composition preserves the attention model: `focus_app("coding")` means "I am in coding mode," and all tools needed for that mode are available.
 
-### SCOPE Capability Gap and Raw Patch Boundary
+### SCOPE Current Boundary and Raw Patch Boundary
 
-SCOPE (scope-engine) provides semantic code operations, but its modification capability is **not complete**:
+SCOPE (scope-engine) provides semantic code reading, searching, hash-anchored
+editing, and propagation review. Do not document unimplemented refactoring
+features as expected model-facing capabilities.
 
-| Capability | SCOPE Status | Gap |
+| Capability | SCOPE Status | Boundary |
 |---|---|---|
-| Symbol location | ✅ tree-sitter `find_containing_symbol` | — |
-| Read code | ✅ `read_code` (selector-based) | — |
-| Search code | ✅ `search_code` (ripgrep + symbol) | — |
-| Edit code | ⚠️ `edit_code` (hash-anchored) | Line-hash anchored Replace/Append/Prepend; no semantic refactoring |
-| Rename | ❌ | Not implemented |
-| Extract/inline | ❌ | Not implemented |
-| File-level structure | ⚠️ | Can edit explicit ranges, but no semantic import management or move-file refactoring |
-| New files | ⚠️ | Use raw file tools or explicit supported creation paths; SCOPE has no template support |
-| Config files | ❌ | SCOPE does not understand .toml/.yaml/.json config |
+| Target discovery | ✅ `search_code` | Content search returns stable read handles plus display labels; the model must not author target syntax. |
+| Read code | ✅ `read_code` | Reads a search handle or explicit path range and returns only hash-anchored source lines. |
+| Edit code | ✅ `edit_code` | Applies explicit Replace/Append/Prepend edits using `path` plus line-hash anchors. |
+| Propagation review | ✅ review tools | Edit impact is surfaced through propagation results and review events. |
+| New source files | ⚠️ explicit supported creation paths | Use supported creation/edit paths; SCOPE has no template system. |
+| Non-source/config files | Outside SCOPE | Use raw file tools for `.toml`, `.yaml`, `.md`, `.json`, `.sh`, and other non-source files. |
 
 **Raw patch boundary for `apply_patch`:**
 
