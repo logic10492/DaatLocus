@@ -915,6 +915,7 @@ mod tests {
             ];
             let apps = AppManager::new(Some(focused), apps).await.unwrap();
             let context = Context {
+                session_id: None,
                 llm: Box::new(UnusedLlm),
                 judge_llm: Box::new(UnusedLlm),
                 efficient_llm: Box::new(UnusedLlm),

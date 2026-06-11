@@ -175,6 +175,7 @@ pub(crate) async fn run_session_serve(
     let apps = AppManager::new(None, runtime_apps.apps).await?;
     let openskills = load_openskills_for_runtime(&execution_cwd);
     let mut context = Context {
+        session_id: Some(session_id.as_str().to_string()),
         llm: client,
         judge_llm: judge_client,
         efficient_llm: efficient_client,

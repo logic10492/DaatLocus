@@ -45,6 +45,9 @@ const CODEX_RESPONSES_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const CODEX_CLIENT_VERSION: &str = "0.125.0";
 const CODEX_CLIENT_VERSION_OVERRIDE_ENV: &str = "CODEX_CLIENT_VERSION_OVERRIDE";
 const CODEX_ORIGINATOR: &str = "codex_cli_rs";
+const CODEX_SESSION_ID_HEADER: &str = "session-id";
+const CODEX_THREAD_ID_HEADER: &str = "thread-id";
+const CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 const ACCESS_TOKEN_REFRESH_SKEW_MS: i64 = 60_000;
 
 type RefreshLockMap = HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>;
@@ -79,6 +82,13 @@ struct CodexResponsesClient {
     /// Whether this model accepts image/vision input. Derived from config
     /// or catalog heuristic; can be set to `false` at runtime on error.
     supports_vision: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CodexRequestIdentity {
+    session_id: String,
+    thread_id: String,
+    window_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -268,6 +278,7 @@ impl CodexResponsesClient {
         &self,
         payload: &Value,
         request_context: &[String],
+        request_identity: Option<&CodexRequestIdentity>,
     ) -> Result<reqwest::Response> {
         const MAX_429_RETRIES: usize = 4;
         const MAX_5XX_RETRIES: usize = 3;
@@ -277,24 +288,27 @@ impl CodexResponsesClient {
         let mut transient_attempt = 0usize;
         loop {
             self.wait_for_request_slot(request_context).await;
-            let response = self
+            let mut request = self
                 .client
                 .post(&url)
                 .bearer_auth(&self.api_key)
                 .headers(self.extra_headers.clone())
                 .header("version", &self.client_version)
-                .header("originator", CODEX_ORIGINATOR)
-                .json(payload)
-                .send()
-                .await
-                .map_err(|err| {
-                    format_request_error(
-                        "Codex Responses request failed",
-                        &url,
-                        request_context,
-                        &err,
-                    )
-                })?;
+                .header("originator", CODEX_ORIGINATOR);
+            if let Some(identity) = request_identity {
+                request = request
+                    .header(CODEX_SESSION_ID_HEADER, &identity.session_id)
+                    .header(CODEX_THREAD_ID_HEADER, &identity.thread_id)
+                    .header(CODEX_WINDOW_ID_HEADER, &identity.window_id);
+            }
+            let response = request.json(payload).send().await.map_err(|err| {
+                format_request_error(
+                    "Codex Responses request failed",
+                    &url,
+                    request_context,
+                    &err,
+                )
+            })?;
 
             if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 let retry_after = response
@@ -377,9 +391,11 @@ impl CodexResponsesClient {
             .into());
         }
         let request_context = summarize_prompt_request(&request, Some(&budget));
-        let payload = build_prompt_responses_payload(self, request, output_schema);
+        let request_identity = codex_request_identity(context);
+        let payload =
+            build_prompt_responses_payload(self, request, output_schema, request_identity.as_ref());
         let response = self
-            .post_responses_with_retry(&payload, &request_context)
+            .post_responses_with_retry(&payload, &request_context, request_identity.as_ref())
             .await?;
         let status = response.status();
         if !status.is_success() {
@@ -442,9 +458,15 @@ impl CodexResponsesClient {
         let request_context = summarize_agent_turn_request(&request, Some(&budget));
         use std::sync::atomic::Ordering;
         let strip_images = !self.supports_vision.load(Ordering::Relaxed);
-        let payload = build_agent_responses_payload(self, request.clone(), strip_images);
+        let request_identity = codex_request_identity(context);
+        let payload = build_agent_responses_payload(
+            self,
+            request.clone(),
+            strip_images,
+            request_identity.as_ref(),
+        );
         let response = self
-            .post_responses_with_retry(&payload, &request_context)
+            .post_responses_with_retry(&payload, &request_context, request_identity.as_ref())
             .await?;
         let status = response.status();
         if !status.is_success() {
@@ -472,10 +494,18 @@ impl CodexResponsesClient {
                     "Codex Responses rejected image input; retrying agent turn without images\n{}",
                     request_context.join("\n")
                 );
-                let payload =
-                    build_agent_responses_payload(self, request, /*strip_images=*/ true);
+                let payload = build_agent_responses_payload(
+                    self,
+                    request,
+                    /*strip_images=*/ true,
+                    request_identity.as_ref(),
+                );
                 let response = self
-                    .post_responses_with_retry(&payload, &request_context)
+                    .post_responses_with_retry(
+                        &payload,
+                        &request_context,
+                        request_identity.as_ref(),
+                    )
                     .await?;
                 let status = response.status();
                 if status.is_success() {
@@ -795,12 +825,20 @@ fn build_prompt_responses_payload(
     client: &CodexResponsesClient,
     request: PromptRequest,
     output_schema: Value,
+    request_identity: Option<&CodexRequestIdentity>,
 ) -> Value {
     let messages = request.all_messages();
     // Prompt requests are structured output calls; pass strip_images=false as
     // prompts don't carry user-uploaded image attachments.
     let (instructions, input) = history_messages_to_responses_parts(messages, false);
-    let mut payload = base_responses_payload(client, instructions, input, Vec::new());
+    let mut payload = base_responses_payload(
+        client,
+        instructions,
+        input,
+        Vec::new(),
+        request_identity,
+        "prompt",
+    );
     payload["text"] = json!({
         "format": {
             "type": "json_schema",
@@ -816,6 +854,7 @@ fn build_agent_responses_payload(
     client: &CodexResponsesClient,
     request: AgentTurnRequest,
     strip_images: bool,
+    request_identity: Option<&CodexRequestIdentity>,
 ) -> Value {
     let (instructions, input) = agent_messages_to_responses_parts(request.messages, strip_images);
     let tools = request
@@ -823,7 +862,14 @@ fn build_agent_responses_payload(
         .into_iter()
         .map(agent_tool_to_responses_tool)
         .collect::<Vec<_>>();
-    base_responses_payload(client, instructions, input, tools)
+    base_responses_payload(
+        client,
+        instructions,
+        input,
+        tools,
+        request_identity,
+        "agent",
+    )
 }
 
 fn base_responses_payload(
@@ -831,6 +877,8 @@ fn base_responses_payload(
     instructions: String,
     input: Vec<Value>,
     tools: Vec<Value>,
+    request_identity: Option<&CodexRequestIdentity>,
+    request_kind: &str,
 ) -> Value {
     let mut payload = json!({
         "model": client.model,
@@ -842,19 +890,33 @@ fn base_responses_payload(
         "store": false,
         "stream": true,
         "include": [],
-        "prompt_cache_key": prompt_cache_key(client),
         "client_metadata": {
             "x-codex-installation-id": client.installation_id,
         },
     });
+    if let Some(identity) = request_identity {
+        payload["prompt_cache_key"] = json!(prompt_cache_key(identity, request_kind));
+        payload["client_metadata"][CODEX_WINDOW_ID_HEADER] = json!(identity.window_id);
+    }
     if let Some(budget) = client.thinking_budget.as_deref() {
         payload["reasoning"] = json!({ "effort": codex_reasoning_effort(budget) });
     }
     payload
 }
 
-fn prompt_cache_key(client: &CodexResponsesClient) -> String {
-    format!("daat-locus-{}", client.installation_id)
+fn codex_request_identity(context: &Context) -> Option<CodexRequestIdentity> {
+    context
+        .session_id
+        .as_deref()
+        .map(|session_id| CodexRequestIdentity {
+            session_id: session_id.to_string(),
+            thread_id: session_id.to_string(),
+            window_id: format!("{session_id}:0"),
+        })
+}
+
+fn prompt_cache_key(identity: &CodexRequestIdentity, request_kind: &str) -> String {
+    format!("daat-locus:{}:{request_kind}", identity.session_id)
 }
 
 fn history_messages_to_responses_parts(
@@ -1552,6 +1614,14 @@ mod tests {
         )
     }
 
+    fn test_identity() -> CodexRequestIdentity {
+        CodexRequestIdentity {
+            session_id: "session-test".to_string(),
+            thread_id: "session-test".to_string(),
+            window_id: "session-test:0".to_string(),
+        }
+    }
+
     #[test]
     fn codex_thinking_budget_max_maps_to_xhigh() {
         let client = CodexResponsesClient::new(
@@ -1564,7 +1634,14 @@ mod tests {
             },
         );
 
-        let payload = base_responses_payload(&client, "instructions".to_string(), vec![], vec![]);
+        let payload = base_responses_payload(
+            &client,
+            "instructions".to_string(),
+            vec![],
+            vec![],
+            None,
+            "agent",
+        );
 
         assert_eq!(payload["reasoning"]["effort"], "xhigh");
     }
@@ -1642,7 +1719,7 @@ mod tests {
             ],
         };
 
-        let payload = build_agent_responses_payload(&client, request, false);
+        let payload = build_agent_responses_payload(&client, request, false, None);
 
         assert_eq!(payload["instructions"], "base instructions");
         assert_eq!(payload["input"][1]["type"], "function_call");
@@ -1668,26 +1745,47 @@ mod tests {
     }
 
     #[test]
-    fn agent_payload_prompt_cache_key_is_stable_for_client() {
+    fn agent_payload_prompt_cache_key_is_session_scoped() {
+        let client = test_client();
+        let request = AgentTurnRequest {
+            messages: vec![AgentMessage::system("base"), AgentMessage::user("work")],
+            tools: Vec::new(),
+        };
+        let identity = test_identity();
+        let cache_key = "daat-locus:session-test:agent";
+
+        let first = build_agent_responses_payload(&client, request.clone(), false, Some(&identity));
+        let second = build_agent_responses_payload(&client, request, false, Some(&identity));
+
+        assert_eq!(first["prompt_cache_key"], second["prompt_cache_key"]);
+        assert_eq!(first["prompt_cache_key"], cache_key);
+        assert_eq!(
+            first["client_metadata"][CODEX_WINDOW_ID_HEADER].as_str(),
+            Some(identity.window_id.as_str())
+        );
+        assert_eq!(
+            first["client_metadata"]["x-codex-installation-id"].as_str(),
+            Some(client.installation_id.as_str())
+        );
+    }
+
+    #[test]
+    fn agent_payload_omits_prompt_cache_key_without_session_scope() {
         let client = test_client();
         let request = AgentTurnRequest {
             messages: vec![AgentMessage::system("base"), AgentMessage::user("work")],
             tools: Vec::new(),
         };
 
-        let first = build_agent_responses_payload(&client, request.clone(), false);
-        let second = build_agent_responses_payload(&client, request, false);
+        let payload = build_agent_responses_payload(&client, request, false, None);
 
-        assert_eq!(first["prompt_cache_key"], second["prompt_cache_key"]);
-        assert_eq!(
-            first["prompt_cache_key"],
-            format!("daat-locus-{}", client.installation_id)
-        );
+        assert!(payload.get("prompt_cache_key").is_none());
     }
 
     #[test]
     fn agent_payload_keeps_previous_turn_input_as_next_prefix() {
         let client = test_client();
+        let identity = test_identity();
         let tools = vec![crate::reasoning::runtime::AgentToolSpec {
             name: "terminal_exec".to_string(),
             description: "Run a command".to_string(),
@@ -1731,6 +1829,7 @@ mod tests {
                 tools: tools.clone(),
             },
             false,
+            Some(&identity),
         );
         let second = build_agent_responses_payload(
             &client,
@@ -1739,6 +1838,7 @@ mod tests {
                 tools,
             },
             false,
+            Some(&identity),
         );
 
         let first_input = first["input"].as_array().expect("first input");
@@ -1772,7 +1872,7 @@ mod tests {
             tools: vec![],
         };
 
-        let payload = build_agent_responses_payload(&client, request, false);
+        let payload = build_agent_responses_payload(&client, request, false, None);
 
         assert_eq!(payload["input"][0]["role"], "user");
         assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
@@ -1811,7 +1911,7 @@ mod tests {
             }],
         };
 
-        let payload = build_agent_responses_payload(&client, request, false);
+        let payload = build_agent_responses_payload(&client, request, false, None);
 
         assert_eq!(payload["tools"][0]["type"], "custom");
         assert_eq!(payload["tools"][0]["format"]["type"], "grammar");

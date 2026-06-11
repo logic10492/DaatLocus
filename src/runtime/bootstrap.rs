@@ -175,6 +175,7 @@ pub(crate) async fn build_eval_context_with_compiled(
     let (daemon_control_tx, _daemon_control_rx) = tokio::sync::mpsc::unbounded_channel();
 
     Context {
+        session_id: None,
         llm: client,
         judge_llm: judge_client,
         efficient_llm: efficient_client,
