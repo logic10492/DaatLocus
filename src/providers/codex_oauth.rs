@@ -48,6 +48,9 @@ const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 const CODEX_SESSION_ID_HEADER: &str = "session-id";
 const CODEX_THREAD_ID_HEADER: &str = "thread-id";
 const CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
+const CODEX_HTTP_POOL_IDLE_TIMEOUT_SECS: u64 = 300;
+const CODEX_HTTP_POOL_MAX_IDLE_PER_HOST: usize = 4;
+const CODEX_HTTP_TCP_KEEPALIVE_SECS: u64 = 60;
 const ACCESS_TOKEN_REFRESH_SKEW_MS: i64 = 60_000;
 
 type RefreshLockMap = HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>;
@@ -159,8 +162,7 @@ impl CodexResponsesClient {
         let base_url = crate::config::normalize_provider_base_url(base_url);
         let request_timeout = Duration::from_secs(model_config.request_timeout_secs());
         let stream_idle_timeout = Duration::from_secs(model_config.stream_idle_timeout_secs());
-        let client = reqwest::Client::builder()
-            .timeout(request_timeout)
+        let client = codex_http_client_builder(request_timeout)
             .build()
             .expect("failed to build Codex Responses http client");
         let context_window_tokens = model_config.context_window_tokens();
@@ -725,6 +727,14 @@ impl CodexResponsesClient {
     }
 }
 
+fn codex_http_client_builder(timeout: Duration) -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .pool_idle_timeout(Duration::from_secs(CODEX_HTTP_POOL_IDLE_TIMEOUT_SECS))
+        .pool_max_idle_per_host(CODEX_HTTP_POOL_MAX_IDLE_PER_HOST)
+        .tcp_keepalive(Duration::from_secs(CODEX_HTTP_TCP_KEEPALIVE_SECS))
+}
+
 impl CodexOAuthClient {
     pub(crate) fn new(
         provider_name: &str,
@@ -733,8 +743,7 @@ impl CodexOAuthClient {
         model_config: &ModelConfig,
     ) -> Self {
         let auth_file = codex_oauth_auth_file(provider_name, auth_file);
-        let auth_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
+        let auth_client = codex_http_client_builder(Duration::from_secs(15))
             .build()
             .expect("failed to build OpenAI Codex auth http client");
         let base_url = base_url.unwrap_or(CODEX_RESPONSES_BASE_URL);
