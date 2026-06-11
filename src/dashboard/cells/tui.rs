@@ -28,6 +28,8 @@ use super::{
 use crate::dashboard::renderable::{FlexRenderable, Renderable, ViewportCulledColumn};
 use crate::tool_ui::{PatchDiffLineKind, PatchDiffLineUiData, PatchFileUiData, glyph};
 
+const ACTIVITY_TITLE_GAP: &str = " ";
+
 // ---------------------------------------------------------------------------
 // Viewport-culled rendering
 // ---------------------------------------------------------------------------
@@ -341,7 +343,7 @@ fn render_assistant_cell_lines(cell: &AssistantActivityCell) -> Vec<Line<'static
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  "),
+            Span::raw(ACTIVITY_TITLE_GAP),
             Span::styled(
                 cell.title.clone(),
                 Style::default()
@@ -484,7 +486,7 @@ fn render_user_cell_lines(cell: &UserActivityCell) -> Vec<Line<'static>> {
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  "),
+            Span::raw(ACTIVITY_TITLE_GAP),
             Span::styled(
                 cell.title.clone(),
                 Style::default()
@@ -548,7 +550,7 @@ fn render_coding_tool_group_cell_lines(cell: &CodingToolGroupActivityCell) -> Ve
                 .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             cell.title.clone(),
             Style::default()
@@ -667,7 +669,7 @@ fn render_coding_edit_cell_lines(cell: &CodingEditActivityCell) -> Vec<Line<'sta
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title,
             Style::default()
@@ -762,7 +764,7 @@ fn render_browser_cell_lines(cell: &BrowserActivityCell) -> Vec<Line<'static>> {
                 .fg(Color::LightBlue)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             format!(
                 "Captured URL: {}",
@@ -805,7 +807,7 @@ fn render_live_browser_cell_lines(cell: &LiveBrowserActivityCell) -> Vec<Line<'s
                 .fg(Color::LightBlue)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title,
             Style::default()
@@ -837,7 +839,7 @@ fn render_exec_cell_lines(cell: &ExecResultActivityCell) -> Vec<Line<'static>> {
     };
     let mut lines = vec![Line::from(vec![
         Span::styled(glyph::EXEC, indicator_style),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             "Ran",
             Style::default()
@@ -882,7 +884,7 @@ fn render_live_exec_cell_lines(cell: &LiveExecActivityCell) -> Vec<Line<'static>
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             "Running",
             Style::default()
@@ -945,7 +947,7 @@ fn render_patch_cell_lines(cell: &PatchActivityCell) -> Vec<Line<'static>> {
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             format!("Edited {} {}", cell.files.len(), file_noun),
             Style::default()
@@ -1005,7 +1007,7 @@ fn render_reply_cell_lines(cell: &ReplyActivityCell) -> Vec<Line<'static>> {
             glyph::REPLY,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -1040,7 +1042,7 @@ fn render_plan_cell_lines(cell: &PlanActivityCell) -> Vec<Line<'static>> {
                 .fg(Color::LightBlue)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             "Plan",
             Style::default()
@@ -1108,7 +1110,7 @@ fn render_primitive_line(title: String, marker: &str) -> Vec<Line<'static>> {
                 .fg(Color::LightBlue)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title,
             Style::default()
@@ -1132,7 +1134,7 @@ fn render_text_activity_lines(
             marker.to_string(),
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title.to_string(),
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
@@ -1197,7 +1199,7 @@ fn render_message_activity_lines(
             marker.to_string(),
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title.to_string(),
             Style::default().fg(accent).add_modifier(Modifier::BOLD),
@@ -1256,7 +1258,7 @@ fn render_wait_activity_lines(
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title.to_string(),
             Style::default()
@@ -1279,7 +1281,7 @@ fn render_error_lines(title: &str, body_lines: &[String], limit: usize) -> Vec<L
             glyph::ERROR,
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title.to_string(),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -1314,7 +1316,7 @@ fn render_coding_review_cell_lines(cell: &CodingReviewActivityCell) -> Vec<Line<
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(ACTIVITY_TITLE_GAP),
         Span::styled(
             title,
             Style::default()
@@ -1751,7 +1753,7 @@ That's it.";
         assert_eq!(
             rendered,
             vec![
-                "◎  Explored",
+                "◎ Explored",
                 "  └ Read mod.rs",
                 "    Read mod.rs",
                 "    Search push_command_input_display_text|command_input_display_text|display_text in mod.rs",
@@ -1816,11 +1818,7 @@ That's it.";
         let lines = render_patch_cell_lines(&cell);
         let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
 
-        assert!(
-            rendered
-                .iter()
-                .any(|line| line.contains("∂  Edited 1 File"))
-        );
+        assert!(rendered.iter().any(|line| line.contains("∂ Edited 1 File")));
         assert!(
             rendered
                 .iter()
@@ -1841,6 +1839,10 @@ That's it.";
         .into_iter()
         .map(|line| line_text(&line))
         .collect::<Vec<_>>();
+        assert_eq!(
+            notice.first().map(String::as_str),
+            Some("✣ Resolved Notice")
+        );
         assert!(notice.iter().any(|line| line.contains("Resolved Notice")));
     }
 
