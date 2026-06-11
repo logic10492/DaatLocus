@@ -9,6 +9,11 @@
         "port": 53825
       }
     },
+    "efficient_model": {
+      "description": "Efficient model name; key reference into models.\nDefault for non-main-loop operations such as judge and compaction.\nWhen not set explicitly, defaults to the same value as main_model for backward compatibility.",
+      "type": "string",
+      "default": "default"
+    },
     "judge": {
       "$ref": "#/$defs/JudgeConfig",
       "default": {
@@ -35,7 +40,7 @@
       },
       "default": {
         "default": {
-          "auto_compact_token_limit": 100000,
+          "auto_compact_token_limit": null,
           "context_window_tokens": 128000,
           "effective_context_window_percent": 95,
           "max_completion_tokens": 4000,
@@ -44,6 +49,7 @@
           "request_timeout_secs": 300,
           "rpm": null,
           "stream_idle_timeout_secs": 45,
+          "supports_vision": null,
           "temperature": 1.0,
           "thinking_budget": null,
           "tool_output_max_tokens": 2000
@@ -189,19 +195,23 @@
           "default": 45,
           "minimum": 0
         },
+        "supports_vision": {
+          "description": "Explicitly set whether this model accepts image attachments in messages.\nWhen `None`, vision support is inferred from the model name via the\nbuilt-in catalog heuristic.  Set to `false` to unconditionally strip\nimages before sending; set to `true` to skip runtime detection and\nalways include images.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
         "temperature": {
           "type": "number",
           "format": "double",
           "default": 1.0
         },
         "thinking_budget": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ThinkingBudget"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "string",
+            "null"
           ],
           "default": null
         },
@@ -286,6 +296,13 @@
             "api_key": {
               "type": "string"
             },
+            "api_style": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
             "base_url": {
               "type": "string"
             },
@@ -298,6 +315,39 @@
             "type",
             "base_url",
             "api_key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "api_key": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "host": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "keep_alive": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "type": {
+              "type": "string",
+              "const": "ollama"
+            }
+          },
+          "required": [
+            "type"
           ]
         }
       ]
@@ -341,17 +391,6 @@
           "minimum": 0
         }
       }
-    },
-    "ThinkingBudget": {
-      "type": "string",
-      "enum": [
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "max"
-      ]
     }
   }
 }

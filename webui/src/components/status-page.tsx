@@ -336,7 +336,7 @@ type WebSlashSubcommandDefinition = {
   usage: string;
   description: string;
   aliases?: string[];
-  argumentKind?: "telegram-request";
+  argumentKind?: "telegram-request" | "skill";
 };
 
 const WEB_SLASH_COMMANDS: WebSlashCommandDefinition[] = [
@@ -400,6 +400,41 @@ const WEB_SLASH_COMMANDS: WebSlashCommandDefinition[] = [
         name: "run",
         usage: "run",
         description: "start a background sleep run",
+      },
+    ],
+  },
+  {
+    name: "skills",
+    usage: "skills",
+    description: "list and manage OpenSkills automatic use",
+    subcommands: [
+      {
+        name: "list",
+        usage: "list",
+        description: "list loaded skills",
+      },
+      {
+        name: "show",
+        usage: "show <skill>",
+        description: "show loaded skill details",
+        argumentKind: "skill",
+      },
+      {
+        name: "enable",
+        usage: "enable <skill>",
+        description: "allow a skill to be used automatically",
+        argumentKind: "skill",
+      },
+      {
+        name: "disable",
+        usage: "disable <skill>",
+        description: "keep a skill available only for explicit use",
+        argumentKind: "skill",
+      },
+      {
+        name: "reload",
+        usage: "reload",
+        description: "reload skills from disk",
       },
     ],
   },
@@ -1380,6 +1415,11 @@ function webSlashSubcommandSuggestions(
     );
   }
 
+  if (subcommand?.argumentKind === "skill") {
+    const prefix = parsed.parts[2] ?? "";
+    return webSlashSkillSuggestions(command, subcommand, prefix, snapshot);
+  }
+
   return [];
 }
 
@@ -1416,6 +1456,21 @@ function webSlashTelegramRequestSuggestions(
       display: `${request.chat_id} (${request.sender})`,
       completion: `/telegram ${subcommand.name} ${request.chat_id}`,
       description: request.title || request.last_message_preview,
+    }));
+}
+
+function webSlashSkillSuggestions(
+  command: WebSlashCommandDefinition,
+  subcommand: WebSlashSubcommandDefinition,
+  prefix: string,
+  snapshot: DashboardSnapshot | null,
+) {
+  return (snapshot?.skills ?? [])
+    .filter((skill) => skill.name.startsWith(prefix))
+    .map((skill) => ({
+      display: skill.name,
+      completion: `/${command.name} ${subcommand.name} ${skill.name}`,
+      description: webSlashSkillStatusDescription(skill),
     }));
 }
 
@@ -1478,6 +1533,9 @@ function webSlashSubcommandFeedback(
   snapshot: DashboardSnapshot | null,
 ): WebSlashCommandFeedback | null {
   if (parsed.parts.length === 1) {
+    if (command.name === "skills") {
+      return null;
+    }
     return {
       title: command.name.toUpperCase(),
       message: `Choose a subcommand for /${command.name}.`,
@@ -1548,6 +1606,27 @@ function webSlashSubcommandFeedback(
       message: `Invalid chat_id '${parsed.parts[2]}'.`,
       detail: `Use /telegram ${subcommand.name} [chat_id].`,
       level: "error",
+      blocksSubmit: true,
+    };
+  }
+
+  if (
+    command.name === "skills" &&
+    subcommand.argumentKind === "skill" &&
+    parsed.parts.length === 2
+  ) {
+    const skills = snapshot?.skills ?? [];
+    return {
+      title: "SKILLS",
+      message: `Choose a skill to ${subcommand.name}.`,
+      detail:
+        skills.length > 0
+          ? skills
+              .slice(0, 4)
+              .map((skill) => `${skill.name} (${webSlashSkillStatusDescription(skill)})`)
+              .join(" · ")
+          : "No skills are currently loaded.",
+      level: "warning",
       blocksSubmit: true,
     };
   }
@@ -1637,6 +1716,32 @@ function webSlashExtraArgumentFeedback(
     };
   }
   if (
+    parts[0] === "skills" &&
+    (parts[1] === "list" || parts[1] === "reload") &&
+    parts.length > 2
+  ) {
+    return {
+      title: "SKILLS",
+      message: `/skills ${parts[1]} does not take extra arguments.`,
+      detail: `usage: /skills ${parts[1]}`,
+      level: "error",
+      blocksSubmit: true,
+    };
+  }
+  if (
+    parts[0] === "skills" &&
+    (parts[1] === "show" || parts[1] === "enable" || parts[1] === "disable") &&
+    parts.length > 3
+  ) {
+    return {
+      title: "SKILLS",
+      message: `/skills ${parts[1]} accepts exactly one skill name.`,
+      detail: `usage: /skills ${parts[1]} <skill>`,
+      level: "error",
+      blocksSubmit: true,
+    };
+  }
+  if (
     parts[0] === "telegram" &&
     (parts[1] === "approve" || parts[1] === "reject") &&
     parts.length > 3
@@ -1716,6 +1821,12 @@ function webSlashCommandUsesPanel(input: string) {
     return true;
   }
   if (parts[0] === "sleep" && parts[1] === "status") {
+    return true;
+  }
+  if (
+    parts[0] === "skills" &&
+    (parts.length === 1 || parts[1] === "list" || parts[1] === "show")
+  ) {
     return true;
   }
   if (parts[0] === "telegram" && parts[1] === "status") {
@@ -1822,6 +1933,21 @@ function webSlashAppNames(snapshot: DashboardSnapshot | null) {
     .map(([name]) => name)
     .filter(Boolean)
     .sort();
+}
+
+function webSlashSkillStatusDescription(
+  skill: NonNullable<DashboardSnapshot["skills"]>[number],
+) {
+  if (skill.auto_use_enabled) {
+    return "auto-use enabled";
+  }
+  if (skill.user_disabled) {
+    return "manual-only: disabled by /skills";
+  }
+  if (!skill.allow_implicit_invocation) {
+    return "manual-only: policy disallows implicit invocation";
+  }
+  return "manual-only";
 }
 
 function truncateText(text: string, maxLength: number) {

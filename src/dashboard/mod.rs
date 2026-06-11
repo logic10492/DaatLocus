@@ -20,7 +20,7 @@ pub use history::{
     DashboardActivityHistoryPage, DashboardActivityHistoryStore, DashboardActivityHistoryWindow,
 };
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use crossterm::cursor::SetCursorStyle;
@@ -40,6 +40,7 @@ use std::time::Duration;
 use crate::{
     app::AppId,
     core::TokenUsageInfo,
+    openskills::{OpenSkillDashboardError, OpenSkillDashboardSummary},
     reasoning::turn_compile::{
         load_prompt_persona_spec_sync, prompt_persona_path_sync, render_prompt_persona_markdown,
     },
@@ -224,6 +225,10 @@ pub struct DashboardState {
     pub preturn_context_output: String,
     pub app_status_outputs: Vec<(String, String)>,
     #[serde(default)]
+    pub skills: Vec<OpenSkillDashboardSummary>,
+    #[serde(default)]
+    pub skill_errors: Vec<OpenSkillDashboardError>,
+    #[serde(default)]
     pub pending_access_requests: Vec<PendingAccessRequest>,
     pub activity_cells: Vec<ActivityCell>,
     pub live_activity_cells: Vec<LiveActivityCell>,
@@ -275,6 +280,8 @@ pub enum DashboardControlCommand {
     RunSleep,
     ClearConversation,
     RestartDaemon,
+    ReloadSkills,
+    SetSkillAutoUse { path: PathBuf, enabled: bool },
 }
 
 #[async_trait]
@@ -543,6 +550,12 @@ struct SleepCommand;
 struct RestartCommand;
 struct SleepRunSubcommand;
 struct SleepStatusSubcommand;
+struct SkillsCommand;
+struct SkillsListSubcommand;
+struct SkillsShowSubcommand;
+struct SkillsEnableSubcommand;
+struct SkillsDisableSubcommand;
+struct SkillsReloadSubcommand;
 struct TelegramCommand;
 struct TelegramStatusSubcommand;
 struct TelegramApproveSubcommand;
@@ -560,12 +573,25 @@ static SLEEP_COMMAND: SleepCommand = SleepCommand;
 static RESTART_COMMAND: RestartCommand = RestartCommand;
 static SLEEP_RUN_SUBCOMMAND: SleepRunSubcommand = SleepRunSubcommand;
 static SLEEP_STATUS_SUBCOMMAND: SleepStatusSubcommand = SleepStatusSubcommand;
+static SKILLS_COMMAND: SkillsCommand = SkillsCommand;
+static SKILLS_LIST_SUBCOMMAND: SkillsListSubcommand = SkillsListSubcommand;
+static SKILLS_SHOW_SUBCOMMAND: SkillsShowSubcommand = SkillsShowSubcommand;
+static SKILLS_ENABLE_SUBCOMMAND: SkillsEnableSubcommand = SkillsEnableSubcommand;
+static SKILLS_DISABLE_SUBCOMMAND: SkillsDisableSubcommand = SkillsDisableSubcommand;
+static SKILLS_RELOAD_SUBCOMMAND: SkillsReloadSubcommand = SkillsReloadSubcommand;
 static TELEGRAM_COMMAND: TelegramCommand = TelegramCommand;
 static TELEGRAM_STATUS_SUBCOMMAND: TelegramStatusSubcommand = TelegramStatusSubcommand;
 static TELEGRAM_APPROVE_SUBCOMMAND: TelegramApproveSubcommand = TelegramApproveSubcommand;
 static TELEGRAM_REJECT_SUBCOMMAND: TelegramRejectSubcommand = TelegramRejectSubcommand;
 static SLEEP_SUBCOMMANDS: [&dyn DashboardSubcommand; 2] =
     [&SLEEP_STATUS_SUBCOMMAND, &SLEEP_RUN_SUBCOMMAND];
+static SKILLS_SUBCOMMANDS: [&dyn DashboardSubcommand; 5] = [
+    &SKILLS_LIST_SUBCOMMAND,
+    &SKILLS_SHOW_SUBCOMMAND,
+    &SKILLS_ENABLE_SUBCOMMAND,
+    &SKILLS_DISABLE_SUBCOMMAND,
+    &SKILLS_RELOAD_SUBCOMMAND,
+];
 static TELEGRAM_SUBCOMMANDS: [&dyn DashboardSubcommand; 3] = [
     &TELEGRAM_STATUS_SUBCOMMAND,
     &TELEGRAM_APPROVE_SUBCOMMAND,
@@ -577,7 +603,7 @@ static DEBUG_SUBCOMMANDS: [&dyn DashboardSubcommand; 3] = [
     &DEBUG_CONTEXT_SUBCOMMAND,
 ];
 
-static DASHBOARD_COMMANDS: [&dyn DashboardCommand; 8] = [
+static DASHBOARD_COMMANDS: [&dyn DashboardCommand; 9] = [
     &QUIT_COMMAND,
     &CLEAR_COMMAND,
     &DEBUG_COMMAND,
@@ -585,6 +611,7 @@ static DASHBOARD_COMMANDS: [&dyn DashboardCommand; 8] = [
     &STATUS_COMMAND,
     &RESTART_COMMAND,
     &SLEEP_COMMAND,
+    &SKILLS_COMMAND,
     &TELEGRAM_COMMAND,
 ];
 
@@ -1019,6 +1046,200 @@ impl DashboardSubcommand for SleepStatusSubcommand {
     }
 }
 
+impl DashboardCommand for SkillsCommand {
+    fn usage(&self) -> &'static str {
+        "skills"
+    }
+
+    fn description(&self) -> &'static str {
+        "list and manage OpenSkills automatic use"
+    }
+
+    fn subcommands(&self) -> &'static [&'static dyn DashboardSubcommand] {
+        &SKILLS_SUBCOMMANDS
+    }
+
+    fn complete_arguments(
+        &self,
+        parts: &[&str],
+        context: &DashboardCommandContext<'_>,
+    ) -> Vec<CommandSuggestion> {
+        let Some(subcommand) = parts.get(1).copied() else {
+            return Vec::new();
+        };
+        if !matches!(subcommand, "show" | "enable" | "disable") {
+            return Vec::new();
+        }
+        let prefix = parts.get(2).copied().unwrap_or_default();
+        context
+            .state
+            .skills
+            .iter()
+            .filter(|skill| skill.name.starts_with(prefix))
+            .map(|skill| CommandSuggestion {
+                display: skill.name.clone(),
+                completion: format!("/skills {} {}", subcommand, skill.name),
+                description: skill_status_description(skill),
+            })
+            .collect()
+    }
+
+    fn execute(
+        &self,
+        parts: &[&str],
+        raw: &str,
+        context: &DashboardCommandContext<'_>,
+    ) -> DashboardCommandResult {
+        let Some(subcommand_name) = parts.get(1).copied() else {
+            return DashboardCommandResult::ShowOverlay {
+                title: self.overlay_title(raw),
+                text: render_skills_list(context.state),
+            };
+        };
+        if let Some(subcommand) = self
+            .subcommands()
+            .iter()
+            .copied()
+            .find(|subcommand| subcommand.accepts(subcommand_name))
+        {
+            subcommand.execute(parts, raw, context)
+        } else {
+            DashboardCommandResult::ShowOverlay {
+                title: self.overlay_title(raw),
+                text: format!("unknown skills subcommand: {subcommand_name}"),
+            }
+        }
+    }
+}
+
+impl DashboardSubcommand for SkillsListSubcommand {
+    fn usage(&self) -> &'static str {
+        "list"
+    }
+
+    fn description(&self) -> &'static str {
+        "list loaded skills"
+    }
+
+    fn execute(
+        &self,
+        _: &[&str],
+        raw: &str,
+        context: &DashboardCommandContext<'_>,
+    ) -> DashboardCommandResult {
+        DashboardCommandResult::ShowOverlay {
+            title: raw.trim().to_uppercase(),
+            text: render_skills_list(context.state),
+        }
+    }
+}
+
+impl DashboardSubcommand for SkillsShowSubcommand {
+    fn usage(&self) -> &'static str {
+        "show <skill>"
+    }
+
+    fn description(&self) -> &'static str {
+        "show loaded skill details"
+    }
+
+    fn execute(
+        &self,
+        parts: &[&str],
+        raw: &str,
+        context: &DashboardCommandContext<'_>,
+    ) -> DashboardCommandResult {
+        DashboardCommandResult::ShowOverlay {
+            title: raw.trim().to_uppercase(),
+            text: match parts.get(2).copied() {
+                Some(target) => render_skill_detail(context.state, target),
+                None => "usage: /skills show <skill>".to_string(),
+            },
+        }
+    }
+}
+
+impl DashboardSubcommand for SkillsEnableSubcommand {
+    fn usage(&self) -> &'static str {
+        "enable <skill>"
+    }
+
+    fn description(&self) -> &'static str {
+        "allow a skill to be used automatically"
+    }
+
+    fn execute(
+        &self,
+        parts: &[&str],
+        raw: &str,
+        context: &DashboardCommandContext<'_>,
+    ) -> DashboardCommandResult {
+        DashboardCommandResult::ShowOverlay {
+            title: raw.trim().to_uppercase(),
+            text: execute_skill_auto_use_command(true, parts, context),
+        }
+    }
+}
+
+impl DashboardSubcommand for SkillsDisableSubcommand {
+    fn usage(&self) -> &'static str {
+        "disable <skill>"
+    }
+
+    fn description(&self) -> &'static str {
+        "keep a skill available only for explicit use"
+    }
+
+    fn execute(
+        &self,
+        parts: &[&str],
+        raw: &str,
+        context: &DashboardCommandContext<'_>,
+    ) -> DashboardCommandResult {
+        DashboardCommandResult::ShowOverlay {
+            title: raw.trim().to_uppercase(),
+            text: execute_skill_auto_use_command(false, parts, context),
+        }
+    }
+}
+
+impl DashboardSubcommand for SkillsReloadSubcommand {
+    fn usage(&self) -> &'static str {
+        "reload"
+    }
+
+    fn description(&self) -> &'static str {
+        "reload skills from disk"
+    }
+
+    fn execute(
+        &self,
+        _: &[&str],
+        raw: &str,
+        context: &DashboardCommandContext<'_>,
+    ) -> DashboardCommandResult {
+        let Some(executor) = context.executor else {
+            return DashboardCommandResult::ShowOverlay {
+                title: raw.trim().to_uppercase(),
+                text: "skills reload is unavailable in completion-only mode".to_string(),
+            };
+        };
+        match executor
+            .control_tx
+            .send(DashboardControlCommand::ReloadSkills)
+        {
+            Ok(()) => DashboardCommandResult::ShowOverlay {
+                title: raw.trim().to_uppercase(),
+                text: "queued skills reload".to_string(),
+            },
+            Err(err) => DashboardCommandResult::ShowOverlay {
+                title: raw.trim().to_uppercase(),
+                text: format!("failed to queue skills reload: {err}"),
+            },
+        }
+    }
+}
+
 impl DashboardCommand for TelegramCommand {
     fn usage(&self) -> &'static str {
         "telegram"
@@ -1173,6 +1394,188 @@ pub(crate) fn remote_dashboard_commands() -> Vec<RemoteDashboardCommand> {
                 })
         })
         .collect()
+}
+
+fn render_skills_list(state: &DashboardState) -> String {
+    if state.skills.is_empty() {
+        let mut lines = vec![
+            "No OpenSkills loaded.".to_string(),
+            "Scanned fixed roots: project .agents/skills, ~/.daat-locus/skills, ~/.agents/skills."
+                .to_string(),
+        ];
+        if !state.skill_errors.is_empty() {
+            lines.push(String::new());
+            lines.push("Load errors:".to_string());
+            lines.extend(state.skill_errors.iter().map(|error| {
+                format!(
+                    "  {} | {}",
+                    error.path,
+                    truncate_command_text(&error.message, 160)
+                )
+            }));
+        }
+        return lines.join("\n");
+    }
+
+    let auto_count = state
+        .skills
+        .iter()
+        .filter(|skill| skill.auto_use_enabled)
+        .count();
+    let manual_count = state.skills.len().saturating_sub(auto_count);
+    let mut lines = vec![
+        format!(
+            "OpenSkills loaded: {} (auto: {auto_count}, manual-only: {manual_count})",
+            state.skills.len()
+        ),
+        "Commands: /skills show <skill> | /skills enable <skill> | /skills disable <skill> | /skills reload".to_string(),
+        String::new(),
+        "Skills:".to_string(),
+    ];
+    lines.extend(state.skills.iter().map(|skill| {
+        format!(
+            "  {:<22} {:<12} {} - {}",
+            skill.name,
+            skill_status_label(skill),
+            skill.scope,
+            truncate_command_text(&skill.description, 140)
+        )
+    }));
+    if !state.skill_errors.is_empty() {
+        lines.push(String::new());
+        lines.push("Load errors:".to_string());
+        lines.extend(state.skill_errors.iter().map(|error| {
+            format!(
+                "  {} | {}",
+                error.path,
+                truncate_command_text(&error.message, 160)
+            )
+        }));
+    }
+    lines.join("\n")
+}
+
+fn render_skill_detail(state: &DashboardState, target: &str) -> String {
+    let skill = match resolve_skill_target(state, target) {
+        Ok(skill) => skill,
+        Err(message) => return message,
+    };
+    [
+        format!("Name: {}", skill.name),
+        format!("Status: {}", skill_status_description(skill)),
+        format!("Scope: {}", skill.scope),
+        format!("Path: {}", skill.path),
+        format!("Description: {}", skill.description),
+    ]
+    .join("\n")
+}
+
+fn execute_skill_auto_use_command(
+    enabled: bool,
+    parts: &[&str],
+    context: &DashboardCommandContext<'_>,
+) -> String {
+    let action = if enabled { "enable" } else { "disable" };
+    let Some(target) = parts.get(2).copied() else {
+        return format!("usage: /skills {action} <skill>");
+    };
+    let skill = match resolve_skill_target(context.state, target) {
+        Ok(skill) => skill,
+        Err(message) => return message,
+    };
+    let Some(executor) = context.executor else {
+        return format!("skills {action} is unavailable in completion-only mode");
+    };
+    match executor
+        .control_tx
+        .send(DashboardControlCommand::SetSkillAutoUse {
+            path: PathBuf::from(&skill.path),
+            enabled,
+        }) {
+        Ok(()) => {
+            if enabled && !skill.allow_implicit_invocation {
+                format!(
+                    "queued skills auto-use enable for {}; policy.allow_implicit_invocation=false still keeps it manual-only",
+                    skill.name
+                )
+            } else {
+                format!("queued skills auto-use {action} for {}", skill.name)
+            }
+        }
+        Err(err) => format!("failed to queue skills {action}: {err}"),
+    }
+}
+
+fn resolve_skill_target<'a>(
+    state: &'a DashboardState,
+    target: &str,
+) -> Result<&'a OpenSkillDashboardSummary, String> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("skill name or path is required".to_string());
+    }
+
+    let path_matches = state
+        .skills
+        .iter()
+        .filter(|skill| skill.path == target)
+        .collect::<Vec<_>>();
+    if path_matches.len() == 1 {
+        return Ok(path_matches[0]);
+    }
+
+    let name_matches = state
+        .skills
+        .iter()
+        .filter(|skill| skill.name == target)
+        .collect::<Vec<_>>();
+    match name_matches.len() {
+        1 => Ok(name_matches[0]),
+        0 => Err(format!("unknown skill: {target}")),
+        _ => {
+            let paths = name_matches
+                .iter()
+                .map(|skill| format!("  {}", skill.path))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(format!(
+                "ambiguous skill name: {target}\nuse full path:\n{paths}"
+            ))
+        }
+    }
+}
+
+fn skill_status_label(skill: &OpenSkillDashboardSummary) -> &'static str {
+    if skill.auto_use_enabled {
+        "auto"
+    } else {
+        "manual-only"
+    }
+}
+
+fn skill_status_description(skill: &OpenSkillDashboardSummary) -> String {
+    if skill.auto_use_enabled {
+        "auto-use enabled".to_string()
+    } else if skill.user_disabled {
+        "manual-only: disabled by /skills".to_string()
+    } else if !skill.allow_implicit_invocation {
+        "manual-only: policy disallows implicit invocation".to_string()
+    } else {
+        "manual-only".to_string()
+    }
+}
+
+fn truncate_command_text(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut out = text
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    out.push_str("...");
+    out
 }
 
 fn execute_access_request_command(
@@ -2703,6 +3106,7 @@ fn command_should_show_overlay(input: &str) -> bool {
         ["status"] => true,
         ["debug", subcommand, ..] => debug_subcommand_is_read_only(subcommand),
         ["sleep", "status", ..] => true,
+        ["skills"] | ["skills", "list", ..] | ["skills", "show", ..] => true,
         ["telegram", "status", ..] => true,
         [verb, _target, ..] if APP_STATUS_COMMAND.accepts(verb) => true,
         _ => false,
@@ -2810,6 +3214,9 @@ fn command_live_feedback(
     };
 
     if !command.subcommands().is_empty() {
+        if command.primary_verb() == "skills" && parts.len() == 1 {
+            return None;
+        }
         if parts.len() == 1 {
             return Some(CommandFeedback {
                 title: command.primary_verb().to_uppercase(),
@@ -2953,6 +3360,24 @@ fn command_extra_argument_feedback(parts: &[&str]) -> Option<CommandFeedback> {
             title: "SLEEP".to_string(),
             message: format!("sleep {} does not take extra arguments.", parts[1]),
             detail: Some(format!("usage: /sleep {}", parts[1])),
+            level: CommandFeedbackLevel::Error,
+        }),
+        ["skills", "list" | "reload", ..] if parts.len() > 2 => Some(CommandFeedback {
+            title: "SKILLS".to_string(),
+            message: format!("skills {} does not take extra arguments.", parts[1]),
+            detail: Some(format!("usage: /skills {}", parts[1])),
+            level: CommandFeedbackLevel::Error,
+        }),
+        ["skills", "show" | "enable" | "disable"] => Some(CommandFeedback {
+            title: "SKILLS".to_string(),
+            message: format!("skills {} needs a skill name.", parts[1]),
+            detail: Some(format!("usage: /skills {} <skill>", parts[1])),
+            level: CommandFeedbackLevel::Warning,
+        }),
+        ["skills", "show" | "enable" | "disable", ..] if parts.len() > 3 => Some(CommandFeedback {
+            title: "SKILLS".to_string(),
+            message: format!("skills {} accepts exactly one skill name.", parts[1]),
+            detail: Some(format!("usage: /skills {} <skill>", parts[1])),
             level: CommandFeedbackLevel::Error,
         }),
         ["telegram", "status", ..] if parts.len() > 2 => Some(CommandFeedback {
@@ -3273,6 +3698,15 @@ mod tests {
         let requests = vec![pending_request(42)];
         let state = DashboardState {
             app_status_outputs: vec![("browser".to_string(), "state".to_string())],
+            skills: vec![OpenSkillDashboardSummary {
+                name: "writer".to_string(),
+                description: "Write release notes".to_string(),
+                path: "/tmp/skills/writer/SKILL.md".to_string(),
+                scope: "user".to_string(),
+                allow_implicit_invocation: true,
+                user_disabled: false,
+                auto_use_enabled: true,
+            }],
             ..DashboardState::default()
         };
         let context = DashboardCommandContext {
@@ -3292,6 +3726,44 @@ mod tests {
             .next()
             .expect("telegram request completion");
         assert_eq!(telegram_match.completion, "/telegram approve 42");
+
+        let skill_match = matching_commands("/skills disable ", &context)
+            .into_iter()
+            .next()
+            .expect("skill completion");
+        assert_eq!(skill_match.completion, "/skills disable writer");
+    }
+
+    #[test]
+    fn skills_command_lists_without_requiring_subcommand() {
+        let state = DashboardState {
+            skills: vec![OpenSkillDashboardSummary {
+                name: "writer".to_string(),
+                description: "Write release notes".to_string(),
+                path: "/tmp/skills/writer/SKILL.md".to_string(),
+                scope: "user".to_string(),
+                allow_implicit_invocation: true,
+                user_disabled: false,
+                auto_use_enabled: true,
+            }],
+            ..DashboardState::default()
+        };
+        let context = DashboardCommandContext {
+            requests: &[],
+            state: &state,
+            executor: None,
+        };
+
+        assert!(command_blocks_submission("/skills", &context).is_none());
+        let result = SKILLS_COMMAND.execute(&["skills"], "skills", &context);
+
+        match result {
+            DashboardCommandResult::ShowOverlay { text, .. } => {
+                assert!(text.contains("OpenSkills loaded: 1"));
+                assert!(text.contains("writer"));
+            }
+            DashboardCommandResult::Quit => panic!("skills command should render an overlay"),
+        }
     }
 
     #[test]
@@ -3396,6 +3868,7 @@ mod tests {
         assert!(commands.contains(&"debug"));
         assert!(commands.contains(&"app_status"));
         assert!(commands.contains(&"restart"));
+        assert!(commands.contains(&"skills"));
         assert!(!commands.contains(&"snapshot"));
         assert!(!commands.contains(&"system_prompt"));
         assert!(!commands.contains(&"quit"));

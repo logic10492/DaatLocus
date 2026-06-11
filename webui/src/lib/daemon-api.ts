@@ -411,6 +411,21 @@ export type DashboardActivityHistoryPage = {
   has_more_after: boolean;
 };
 
+export type DashboardSkillSummary = {
+  name: string;
+  description: string;
+  path: string;
+  scope: string;
+  allow_implicit_invocation: boolean;
+  user_disabled: boolean;
+  auto_use_enabled: boolean;
+};
+
+export type DashboardSkillError = {
+  path: string;
+  message: string;
+};
+
 export type DashboardSnapshot = {
   agent_name: string;
   session_title?: DashboardSessionTitle | null;
@@ -421,6 +436,8 @@ export type DashboardSnapshot = {
   system_prompt_output: string;
   preturn_context_output: string;
   app_status_outputs: Array<[string, string]>;
+  skills?: DashboardSkillSummary[];
+  skill_errors?: DashboardSkillError[];
   pending_access_requests: DashboardPendingAccessRequest[];
   activity_cells: unknown[];
   live_activity_cells: Array<{

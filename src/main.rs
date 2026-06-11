@@ -22,6 +22,7 @@ mod live_progress;
 mod logging;
 mod memory;
 mod model_catalog;
+mod openskills;
 mod pending_work;
 mod persistence;
 mod plan;

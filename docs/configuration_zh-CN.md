@@ -69,7 +69,6 @@ port = 53825
 enabled = true
 strong_filesystem = "off"
 
-
 [telegram]
 enabled = true
 bot_token = "your-telegram-bot-token"
@@ -97,6 +96,41 @@ OpenAI Codex 使用 ChatGPT Codex Responses backend，而不是公开 OpenAI API
 ## Judge
 
 `judge.model = "model-key"` 是可选项。为空时，judge 同样回退到 `main_model`。
+
+## OpenSkills
+
+Daat Locus 会在 session 启动时扫描 OpenSkills，并把轻量 `<skills>` 索引注入运行时系统 prompt。Skill body 不会预加载；当某个 skill 适用时，模型会先按索引里的路径读取该 skill 的 `SKILL.md`，再使用其中的指令。如果已 claim 的用户输入用 `$skill-name` 显式点名了唯一的 skill，Daat Locus 也会把该 `SKILL.md` body 注入当前 turn 的 afterclaim context。
+
+默认扫描路径：
+
+- 从检测到的项目根目录到运行时工作目录之间的 `.agents/skills`
+- `~/.daat-locus/skills`
+- `~/.agents/skills`
+
+OpenSkills 没有全局配置开关，也没有可配置扫描目录。如果固定目录里没有 skill，就不会注入 `<skills>` 块。
+
+每个 skill 是一个包含 `SKILL.md` 的目录，`SKILL.md` 需要 YAML frontmatter：
+
+```markdown
+---
+name: demo
+description: Use this skill for demo workflows.
+---
+
+# Demo
+```
+
+`name` 可选，默认使用 skill 目录名。`description` 必填，因为它是 prompt 可见的路由摘要。Skill 也可以包含 `agents/openai.yaml`；设置 `policy.allow_implicit_invocation = false` 后，它不会进入自动 prompt 索引。
+
+使用 dashboard slash command `/skills` 查看和管理已加载 skills：
+
+- `/skills` 或 `/skills list`
+- `/skills show <skill>`
+- `/skills disable <skill>`
+- `/skills enable <skill>`
+- `/skills reload`
+
+`/skills disable <skill>` 只会把该 skill 移出自动 prompt 索引；它仍然可以通过显式 `$skill-name` 使用。用户 override 存在 `config/openskills.toml`，记录被禁用自动使用的 `SKILL.md` 路径；没有 override 时这个文件会被移除。
 
 ## Telegram
 

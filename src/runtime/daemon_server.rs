@@ -373,6 +373,10 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
                     DashboardControlCommand::ClearConversation => {
                         tracing::warn!("manager received clear conversation command, but conversation state is session-scoped");
                     }
+                    DashboardControlCommand::ReloadSkills
+                    | DashboardControlCommand::SetSkillAutoUse { .. } => {
+                        tracing::warn!("manager received skills command, but skills state is session-scoped");
+                    }
                 }
             }
             signal = tokio::signal::ctrl_c(), if !ctrl_c_disabled => {

@@ -13,6 +13,7 @@ use crate::{
     daat_locus_paths::daat_locus_paths,
     events::EventStore,
     memory::Memory,
+    openskills::load_openskills_for_runtime,
     pending_work::PendingWorkQueue,
     persistence::PersistenceStore,
     plan::Plan,
@@ -152,6 +153,7 @@ pub(crate) async fn build_eval_context_with_compiled(
     let events = EventStore::new().await;
     let pending_work = PendingWorkQueue::new().await;
     let workflows = PrimitiveStore::new().await;
+    let openskills = load_openskills_for_runtime(&execution_cwd);
     let telegram_acl = TelegramAclHandle::load().await;
     let telegram = TelegramTransportState::new();
     let telegram_handle = telegram.handle();
@@ -182,6 +184,7 @@ pub(crate) async fn build_eval_context_with_compiled(
         events,
         pending_work,
         workflows,
+        openskills,
         bound_primitive_composition: None,
         bound_primitive_id: None,
         active_primitive_run: None,

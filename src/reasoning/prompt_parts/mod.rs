@@ -46,6 +46,7 @@ pub struct AppsSystemPart;
 pub struct WorkspaceSystemPart;
 pub struct PlanSystemPart;
 pub struct WorkflowSystemPart;
+pub struct OpenSkillsSystemPart;
 pub struct PersonaSystemPart;
 pub struct CompiledAdditionsSystemPart;
 pub struct AppDocsSystemPart;
@@ -119,6 +120,18 @@ impl SystemPromptPart for WorkflowSystemPart {
             self.key(),
             vec![PromptBlock::Paragraph(SYSTEM_PRIMITIVE.to_string())],
         ))
+    }
+}
+
+impl SystemPromptPart for OpenSkillsSystemPart {
+    fn key(&self) -> &'static str {
+        "skills"
+    }
+
+    fn build(&self, ctx: &Context) -> Option<PromptUnitDoc> {
+        ctx.openskills
+            .render_prompt_block()
+            .map(|body| PromptUnitDoc::new(self.key(), vec![PromptBlock::Paragraph(body)]))
     }
 }
 
@@ -455,7 +468,7 @@ impl AfterClaimContextPart for AfterClaimInputPart {
         "claimed_input"
     }
 
-    fn build(&self, _ctx: &Context, input: &AfterClaimContextInput) -> Option<PromptNode> {
+    fn build(&self, ctx: &Context, input: &AfterClaimContextInput) -> Option<PromptNode> {
         if input.is_empty() {
             return None;
         }
@@ -481,6 +494,17 @@ impl AfterClaimContextPart for AfterClaimInputPart {
                         })
                         .collect(),
                 )],
+            )));
+        }
+        let skill_injections = ctx
+            .openskills
+            .explicit_skill_injections_for_text(&claimed_work_query(input));
+        if !skill_injections.is_empty() {
+            children.push(PromptNode::State(PromptStateDoc::new(
+                "explicit_skills",
+                vec![PromptBlock::Paragraph(render_explicit_skill_injections(
+                    &skill_injections,
+                ))],
             )));
         }
 
@@ -655,6 +679,23 @@ fn render_afterclaim_events(events: &[EventView]) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn render_explicit_skill_injections(
+    injections: &[crate::openskills::OpenSkillInjection],
+) -> String {
+    injections
+        .iter()
+        .map(|skill| {
+            format!(
+                "<skill>\n<name>{}</name>\n<path>{}</path>\n{}\n</skill>",
+                skill.name,
+                skill.path.display(),
+                skill.contents.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn summarize_context_text(text: &str, max_chars: usize) -> String {

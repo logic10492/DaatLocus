@@ -5,9 +5,10 @@ use super::{
     prompt_parts::{
         AfterClaimContextInput, AfterClaimContextPart, AfterClaimInputPart,
         AfterClaimWorkflowPrimitiveRoutingPart, AppDocsSystemPart, AppsSystemPart,
-        CompiledAdditionsSystemPart, EventSystemPart, PersonaSystemPart, PlanSystemPart,
-        PreTurnAppSurfacePart, PreTurnContextPart, PreTurnPlanPart, PreTurnSensoryPart,
-        PreTurnWorkflowStatePart, SystemPromptPart, WorkflowSystemPart, WorkspaceSystemPart,
+        CompiledAdditionsSystemPart, EventSystemPart, OpenSkillsSystemPart, PersonaSystemPart,
+        PlanSystemPart, PreTurnAppSurfacePart, PreTurnContextPart, PreTurnPlanPart,
+        PreTurnSensoryPart, PreTurnWorkflowStatePart, SystemPromptPart, WorkflowSystemPart,
+        WorkspaceSystemPart,
     },
     prompts::{
         SYSTEM_APPS, SYSTEM_EVENT, SYSTEM_PLAN, SYSTEM_PRIMITIVE,
@@ -40,6 +41,7 @@ impl SystemPromptAssembler {
             Box::new(WorkspaceSystemPart),
             Box::new(PlanSystemPart),
             Box::new(WorkflowSystemPart),
+            Box::new(OpenSkillsSystemPart),
             Box::new(AppDocsSystemPart),
             Box::new(PersonaSystemPart),
             Box::new(CompiledAdditionsSystemPart),

@@ -1,6 +1,7 @@
 use super::sleep_driver::{SleepTrigger, start_background_sleep};
 use super::*;
 use crate::daemon::DaemonControlCommand;
+use crate::openskills::{reload_openskills_for_runtime, set_openskill_auto_use};
 
 pub(crate) async fn handle_dashboard_control_command(
     context: &mut Context,
@@ -50,6 +51,32 @@ pub(crate) async fn handle_dashboard_control_command(
                     sync_dashboard_state(context, tx, sleep_status, None);
                 }
             }
+        }
+        DashboardControlCommand::ReloadSkills => {
+            context.openskills = reload_openskills_for_runtime(&context.execution_cwd);
+            set_runtime_status(Some(tx), RuntimeStatusLevel::Info, "skills reloaded");
+            sync_dashboard_state(context, tx, sleep_status, None);
+        }
+        DashboardControlCommand::SetSkillAutoUse { path, enabled } => {
+            match set_openskill_auto_use(&path, enabled) {
+                Ok(()) => {
+                    context.openskills = reload_openskills_for_runtime(&context.execution_cwd);
+                    let action = if enabled { "enabled" } else { "disabled" };
+                    set_runtime_status(
+                        Some(tx),
+                        RuntimeStatusLevel::Info,
+                        format!("skills auto-use {action} for {}", path.display()),
+                    );
+                }
+                Err(err) => {
+                    set_runtime_status(
+                        Some(tx),
+                        RuntimeStatusLevel::Error,
+                        format!("failed to update skills auto-use: {err}"),
+                    );
+                }
+            }
+            sync_dashboard_state(context, tx, sleep_status, None);
         }
         DashboardControlCommand::ClearConversation => {
             let cleared_events = match context.events.clear_all() {

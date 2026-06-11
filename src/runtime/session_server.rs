@@ -34,6 +34,7 @@ use crate::{
         TerminalIncomingAttachmentKind, TerminalIncomingEvent,
     },
     memory::Memory,
+    openskills::load_openskills_for_runtime,
     pending_work::{PendingWork, PendingWorkQueue},
     plan::Plan,
     preturn_state::PreTurnState,
@@ -172,6 +173,7 @@ pub(crate) async fn run_session_serve(
     let sandbox_policy = sandbox_policy_for_runtime(&config, Some(&execution_cwd)).await;
     let runtime_apps = build_runtime_apps(&execution_cwd, &sandbox_policy);
     let apps = AppManager::new(None, runtime_apps.apps).await?;
+    let openskills = load_openskills_for_runtime(&execution_cwd);
     let mut context = Context {
         llm: client,
         judge_llm: judge_client,
@@ -182,6 +184,7 @@ pub(crate) async fn run_session_serve(
         events,
         pending_work,
         workflows,
+        openskills,
         bound_primitive_composition: None,
         bound_primitive_id: None,
         active_primitive_run: None,
@@ -236,6 +239,8 @@ pub(crate) async fn run_session_serve(
             system_prompt_output: render_system_prompt_output_for_dashboard(&context),
             preturn_context_output: startup_preturn_context_output,
             app_status_outputs: render_app_status_outputs_for_dashboard(&context),
+            skills: context.openskills.dashboard_summaries(),
+            skill_errors: context.openskills.dashboard_errors(),
             pending_access_requests: context.telegram_acl.pending_requests(),
             activity_cells: if activity_history.items.is_empty() {
                 render_activity_for_dashboard(&context)

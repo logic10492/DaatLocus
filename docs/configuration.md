@@ -74,7 +74,6 @@ port = 53825
 enabled = true
 strong_filesystem = "off"
 
-
 [telegram]
 enabled = true
 bot_token = "your-telegram-bot-token"
@@ -114,6 +113,56 @@ retried without them.
 
 `judge.model = "model-key"` is optional. If unset, the judge also falls back to
 `main_model`.
+
+## OpenSkills
+
+Daat Locus scans OpenSkills at session startup and injects a lightweight
+`<skills>` index into the runtime system prompt. Skill bodies are not preloaded;
+when a skill applies, the model reads that skill's `SKILL.md` from the listed
+path before using it. If claimed user input explicitly names a unique skill as
+`$skill-name`, Daat Locus also injects that `SKILL.md` body into the current
+turn's afterclaim context.
+
+Default roots:
+
+- project `.agents/skills` directories from the detected project root to the
+  runtime working directory
+- `~/.daat-locus/skills`
+- `~/.agents/skills`
+
+There is no global config switch for OpenSkills and there are no configurable
+scan roots. If no skill exists in the fixed roots, no `<skills>` block is
+injected.
+
+Each skill is a directory containing `SKILL.md` with YAML frontmatter:
+
+```markdown
+---
+name: demo
+description: Use this skill for demo workflows.
+---
+
+# Demo
+```
+
+`name` is optional and defaults to the skill directory name. `description` is
+required because it is the prompt-visible routing summary. A skill may also
+include `agents/openai.yaml`; `policy.allow_implicit_invocation = false` keeps
+it out of the automatic prompt index.
+
+Use the dashboard slash command `/skills` to inspect loaded skills. Supported
+forms are:
+
+- `/skills` or `/skills list`
+- `/skills show <skill>`
+- `/skills disable <skill>`
+- `/skills enable <skill>`
+- `/skills reload`
+
+`/skills disable <skill>` keeps the skill available for explicit `$skill-name`
+use, but removes it from the automatic prompt index. User overrides are stored
+in `config/openskills.toml` as disabled `SKILL.md` paths. The file is removed
+again when no local override remains.
 
 ## Telegram
 
