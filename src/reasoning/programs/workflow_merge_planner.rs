@@ -1,19 +1,15 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::reasoning::{ir::PromptIR, program::Program, signature::Signature};
-
-const WORKFLOW_MERGE_PLANNER_SYSTEM_PROMPT: &str = r#"You are responsible for judging whether two SOP primitives should be merged.
-Based on the two primitive specs, their reflections, and run evidence, output:
-1. should_merge
-2. merge rationale
-3. confidence
-4. accepted / selected
-
-Requirements:
-- Set should_merge=true only when the two primitives actually describe the same kind of reusable process.
-- Do not rely on surface wording similarity; compare task boundaries, failure modes, and process skeleton compatibility.
-- Explicitly reject high-risk merges."#;
+use crate::reasoning::{
+    ir::PromptIR,
+    program::Program,
+    prompts::{
+        PROGRAM_WORKFLOW_MERGE_PLANNER_INSTRUCTIONS, PROGRAM_WORKFLOW_MERGE_PLANNER_SYSTEM,
+        prompt_bullet_lines,
+    },
+    signature::Signature,
+};
 
 pub struct WorkflowMergePlannerProgram;
 
@@ -70,9 +66,10 @@ impl WorkflowMergePlannerProgram {
         source_workflow_reflection: String,
         source_run_evidence: String,
     ) -> PromptIR {
-        let mut ir = PromptIR::with_system(WORKFLOW_MERGE_PLANNER_SYSTEM_PROMPT);
-        ir.push_instruction("Do not merge because wording is similar; confirm convergence in task boundaries and process structure.");
-        ir.push_instruction("Reject the merge if the workflows only share recovery tactics or local steps but have different overall purposes.");
+        let mut ir = PromptIR::with_system(PROGRAM_WORKFLOW_MERGE_PLANNER_SYSTEM);
+        for instruction in prompt_bullet_lines(PROGRAM_WORKFLOW_MERGE_PLANNER_INSTRUCTIONS) {
+            ir.push_instruction(instruction);
+        }
         ir.push_section("target workflow id", target_workflow_id);
         ir.push_section("target primitive spec", target_workflow_spec);
         ir.push_section("target primitive reflection", target_workflow_reflection);

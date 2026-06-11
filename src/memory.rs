@@ -9,7 +9,10 @@ use crate::{
         truncate_text_to_token_budget_with_notice,
     },
     persistence::PersistenceStore,
-    reasoning::runtime::{AgentMessage, AgentToolSpec, HistoryMessage},
+    reasoning::{
+        prompts::{MID_TURN_SUMMARY_PREFIX, RUNTIME_HISTORY_SUMMARY_PREFIX},
+        runtime::{AgentMessage, AgentToolSpec, HistoryMessage},
+    },
     tool_ui::{
         ActivatePrimitiveUiData, CreatePrimitiveSpecUiData, PatchUiData, PlanUiData,
         TelegramUiData, TerminalUiData, ToolCallUiEvent, ToolUiData, ToolUiEvent,
@@ -18,8 +21,6 @@ use crate::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-const RUNTIME_HISTORY_SUMMARY_PREFIX: &str = "Earlier runtime history summary:";
-const MID_TURN_SUMMARY_PREFIX: &str = "Earlier tool/context progress summary:";
 const RUNTIME_CONVERSATION_FILE_NAME: &str = "runtime_conversation.json";
 const RUNTIME_CONVERSATION_LEGACY_FILE_NAME: &str = "runtime_conversation";
 const RUNTIME_HISTORY_TOOL_MESSAGE_MAX_TOKENS: usize = 600;
@@ -1101,7 +1102,7 @@ fn build_runtime_prompt_history_summary(
     }
 
     let omitted = rendered.len().saturating_sub(12);
-    let mut lines = vec!["Earlier runtime history summary:".to_string()];
+    let mut lines = vec![RUNTIME_HISTORY_SUMMARY_PREFIX.to_string()];
     lines.extend(
         rendered
             .into_iter()

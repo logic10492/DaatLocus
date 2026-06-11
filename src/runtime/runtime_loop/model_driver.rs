@@ -7,6 +7,7 @@ use crate::{
         DashboardContextCompositionPrefixUnit, DashboardContextCompositionSegment,
         DashboardContextCompositionSnapshot,
     },
+    reasoning::prompts::{MID_TURN_SUMMARY_PREFIX, RUNTIME_HISTORY_SUMMARY_PREFIX},
     reasoning::runtime::AgentToolSpec,
     runtime::bootstrap::save_token_estimate_baseline,
 };
@@ -284,8 +285,8 @@ fn context_composition_message_name(message: &AgentMessage) -> String {
                 "app_state".to_string()
             } else if text.contains("<claimed_input>") {
                 "claimed_input".to_string()
-            } else if text.contains("Earlier runtime history summary:")
-                || text.contains("Earlier tool/context progress summary:")
+            } else if text.contains(RUNTIME_HISTORY_SUMMARY_PREFIX)
+                || text.contains(MID_TURN_SUMMARY_PREFIX)
             {
                 "summarized_history".to_string()
             } else {

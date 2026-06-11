@@ -1,19 +1,15 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::reasoning::{ir::PromptIR, program::Program, signature::Signature};
-
-const WORKFLOW_EVOLUTION_PLANNER_SYSTEM_PROMPT: &str = r#"You are responsible for sleep-time optimization planning for a single SOP primitive.
-Based on the primitive spec and its corresponding PrimitiveRunRecord evidence, produce:
-1. one structured reflection
-2. patch candidates
-3. evaluations for those patch candidates
-
-Requirements:
-- Diagnose which primitive spec sections are insufficient before proposing patch candidates.
-- Patches must express incremental spec changes only; do not rewrite the entire primitive.
-- Evaluations must explicitly state which candidate should be selected.
-- If the current primitive is not worth changing, output should_optimize=false."#;
+use crate::reasoning::{
+    ir::PromptIR,
+    program::Program,
+    prompts::{
+        PROGRAM_WORKFLOW_EVOLUTION_PLANNER_INSTRUCTIONS, PROGRAM_WORKFLOW_EVOLUTION_PLANNER_SYSTEM,
+        prompt_bullet_lines,
+    },
+    signature::Signature,
+};
 
 pub struct WorkflowEvolutionPlannerProgram;
 
@@ -116,14 +112,10 @@ impl WorkflowEvolutionPlannerProgram {
         workflow_spec_markdown: String,
         workflow_run_evidence_json: String,
     ) -> PromptIR {
-        let mut ir = PromptIR::with_system(WORKFLOW_EVOLUTION_PLANNER_SYSTEM_PROMPT);
-        ir.push_instruction(
-            "Focus on the preconditions, workflow steps, done criteria, and recovery sections of the primitive spec.",
-        );
-        ir.push_instruction("Patch candidates should be small and precise; do not repeat the same meaning across multiple sections.");
-        ir.push_instruction(
-            "If the evidence shows the primitive itself is stable, set should_optimize=false.",
-        );
+        let mut ir = PromptIR::with_system(PROGRAM_WORKFLOW_EVOLUTION_PLANNER_SYSTEM);
+        for instruction in prompt_bullet_lines(PROGRAM_WORKFLOW_EVOLUTION_PLANNER_INSTRUCTIONS) {
+            ir.push_instruction(instruction);
+        }
         ir.push_section("workflow id", workflow_id);
         ir.push_section("primitive spec", workflow_spec_markdown);
         ir.push_section("workflow run evidence", workflow_run_evidence_json);

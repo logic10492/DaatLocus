@@ -1,0 +1,1 @@
+- The goal is to evaluate candidate behavior on a concrete rollout case; rollout target primitive spec is the real result after applying the candidate.

@@ -12,7 +12,8 @@ use super::{
     prompts::{
         APPS_UNIT_HOW, APPS_UNIT_WHAT, APPS_UNIT_WHEN, EVENT_UNIT_HOW, EVENT_UNIT_WHAT,
         PLAN_UNIT_HOW, PLAN_UNIT_WHAT, PLAN_UNIT_WHEN, WORKFLOW_UNIT_HOW, WORKFLOW_UNIT_WHAT,
-        WORKFLOW_UNIT_WHEN, WORKSPACE_UNIT_HOW, WORKSPACE_UNIT_WHEN, WORKSPACE_UNIT_WHY,
+        WORKFLOW_UNIT_WHEN, WORKSPACE_UNIT_HOW, WORKSPACE_UNIT_WHAT_PLACEHOLDER,
+        WORKSPACE_UNIT_WHEN, WORKSPACE_UNIT_WHY,
     },
     turn_compile::load_prompt_persona_spec_sync,
 };
@@ -123,8 +124,7 @@ pub fn runtime_system_prompt_doc_from_additions(additions: &[String]) -> PromptD
         PromptNode::Unit(PromptUnitDoc::new(
             "workspace",
             vec![PromptBlock::Paragraph(
-                "The absolute runtime workspace path is injected into the real system prompt."
-                    .to_string(),
+                WORKSPACE_UNIT_WHAT_PLACEHOLDER.to_string(),
             )],
             vec![PromptBlock::Paragraph(WORKSPACE_UNIT_WHY.to_string())],
             vec![PromptBlock::Paragraph(WORKSPACE_UNIT_WHEN.to_string())],

@@ -8,7 +8,13 @@ use crate::{
     context::Context,
     dashboard::{DashboardSessionTitle, DashboardState},
     events::{EventPayload, EventView},
-    reasoning::runtime::{HistoryMessage, PromptRequest},
+    reasoning::{
+        prompts::{
+            SESSION_TITLE_SYSTEM_REQUIREMENTS, SESSION_TITLE_SYSTEM_ROLE,
+            SESSION_TITLE_TOOL_DESCRIPTION, SESSION_TITLE_USER_MESSAGE_PREFIX,
+        },
+        runtime::{HistoryMessage, PromptRequest},
+    },
 };
 
 const SESSION_TITLE_REFRESH_INTERVAL_MS: i64 = 5 * 60 * 1000;
@@ -167,7 +173,7 @@ struct TitleOutput {
 async fn generate_session_title(context: &Context, excerpt: &str) -> Result<String> {
     let request = PromptRequest {
         tool_name: "set_session_title".to_string(),
-        tool_description: "Return a concise title for this Daat Locus session.".to_string(),
+        tool_description: SESSION_TITLE_TOOL_DESCRIPTION.to_string(),
         output_schema: json!({
             "type": "object",
             "properties": {
@@ -180,12 +186,12 @@ async fn generate_session_title(context: &Context, excerpt: &str) -> Result<Stri
             "additionalProperties": false
         }),
         system_messages: vec![
-            "You generate short UI labels for ongoing agent sessions.".to_string(),
-            "Return a specific title that captures the user's task or topic. Do not include IDs, timestamps, generic words like Session, or quotes. Keep it under 8 words when possible.".to_string(),
+            SESSION_TITLE_SYSTEM_ROLE.to_string(),
+            SESSION_TITLE_SYSTEM_REQUIREMENTS.to_string(),
         ],
         long_term_memory_messages: Vec::new(),
         history_messages: Vec::new(),
-        current_user_message: format!("Conversation excerpt:\n{excerpt}"),
+        current_user_message: format!("{SESSION_TITLE_USER_MESSAGE_PREFIX}\n{excerpt}"),
         retry_messages: Vec::new(),
     };
     let value = context.efficient_llm.run_json(context, request).await?;

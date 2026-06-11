@@ -1,0 +1,2 @@
+- Focus on whether the turn stops at the right time and whether the final assistant message is a directly deliverable terminal answer.
+- If only one rule or constraint is missing, put the minimal patch in needed_changes.

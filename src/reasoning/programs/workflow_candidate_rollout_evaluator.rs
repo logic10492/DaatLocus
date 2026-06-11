@@ -1,27 +1,15 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::reasoning::{ir::PromptIR, program::Program, signature::Signature};
-
-const WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_SYSTEM_PROMPT: &str = r#"You are responsible for single-case rollout evaluation of a SOP primitive frontier candidate.
-The candidate may be a patch or a merge. You will see:
-- target primitive spec after rollout
-- rollout result summary
-- target reflection
-- a concrete target rollout case containing flushed run record, executed steps, and boundary events
-- for merges, source primitive spec, source reflection, and one source rollout case
-- the candidate itself
-
-Your task is to judge:
-- whether the candidate may outperform the current baseline on this concrete case
-- whether there is obvious regression risk
-
-Output requirements:
-- `score`: overall score for this case
-- `accepted_case`: whether this case supports keeping the candidate
-- `improves_upon_baseline`: whether it improves upon the current baseline
-- `regression_risk`: whether there is obvious regression risk
-- `reason`: rationale based on this case"#;
+use crate::reasoning::{
+    ir::PromptIR,
+    program::Program,
+    prompts::{
+        PROGRAM_WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_INSTRUCTIONS,
+        PROGRAM_WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_SYSTEM, prompt_bullet_lines,
+    },
+    signature::Signature,
+};
 
 pub struct WorkflowCandidateRolloutEvaluatorProgram;
 
@@ -98,10 +86,12 @@ impl WorkflowCandidateRolloutEvaluatorProgram {
         source_rollout_case_json: String,
         candidate_json: String,
     ) -> PromptIR {
-        let mut ir = PromptIR::with_system(WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_SYSTEM_PROMPT);
-        ir.push_instruction(
-            "The goal is to evaluate candidate behavior on a concrete rollout case; rollout target primitive spec is the real result after applying the candidate.",
-        );
+        let mut ir = PromptIR::with_system(PROGRAM_WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_SYSTEM);
+        for instruction in
+            prompt_bullet_lines(PROGRAM_WORKFLOW_CANDIDATE_ROLLOUT_EVALUATOR_INSTRUCTIONS)
+        {
+            ir.push_instruction(instruction);
+        }
         ir.push_section("candidate kind", candidate_kind);
         ir.push_section(
             "rollout target primitive spec",

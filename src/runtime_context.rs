@@ -18,7 +18,11 @@ use crate::{
         prompt_assembler::AfterClaimContextAssembler,
         prompt_parts::AfterClaimContextInput,
         prompt_renderer::LlmPromptRenderer,
-        prompts::{HISTORY_COMPACTION_PROMPT, HISTORY_COMPACTION_SUMMARY_PREFIX},
+        prompts::{
+            HISTORY_COMPACTION_PROMPT, HISTORY_COMPACTION_SUMMARY_PREFIX,
+            HISTORY_COMPACTION_TOOL_DESCRIPTION, HISTORY_COMPACTION_USER_MESSAGE,
+            MID_TURN_SUMMARY_PREFIX, RUNTIME_HISTORY_SUMMARY_PREFIX,
+        },
         runtime::{
             AgentMessage, AgentToolSpec, HistoryMessage, PromptRequest,
             summarize_assistant_tool_call_protocol,
@@ -178,16 +182,14 @@ fn judge_request_budget_limits(context: &Context) -> RequestBudgetLimits {
 fn build_history_compaction_request(messages: Vec<HistoryMessage>) -> Option<PromptRequest> {
     Some(PromptRequest {
         tool_name: "history_compaction_summary".to_string(),
-        tool_description: "Generate a concise handoff summary for compacted runtime context"
-            .to_string(),
+        tool_description: HISTORY_COMPACTION_TOOL_DESCRIPTION.to_string(),
         output_schema: normalize_openai_json_schema(
             serde_json::to_value(schema_for!(HistoryCompactionOutput)).ok()?,
         ),
         system_messages: vec![HISTORY_COMPACTION_PROMPT.to_string()],
         long_term_memory_messages: Vec::new(),
         history_messages: messages,
-        current_user_message: "Generate a handoff summary from the runtime context that will be compacted out above. Output only the `summary` field."
-            .to_string(),
+        current_user_message: HISTORY_COMPACTION_USER_MESSAGE.to_string(),
         retry_messages: Vec::new(),
     })
 }
@@ -529,7 +531,7 @@ fn build_mid_turn_compaction_summary_fallback(
     }
 
     let omitted = rendered_lines.len().saturating_sub(12);
-    let mut lines = vec!["Earlier tool/context progress summary:".to_string()];
+    let mut lines = vec![MID_TURN_SUMMARY_PREFIX.to_string()];
     lines.extend(
         rendered_lines
             .into_iter()
@@ -574,7 +576,7 @@ fn build_runtime_prompt_history_summary_fallback(
     }
 
     let omitted = rendered.len().saturating_sub(12);
-    let mut lines = vec!["Earlier runtime history summary:".to_string()];
+    let mut lines = vec![RUNTIME_HISTORY_SUMMARY_PREFIX.to_string()];
     lines.extend(
         rendered
             .into_iter()

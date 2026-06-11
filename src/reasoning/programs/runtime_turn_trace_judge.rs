@@ -4,16 +4,15 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::reasoning::{ir::PromptIR, program::Program, signature::Signature};
-
-const RUNTIME_TURN_TRACE_JUDGE_SYSTEM_PROMPT: &str = r#"You are not the executor; you are the reviewer for a runtime turn trace.
-Your task is to judge, based on the given turn demo objective, whether the current system prompt induces correct multi-turn ReAct behavior.
-
-Requirements:
-- Judge only from the given prompt, turn demo, and turn trace. Do not assume nonexistent tools or extra context.
-- Prioritize whether the trace stops too early, treats interim wording as a final answer, or misses required tool-driven progress.
-- Set `passed=true` only when the trace clearly satisfies the demo's expected behavior.
-- In `needed_changes`, provide only the minimal necessary patch, not a full prompt rewrite."#;
+use crate::reasoning::{
+    ir::PromptIR,
+    program::Program,
+    prompts::{
+        PROGRAM_RUNTIME_TURN_TRACE_JUDGE_INSTRUCTIONS, PROGRAM_RUNTIME_TURN_TRACE_JUDGE_SYSTEM,
+        prompt_bullet_lines,
+    },
+    signature::Signature,
+};
 
 pub struct RuntimeTurnTraceJudgeProgram;
 
@@ -72,11 +71,10 @@ impl RuntimeTurnTraceJudgeProgram {
         judge_focus: String,
         turn_trace: String,
     ) -> PromptIR {
-        let mut ir = PromptIR::with_system(RUNTIME_TURN_TRACE_JUDGE_SYSTEM_PROMPT);
-        ir.push_instruction("Focus on whether the turn stops at the right time and whether the final assistant message is a directly deliverable terminal answer.");
-        ir.push_instruction(
-            "If only one rule or constraint is missing, put the minimal patch in needed_changes.",
-        );
+        let mut ir = PromptIR::with_system(PROGRAM_RUNTIME_TURN_TRACE_JUDGE_SYSTEM);
+        for instruction in prompt_bullet_lines(PROGRAM_RUNTIME_TURN_TRACE_JUDGE_INSTRUCTIONS) {
+            ir.push_instruction(instruction);
+        }
         ir.push_section("current system prompt", current_system_prompt);
         ir.push_section("previous system prompt", previous_system_prompt);
         ir.push_section("demo title", demo_title);
