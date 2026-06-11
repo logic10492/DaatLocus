@@ -36,6 +36,7 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 use std::time::Duration;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     app::AppId,
@@ -583,14 +584,14 @@ impl CommandPanel {
             CommandPanel::SkillsList(panel) => {
                 let rows = panel.visible_indices().len().min(8) as u16;
                 let error_rows = panel.errors.len().min(2) as u16;
-                4u16.saturating_add(rows)
+                5u16.saturating_add(rows)
                     .saturating_add(error_rows)
                     .clamp(6, 16)
             }
             CommandPanel::SkillsToggle(panel) => {
                 let rows = panel.visible_indices().len().min(8) as u16;
                 let feedback_rows = command_feedback_row_count(panel.feedback.as_ref());
-                4u16.saturating_add(rows)
+                5u16.saturating_add(rows)
                     .saturating_add(feedback_rows)
                     .clamp(6, 16)
             }
@@ -1156,6 +1157,33 @@ fn truncate_command_text(text: &str, max_chars: usize) -> String {
         .chars()
         .take(max_chars.saturating_sub(3))
         .collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn truncate_display_width(text: &str, max_width: usize) -> String {
+    let text = text.trim();
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+
+    let body_width = max_width.saturating_sub(3);
+    let mut out = String::new();
+    let mut width = 0usize;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width.saturating_add(ch_width) > body_width {
+            break;
+        }
+        out.push(ch);
+        width = width.saturating_add(ch_width);
+    }
     out.push_str("...");
     out
 }
@@ -3269,6 +3297,7 @@ fn render_skills_list_panel(f: &mut Frame, area: Rect, panel: &SkillsListPanel) 
         return;
     }
     let visible_indices = panel.visible_indices();
+    let row_width = rest.width as usize;
     let lines = visible_indices
         .iter()
         .skip(panel.scroll)
@@ -3286,18 +3315,27 @@ fn render_skills_list_panel(f: &mut Frame, area: Rect, panel: &SkillsListPanel) 
             } else {
                 Style::default().fg(Color::White)
             };
-            Some(Line::from(vec![
+            let fixed_width = 1usize
+                .saturating_add(1)
+                .saturating_add(UnicodeWidthStr::width(item.name.as_str()))
+                .saturating_add(2)
+                .saturating_add(UnicodeWidthStr::width(item.status.as_str()));
+            let description_width = row_width.saturating_sub(fixed_width.saturating_add(2));
+            let mut spans = vec![
                 Span::styled(marker, Style::default().fg(Color::Cyan)),
                 Span::raw(" "),
                 Span::styled(item.name.clone(), name_style),
                 Span::raw("  "),
                 Span::styled(item.status.clone(), Style::default().fg(Color::Gray)),
-                Span::raw("  "),
-                Span::styled(
-                    truncate_command_text(&item.description, 100),
+            ];
+            if description_width > 0 {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    truncate_display_width(&item.description, description_width),
                     Style::default().fg(Color::DarkGray),
-                ),
-            ]))
+                ));
+            }
+            Some(Line::from(spans))
         })
         .collect::<Vec<_>>();
     let lines = if lines.is_empty() {
@@ -3308,10 +3346,7 @@ fn render_skills_list_panel(f: &mut Frame, area: Rect, panel: &SkillsListPanel) 
     } else {
         lines
     };
-    f.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        rest,
-    );
+    f.render_widget(Paragraph::new(Text::from(lines)), rest);
 }
 
 fn render_skills_toggle_panel(f: &mut Frame, area: Rect, panel: &SkillsTogglePanel) {
@@ -3362,6 +3397,7 @@ fn render_skills_toggle_panel(f: &mut Frame, area: Rect, panel: &SkillsTogglePan
         return;
     }
     let visible_indices = panel.visible_indices();
+    let row_width = rest.width as usize;
     let lines = visible_indices
         .iter()
         .skip(panel.scroll)
@@ -3380,18 +3416,28 @@ fn render_skills_toggle_panel(f: &mut Frame, area: Rect, panel: &SkillsTogglePan
             } else {
                 Style::default().fg(Color::White)
             };
-            Some(Line::from(vec![
+            let status = format!("{} - {}", item.scope, item.status_description());
+            let fixed_width = 1usize
+                .saturating_add(1)
+                .saturating_add(UnicodeWidthStr::width(checkbox))
+                .saturating_add(1)
+                .saturating_add(UnicodeWidthStr::width(item.name.as_str()));
+            let status_width = row_width.saturating_sub(fixed_width.saturating_add(2));
+            let mut spans = vec![
                 Span::styled(marker, Style::default().fg(Color::Cyan)),
                 Span::raw(" "),
                 Span::styled(checkbox, Style::default().fg(Color::Gray)),
                 Span::raw(" "),
                 Span::styled(item.name.clone(), name_style),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{} - {}", item.scope, item.status_description()),
+            ];
+            if status_width > 0 {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    truncate_display_width(&status, status_width),
                     Style::default().fg(Color::Gray),
-                ),
-            ]))
+                ));
+            }
+            Some(Line::from(spans))
         })
         .collect::<Vec<_>>();
     let lines = if lines.is_empty() {
@@ -3402,10 +3448,7 @@ fn render_skills_toggle_panel(f: &mut Frame, area: Rect, panel: &SkillsTogglePan
     } else {
         lines
     };
-    f.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        rest,
-    );
+    f.render_widget(Paragraph::new(Text::from(lines)), rest);
 }
 
 fn render_telegram_access_panel(f: &mut Frame, area: Rect, picker: &TelegramAccessPicker) {
@@ -4177,6 +4220,7 @@ fn dashboard_command_is_known(verb: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn pending_request(chat_id: i64) -> PendingAccessRequest {
         PendingAccessRequest {
@@ -4194,6 +4238,19 @@ mod tests {
             requests: &[],
             state: Box::leak(Box::new(DashboardState::default())),
         }
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    out.push_str(cell.symbol());
+                }
+            }
+            out.push('\n');
+        }
+        out
     }
 
     #[test]
@@ -4281,6 +4338,42 @@ mod tests {
         let text = render_skills_list(&state);
         assert!(text.contains("OpenSkills loaded: 1"));
         assert!(text.contains("writer"));
+    }
+
+    #[test]
+    fn skills_list_panel_keeps_each_skill_on_one_row() {
+        let panel = CommandPanel::SkillsList(SkillsListPanel {
+            items: vec![
+                SkillsListPanelItem {
+                    name: "gpt-taste".to_string(),
+                    description: "Elite UX/UI & Advanced GSAP Motion Engineer. Enforces Python-driven true randomization for layout variance, strict AIDA page structure, wide editorial typography.".to_string(),
+                    path: "/tmp/skills/gpt-taste/SKILL.md".to_string(),
+                    scope: "user".to_string(),
+                    status: "auto-use enabled".to_string(),
+                },
+                SkillsListPanelItem {
+                    name: "shadcn".to_string(),
+                    description: "Manages shadcn components and projects".to_string(),
+                    path: "/tmp/skills/shadcn/SKILL.md".to_string(),
+                    scope: "user".to_string(),
+                    status: "auto-use enabled".to_string(),
+                },
+            ],
+            errors: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            search: String::new(),
+        });
+        let backend = TestBackend::new(72, panel.desired_height());
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|f| render_command_panel(f, f.area(), &panel))
+            .expect("draw skills panel");
+
+        let output = buffer_text(terminal.backend().buffer());
+        assert!(output.contains("gpt-taste"));
+        assert!(output.contains("shadcn"));
     }
 
     #[test]
