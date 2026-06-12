@@ -41,7 +41,6 @@ pub(crate) struct ResponsesCompatibleClient {
     effective_context_window_tokens: usize,
     auto_compact_threshold_tokens: usize,
     reserved_output_tokens: usize,
-    max_completion_tokens: usize,
     request_rate_limiter: Option<Arc<Mutex<VecDeque<Instant>>>>,
     token_usage: std::sync::Mutex<TokenUsageInfo>,
     supports_vision: std::sync::atomic::AtomicBool,
@@ -64,7 +63,6 @@ impl ResponsesCompatibleClient {
         let effective_context_window_tokens = model_config.effective_context_window_tokens();
         let auto_compact_threshold_tokens = model_config.auto_compact_token_limit();
         let reserved_output_tokens = model_config.reserved_output_tokens();
-        let max_completion_tokens = model_config.max_completion_tokens();
         let supports_vision = match model_config.supports_vision {
             Some(v) => v,
             None => catalog_model_capacity(&model_config.model_id)
@@ -85,7 +83,6 @@ impl ResponsesCompatibleClient {
             effective_context_window_tokens,
             auto_compact_threshold_tokens,
             reserved_output_tokens,
-            max_completion_tokens,
             request_rate_limiter: shared_request_rate_limiter(
                 &base_url,
                 &model_config.model_id,
@@ -583,7 +580,6 @@ fn base_payload(
         "parallel_tool_calls": true,
         "store": false,
         "stream": true,
-        "max_output_tokens": client.max_completion_tokens,
     });
     if let Some(budget) = client.thinking_budget.as_deref()
         && !budget.eq_ignore_ascii_case("none")
@@ -912,5 +908,29 @@ fn sanitize_text_format_name(name: &str) -> String {
         "response".to_string()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ModelConfig;
+
+    #[test]
+    fn responses_compat_payload_omits_max_output_tokens_parameter() {
+        let client = ResponsesCompatibleClient::new(
+            "test-key",
+            "https://example.test/v1",
+            &ModelConfig {
+                model_id: "gpt-5.5".to_string(),
+                provider: "responses-compatible".to_string(),
+                max_completion_tokens: 128_000,
+                ..ModelConfig::default()
+            },
+        );
+
+        let payload = base_payload(&client, "instructions".to_string(), vec![], vec![]);
+
+        assert!(payload.get("max_output_tokens").is_none(), "{payload:#}");
     }
 }

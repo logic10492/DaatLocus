@@ -78,7 +78,6 @@ struct CodexResponsesClient {
     effective_context_window_tokens: usize,
     auto_compact_threshold_tokens: usize,
     reserved_output_tokens: usize,
-    max_completion_tokens: usize,
     request_rate_limiter: Option<Arc<tokio::sync::Mutex<VecDeque<Instant>>>>,
     token_usage: std::sync::Mutex<TokenUsageInfo>,
     client_version: String,
@@ -170,7 +169,6 @@ impl CodexResponsesClient {
         let effective_context_window_tokens = model_config.effective_context_window_tokens();
         let auto_compact_threshold_tokens = model_config.auto_compact_token_limit();
         let reserved_output_tokens = model_config.reserved_output_tokens();
-        let max_completion_tokens = model_config.max_completion_tokens();
         let client_version = codex_oauth_client_version();
         let supports_vision_initial = {
             use crate::model_catalog::catalog_model_capacity;
@@ -196,7 +194,6 @@ impl CodexResponsesClient {
             effective_context_window_tokens,
             auto_compact_threshold_tokens,
             reserved_output_tokens,
-            max_completion_tokens,
             request_rate_limiter: shared_request_rate_limiter(
                 &base_url,
                 &model_config.model_id,
@@ -901,7 +898,6 @@ fn base_responses_payload(
         "parallel_tool_calls": true,
         "store": false,
         "stream": true,
-        "max_output_tokens": client.max_completion_tokens,
         "include": [],
         "client_metadata": {
             "x-codex-installation-id": client.installation_id,
@@ -1653,6 +1649,20 @@ mod tests {
         assert_eq!(limits.context_window_tokens, 258_400);
         assert_eq!(limits.auto_compact_threshold_tokens, 244_800);
         assert_eq!(limits.reserved_output_tokens, 13_600);
+    }
+
+    #[test]
+    fn codex_payload_omits_unsupported_max_output_tokens_parameter() {
+        let payload = base_responses_payload(
+            &test_client(),
+            "instructions".to_string(),
+            vec![],
+            vec![],
+            None,
+            "agent",
+        );
+
+        assert!(payload.get("max_output_tokens").is_none(), "{payload:#}");
     }
 
     #[test]
