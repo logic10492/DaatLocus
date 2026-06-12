@@ -24,6 +24,8 @@ use crate::{
     },
 };
 
+const SESSION_STARTING_HEALTH_GRACE_MS: i64 = 60_000;
+
 struct ManagerTelegramInputRouter {
     sessions: session::SessionRegistry,
     session_tokens: SessionTokenStore,
@@ -464,6 +466,13 @@ async fn run_session_health_checks(
                 }
                 Ok(_) => {}
                 Err(err) => {
+                    if session_is_within_starting_health_grace(&info) {
+                        tracing::debug!(
+                            "session {} health check skipped during startup grace: {err:?}",
+                            info.session_id
+                        );
+                        continue;
+                    }
                     tracing::warn!("session {} health check failed: {err:?}", info.session_id);
                     session_tokens.write().remove(&info.session_id);
                     let _ = sessions.mark_dead(&info.session_id).await;
@@ -472,6 +481,20 @@ async fn run_session_health_checks(
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
+}
+
+fn session_is_within_starting_health_grace(info: &session::SessionInfo) -> bool {
+    session_is_within_starting_health_grace_at(info, chrono::Utc::now().timestamp_millis())
+}
+
+fn session_is_within_starting_health_grace_at(info: &session::SessionInfo, now_ms: i64) -> bool {
+    if info.status != session::SessionStatus::Starting {
+        return false;
+    }
+    let Some(last_seen_at_ms) = info.last_seen_at_ms else {
+        return false;
+    };
+    now_ms.saturating_sub(last_seen_at_ms) <= SESSION_STARTING_HEALTH_GRACE_MS
 }
 
 async fn run_session_telegram_outbox_delivery(
@@ -768,5 +791,28 @@ mod tests {
         );
         assert_eq!(shutdown_action, ManagerShutdownAction::Restart);
         assert!(completion.is_none());
+    }
+
+    #[test]
+    fn starting_sessions_get_health_check_grace() {
+        let mut info = session::SessionInfo::new(
+            session::SessionId::from_string("session-a".to_string()).unwrap(),
+            session::SessionScope::General,
+            None,
+        );
+        info.status = session::SessionStatus::Starting;
+        info.last_seen_at_ms = Some(1_000);
+
+        assert!(session_is_within_starting_health_grace_at(
+            &info,
+            1_000 + SESSION_STARTING_HEALTH_GRACE_MS
+        ));
+        assert!(!session_is_within_starting_health_grace_at(
+            &info,
+            1_001 + SESSION_STARTING_HEALTH_GRACE_MS
+        ));
+
+        info.status = session::SessionStatus::Ready;
+        assert!(!session_is_within_starting_health_grace_at(&info, 1_000));
     }
 }

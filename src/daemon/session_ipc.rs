@@ -1,9 +1,9 @@
 //! Manager-to-session IPC protocol and local socket framing.
 
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use interprocess::local_socket::{
-    self, GenericFilePath, ListenerOptions, ToFsName,
+    self, GenericNamespaced, ListenerOptions, ToNsName,
     tokio::prelude::{LocalSocketListener, LocalSocketStream},
     traits::tokio::Listener as _,
 };
@@ -307,30 +307,13 @@ pub struct SessionIpcServer {
 }
 
 impl SessionIpcServer {
-    pub async fn bind(ipc_name: impl AsRef<Path>) -> Result<Self> {
-        let path = ipc_name.as_ref();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|err| {
-                miette!(
-                    "create IPC socket directory {} failed: {err}",
-                    parent.display()
-                )
-            })?;
-        }
-        #[cfg(unix)]
-        if path.exists() {
-            tokio::fs::remove_file(path).await.map_err(|err| {
-                miette!("remove stale IPC socket {} failed: {err}", path.display())
-            })?;
-        }
-        let name = path
-            .to_path_buf()
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|err| miette!("build IPC socket name {} failed: {err}", path.display()))?;
+    pub async fn bind(ipc_name: impl AsRef<str>) -> Result<Self> {
+        let ipc_name = ipc_name.as_ref();
+        let name = build_local_socket_name(ipc_name)?;
         let listener = ListenerOptions::new()
             .name(name)
             .create_tokio()
-            .map_err(|err| miette!("bind IPC socket {} failed: {err}", path.display()))?;
+            .map_err(|err| miette!("bind IPC socket {ipc_name} failed: {err}"))?;
         Ok(Self { listener })
     }
 
@@ -342,39 +325,19 @@ impl SessionIpcServer {
     }
 }
 
-pub async fn read_request(stream: &mut LocalSocketStream) -> Result<IpcRequestEnvelope> {
-    read_json_frame(stream).await
-}
-
-pub async fn write_response(
-    stream: &mut LocalSocketStream,
-    response: &IpcResponseEnvelope,
-) -> Result<()> {
-    write_json_frame(stream, response).await
-}
-
-pub async fn read_stream_event(stream: &mut LocalSocketStream) -> Result<SessionIpcStreamEvent> {
-    read_json_frame(stream).await
-}
-
-pub async fn write_stream_event<W>(writer: &mut W, event: &SessionIpcStreamEvent) -> Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    write_json_frame(writer, event).await
+fn build_local_socket_name(ipc_name: &str) -> Result<local_socket::Name<'_>> {
+    ipc_name
+        .to_ns_name::<GenericNamespaced>()
+        .map_err(|err| miette!("build IPC socket name {ipc_name} failed: {err}"))
 }
 
 async fn connect_local_socket(ipc_name: &str) -> Result<LocalSocketStream> {
-    let path = Path::new(ipc_name);
-    let name = path
-        .to_path_buf()
-        .to_fs_name::<GenericFilePath>()
-        .map_err(|err| miette!("build IPC socket name {} failed: {err}", path.display()))?;
+    let name = build_local_socket_name(ipc_name)?;
     local_socket::ConnectOptions::new()
         .name(name)
         .connect_tokio()
         .await
-        .map_err(|err| miette!("connect IPC socket {} failed: {err}", path.display()))
+        .map_err(|err| miette!("connect IPC socket {ipc_name} failed: {err}"))
 }
 
 async fn write_json_frame<W, T>(writer: &mut W, value: &T) -> Result<()>
@@ -408,6 +371,28 @@ where
     Ok(())
 }
 
+pub async fn read_request(stream: &mut LocalSocketStream) -> Result<IpcRequestEnvelope> {
+    read_json_frame(stream).await
+}
+
+pub async fn write_response(
+    stream: &mut LocalSocketStream,
+    response: &IpcResponseEnvelope,
+) -> Result<()> {
+    write_json_frame(stream, response).await
+}
+
+pub async fn read_stream_event(stream: &mut LocalSocketStream) -> Result<SessionIpcStreamEvent> {
+    read_json_frame(stream).await
+}
+
+pub async fn write_stream_event<W>(writer: &mut W, event: &SessionIpcStreamEvent) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_json_frame(writer, event).await
+}
+
 async fn read_json_frame<R, T>(reader: &mut R) -> Result<T>
 where
     R: AsyncRead + Unpin,
@@ -439,6 +424,10 @@ mod tests {
 
     fn fixed_session_id() -> SessionId {
         SessionId::from_string("session-test".to_string()).expect("valid session id")
+    }
+
+    fn test_ipc_name() -> String {
+        format!("daat-locus-test-{}", uuid::Uuid::new_v4())
     }
 
     #[test]
@@ -529,17 +518,12 @@ mod tests {
 
     #[tokio::test]
     async fn ipc_client_rejects_mismatched_response_request_id() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let socket_path = temp.path().join("session.sock");
-        let server = SessionIpcServer::bind(&socket_path)
+        let ipc_name = test_ipc_name();
+        let server = SessionIpcServer::bind(&ipc_name)
             .await
             .expect("bind IPC server");
-        let client = SessionIpcClient::new(
-            fixed_session_id(),
-            socket_path.display().to_string(),
-            "ipc-token".to_string(),
-        )
-        .with_timeout(Duration::from_secs(2));
+        let client = SessionIpcClient::new(fixed_session_id(), ipc_name, "ipc-token".to_string())
+            .with_timeout(Duration::from_secs(2));
 
         let server_future = async {
             let mut stream = server.accept().await.expect("accept IPC client");

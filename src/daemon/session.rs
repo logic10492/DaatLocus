@@ -11,7 +11,6 @@ use uuid::Uuid;
 use crate::daat_locus_paths::{DaatLocusPaths, daat_locus_paths};
 
 const SESSION_REGISTRY_FILE_NAME: &str = "sessions.json";
-const SESSION_IPC_DIR_NAME: &str = "sessions-ipc";
 const SESSION_IPC_TOKEN_FILE_NAME: &str = "ipc-token";
 const TELEGRAM_SESSION_DEFAULTS_FILE_NAME: &str = "telegram-session-defaults.json";
 
@@ -426,13 +425,8 @@ pub fn hash_ipc_token(token: &str) -> String {
         .collect::<String>()
 }
 
-pub async fn session_ipc_path(session_id: &SessionId) -> Result<PathBuf> {
-    let paths = daat_locus_paths().await;
-    let dir = paths.runtime_dir().join(SESSION_IPC_DIR_NAME);
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|err| miette!("create session ipc dir {} failed: {err}", dir.display()))?;
-    Ok(dir.join(format!("{}.sock", session_id.as_str())))
+pub fn session_ipc_name(session_id: &SessionId) -> String {
+    format!("daat-locus-session-{}", session_id.as_str())
 }
 
 pub async fn store_session_ipc_token(session_id: &SessionId, token: &str) -> Result<()> {
@@ -481,6 +475,16 @@ mod tests {
         SessionId::from_string(value.to_string()).expect("valid session id")
     }
 
+    #[test]
+    fn session_ipc_name_is_namespaced_identifier() {
+        let name = session_ipc_name(&fixed_session_id("session-a"));
+
+        assert_eq!(name, "daat-locus-session-session-a");
+        assert!(!name.contains('\\'));
+        assert!(!name.contains('/'));
+        assert!(!name.ends_with(".sock"));
+    }
+
     #[tokio::test]
     async fn session_registry_persists_lifecycle_and_allows_project_duplicates() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -514,7 +518,7 @@ mod tests {
             .mark_starting(
                 &first.session_id,
                 1234,
-                "/tmp/session.sock".to_string(),
+                "daat-locus-session-test".to_string(),
                 "raw-token",
             )
             .await
@@ -522,7 +526,10 @@ mod tests {
         let starting = registry.get(&first.session_id).expect("starting session");
         assert_eq!(starting.status, SessionStatus::Starting);
         assert_eq!(starting.pid, Some(1234));
-        assert_eq!(starting.ipc_name.as_deref(), Some("/tmp/session.sock"));
+        assert_eq!(
+            starting.ipc_name.as_deref(),
+            Some("daat-locus-session-test")
+        );
         assert_eq!(starting.ipc_token_hash, Some(hash_ipc_token("raw-token")));
         assert_ne!(starting.ipc_token_hash.as_deref(), Some("raw-token"));
 
@@ -586,7 +593,7 @@ mod tests {
             Some("Visible".to_string()),
         );
         info.pid = Some(42);
-        info.ipc_name = Some("/tmp/session-a.sock".to_string());
+        info.ipc_name = Some("daat-locus-session-a".to_string());
         info.ipc_token_hash = Some("secret-hash".to_string());
         let value = serde_json::to_value(SessionSummary::from(info)).expect("serialize summary");
         let object = value.as_object().expect("summary object");
@@ -598,7 +605,7 @@ mod tests {
         assert!(!object.contains_key("ipc_name"));
         assert!(!object.contains_key("ipc_token_hash"));
         assert!(!value.to_string().contains("secret-hash"));
-        assert!(!value.to_string().contains("session-a.sock"));
+        assert!(!value.to_string().contains("daat-locus-session-a"));
     }
 
     #[tokio::test]

@@ -128,7 +128,7 @@ pub(crate) async fn run_session_serve(
         args.ipc_name
     ));
 
-    crate::browser_install::maybe_setup_browser_runtime().await;
+    tokio::spawn(crate::browser_install::maybe_setup_browser_runtime());
     let compiled_prompts = load_compiled_prompts_only(&config).await?;
     let memory = Memory::with_session(session_id.as_str()).await;
     let plan = Plan::with_session(session_id.as_str()).await;

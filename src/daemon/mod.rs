@@ -70,7 +70,7 @@ pub use auth::{
 };
 
 pub const DAEMON_BIND_HOST: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
-pub const DAEMON_CLIENT_HOST: Ipv4Addr = Ipv4Addr::UNSPECIFIED;
+pub const DAEMON_CLIENT_HOST: &str = "localhost";
 pub const DAEMON_HOST_DISPLAY: &str = "0.0.0.0";
 /// Manager startup should be quick because runtime initialization belongs to
 /// session workers. Keep this short so startup failures do not look like hangs.
@@ -1836,8 +1836,7 @@ async fn spawn_session_process(
     session_id: session::SessionId,
     info: session::SessionInfo,
 ) -> Result<u32> {
-    let ipc_path = session::session_ipc_path(&session_id).await?;
-    let ipc_name = ipc_path.display().to_string();
+    let ipc_name = session::session_ipc_name(&session_id);
     let ipc_token = session::generate_ipc_token();
     let binary = std::env::current_exe()
         .map_err(|err| miette!("resolve current executable failed: {err}"))?;
@@ -1875,6 +1874,12 @@ async fn spawn_session_process(
     let startup_title = match wait_for_session_ready(&client).await {
         Ok(title) => title,
         Err(err) => {
+            tracing::warn!("session `{session_id}` did not become ready; terminating pid {pid}");
+            let _ = signal_process(pid, Signal::Term);
+            if !wait_for_process_exit(pid, SESSION_PROCESS_TERM_TIMEOUT).await {
+                let _ = signal_process(pid, Signal::Kill);
+                let _ = wait_for_process_exit(pid, SESSION_PROCESS_KILL_TIMEOUT).await;
+            }
             let _ = sessions.mark_dead(&session_id).await;
             return Err(err);
         }
@@ -3024,6 +3029,14 @@ mod tests {
         lifecycle.set(DaemonLifecycleState::Ready);
         lifecycle.mark_failed_if_initializing();
         assert_eq!(lifecycle.get(), DaemonLifecycleState::Ready);
+    }
+
+    #[test]
+    fn daemon_client_connects_to_localhost_not_bind_unspecified_address() {
+        let client = DaemonClient::new(53825);
+
+        assert_eq!(client.base_url(), "http://localhost:53825");
+        assert_eq!(client.ws_url(), "ws://localhost:53825/dashboard/stream");
     }
 
     #[test]
