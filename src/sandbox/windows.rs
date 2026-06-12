@@ -48,7 +48,7 @@ use windows_sys::Win32::{
         Pipes::CreatePipe,
         SystemServices::SE_GROUP_LOGON_ID,
         Threading::{
-            CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, GetCurrentProcess,
+            CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, GetCurrentProcess,
             GetExitCodeProcess, GetProcessId, INFINITE, OpenProcessToken, PROCESS_INFORMATION,
             STARTF_USESTDHANDLES, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
         },
@@ -308,7 +308,7 @@ fn spawn_restricted_inner(
             ptr::null(),
             ptr::null(),
             1,
-            CREATE_UNICODE_ENVIRONMENT,
+            CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
             env_block.as_ptr().cast::<c_void>(),
             current_dir_wide.as_ptr(),
             &startup_info,

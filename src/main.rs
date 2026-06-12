@@ -26,6 +26,7 @@ mod pending_work;
 mod persistence;
 mod plan;
 mod preturn_state;
+mod process_spawn;
 mod providers;
 mod reasoning;
 mod runtime;

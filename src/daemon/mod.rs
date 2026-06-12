@@ -1857,6 +1857,7 @@ async fn spawn_session_process(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    crate::process_spawn::apply_no_window(&mut command);
     let child = command
         .spawn()
         .map_err(|err| miette!("spawn session process failed: {err}"))?;
@@ -2864,13 +2865,13 @@ pub async fn spawn_detached_daemon_process() -> Result<()> {
         .env(DAEMONIZE_ENV, "1");
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-
         const DETACHED_PROCESS: u32 = 0x00000008;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        crate::process_spawn::apply_no_window_with_flags(
+            &mut command,
+            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        );
     }
     command
         .spawn()

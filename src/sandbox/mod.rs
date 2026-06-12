@@ -457,6 +457,7 @@ pub(super) fn apply_std_command_options(
     if let Some(current_dir) = options.current_dir {
         command.current_dir(current_dir);
     }
+    crate::process_spawn::apply_no_window(command);
     command
         .stdin(options.stdin.to_stdio())
         .stdout(options.stdout.to_stdio())
