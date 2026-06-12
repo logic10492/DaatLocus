@@ -15,9 +15,9 @@ use super::{
     apps::{AppAttentionActivityCell, BrowserActivityCell, LiveBrowserActivityCell},
     common::{
         AssistantActivityCell, CodingEditActivityCell, CodingOpenProjectActivityCell,
-        CodingReviewActivityCell, CodingToolCallActivityCell, CodingToolGroupActivityCell,
-        ErrorActivityCell, GenericAppActivityCell, TerminalWaitActivityCell, ThinkingActivityCell,
-        UserActivityCell,
+        CodingReviewActivityCell, ErrorActivityCell, ExploredActivityCell,
+        ExploredCallActivityCell, GenericAppActivityCell, TerminalWaitActivityCell,
+        ThinkingActivityCell, UserActivityCell,
     },
     exec::{ExecResultActivityCell, LiveExecActivityCell},
     highlight::{DiffScopeBackgrounds, diff_scope_backgrounds, highlight_patch_lines},
@@ -315,7 +315,7 @@ impl Renderable for ActivityCell {
             ActivityCell::User(c) => 3 + (c.body_lines.len() as u16).min(20),
             ActivityCell::Thinking(c) => 3 + (c.body_lines.len() as u16).min(20),
             ActivityCell::CodingOpenProject(c) => 3 + (c.detail_lines.len() as u16).min(8),
-            ActivityCell::CodingToolGroup(c) => {
+            ActivityCell::Explored(c) => {
                 let detail_count = c
                     .calls
                     .iter()
@@ -357,7 +357,7 @@ fn render_activity_cell_lines(cell: &ActivityCell, max_width: u16) -> Vec<Line<'
         ActivityCell::Browser(cell) => render_browser_cell_lines(cell),
         ActivityCell::LiveBrowser(cell) => render_live_browser_cell_lines(cell),
         ActivityCell::CodingOpenProject(cell) => render_coding_open_project_cell_lines(cell),
-        ActivityCell::CodingToolGroup(cell) => render_coding_tool_group_cell_lines(cell),
+        ActivityCell::Explored(cell) => render_explored_cell_lines(cell),
         ActivityCell::CodingEdit(cell) => render_coding_edit_cell_lines(cell),
         ActivityCell::CodingReview(cell) => render_coding_review_cell_lines(cell),
         ActivityCell::GenericApp(cell) => render_generic_app_cell_lines(cell),
@@ -597,7 +597,7 @@ fn render_coding_open_project_cell_lines(
     )
 }
 
-fn render_coding_tool_group_cell_lines(cell: &CodingToolGroupActivityCell) -> Vec<Line<'static>> {
+fn render_explored_cell_lines(cell: &ExploredActivityCell) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled(
             glyph::CODING.to_string(),
@@ -620,7 +620,7 @@ fn render_coding_tool_group_cell_lines(cell: &CodingToolGroupActivityCell) -> Ve
             Span::raw("  "),
             Span::styled(branch, Style::default().fg(Color::DarkGray)),
             Span::styled(
-                coding_tool_call_display(call),
+                explored_call_display(call),
                 Style::default().fg(Color::Gray),
             ),
         ]));
@@ -639,7 +639,7 @@ fn render_coding_tool_group_cell_lines(cell: &CodingToolGroupActivityCell) -> Ve
     lines
 }
 
-fn coding_tool_call_display(call: &CodingToolCallActivityCell) -> String {
+fn explored_call_display(call: &ExploredCallActivityCell) -> String {
     let tool_name = call.tool_name.trim();
     let summary = call.summary.trim();
     match tool_name {
@@ -1768,30 +1768,30 @@ That's it.";
     }
 
     #[test]
-    fn coding_tool_group_renders_codex_style_exploration_lines() {
-        let cell = CodingToolGroupActivityCell {
-            stable_id: "coding-tools-dashboard".to_string(),
+    fn explored_renders_codex_style_exploration_lines() {
+        let cell = ExploredActivityCell {
+            stable_id: "explored".to_string(),
             title: "Explored".to_string(),
             calls: vec![
-                CodingToolCallActivityCell {
+                ExploredCallActivityCell {
                     tool_name: "Read".to_string(),
                     summary: "src/dashboard/mod.rs:L1268+83".to_string(),
                     detail_lines: vec!["83 lines".to_string()],
                     detail_title: None,
                 },
-                CodingToolCallActivityCell {
+                ExploredCallActivityCell {
                     tool_name: "Read".to_string(),
                     summary: "src/dashboard/mod.rs:L286+25".to_string(),
                     detail_lines: vec!["25 lines".to_string()],
                     detail_title: None,
                 },
-                CodingToolCallActivityCell {
+                ExploredCallActivityCell {
                     tool_name: "Search".to_string(),
                     summary: "push_command_input_display_text|command_input_display_text|display_text — 3 targets in src/dashboard/mod.rs".to_string(),
                     detail_lines: Vec::new(),
                     detail_title: None,
                 },
-                CodingToolCallActivityCell {
+                ExploredCallActivityCell {
                     tool_name: "Read".to_string(),
                     summary: "src/dashboard/mod.rs".to_string(),
                     detail_lines: Vec::new(),
@@ -1800,7 +1800,7 @@ That's it.";
             ],
         };
 
-        let rendered = render_coding_tool_group_cell_lines(&cell)
+        let rendered = render_explored_cell_lines(&cell)
             .iter()
             .map(line_text)
             .collect::<Vec<_>>();
@@ -1817,11 +1817,11 @@ That's it.";
         );
         assert!(
             rendered.iter().all(|line| !line.contains("Read×")),
-            "coding exploration should not render an aggregate action count: {rendered:?}"
+            "exploration should not render an aggregate action count: {rendered:?}"
         );
         assert!(
             rendered.iter().all(|line| !line.contains("lines")),
-            "coding exploration should not render read line-count details: {rendered:?}"
+            "exploration should not render read line-count details: {rendered:?}"
         );
     }
 

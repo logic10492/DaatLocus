@@ -22,8 +22,9 @@ use crate::{
     runtime::scope_client::ScopeClient,
     schema_utils::structured_edit_args_schema,
     tool_ui::{
-        CodingEditUiData, CodingToolCallUiData, PatchDiffLineKind, PatchDiffLineUiData,
-        PatchFileOperation, PatchFileUiData, ToolCallUiEvent, ToolUiEvent, compact_body_lines,
+        CodingEditUiData, EXPLORED_STABLE_ID, ExploredCallUiData, PatchDiffLineKind,
+        PatchDiffLineUiData, PatchFileOperation, PatchFileUiData, ToolCallUiEvent, ToolUiEvent,
+        compact_body_lines,
     },
 };
 
@@ -362,7 +363,6 @@ pub struct CodingApp {
     root_instructions: Vec<ProjectInstructionDocument>,
     root_instruction_fingerprint: Option<String>,
     delivered_scoped_instructions: HashSet<DeliveredProjectInstructionKey>,
-    coding_tool_group_calls: Vec<CodingToolCallUiData>,
     last_action: Option<String>,
 }
 
@@ -375,7 +375,6 @@ impl CodingApp {
             root_instructions: Vec::new(),
             root_instruction_fingerprint: None,
             delivered_scoped_instructions: HashSet::new(),
-            coding_tool_group_calls: Vec::new(),
             last_action: None,
         }
     }
@@ -495,7 +494,6 @@ impl CodingApp {
         self.root_instructions = root_instructions.clone();
         self.root_instruction_fingerprint = Some(root_instruction_fingerprint.clone());
         self.delivered_scoped_instructions.clear();
-        self.coding_tool_group_calls.clear();
         self.last_action = Some("opened project".to_string());
 
         let mut model_parts = vec![config_hint_summary.model_content()];
@@ -653,37 +651,21 @@ impl CodingApp {
         Ok(())
     }
 
-    fn coding_tool_group_event(
-        &mut self,
+    fn explored_event(
+        &self,
         tool_name: impl Into<String>,
         summary: impl Into<String>,
         detail_lines: Vec<String>,
     ) -> ToolUiEvent {
-        const MAX_GROUPED_CODING_CALLS: usize = 24;
-
-        self.coding_tool_group_calls.push(CodingToolCallUiData {
-            tool_name: tool_name.into(),
-            summary: summary.into(),
-            detail_lines,
-        });
-        if self.coding_tool_group_calls.len() > MAX_GROUPED_CODING_CALLS {
-            let drop_count = self.coding_tool_group_calls.len() - MAX_GROUPED_CODING_CALLS;
-            self.coding_tool_group_calls.drain(0..drop_count);
-        }
-
-        ToolUiEvent::coding_tool_group(
-            self.coding_tool_group_stable_id(),
+        ToolUiEvent::explored(
+            EXPLORED_STABLE_ID,
             "Explored",
-            self.coding_tool_group_calls.clone(),
+            vec![ExploredCallUiData {
+                tool_name: tool_name.into(),
+                summary: summary.into(),
+                detail_lines,
+            }],
         )
-    }
-
-    fn coding_tool_group_stable_id(&self) -> String {
-        let project_root = self.project_root_display();
-        let mut hasher = Sha256::new();
-        hasher.update(project_root.as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
-        format!("coding-tools-{}", short_hash(&hash))
     }
 
     fn coding_edit_stable_id(&self, edits: &[scope_engine::api::StructuredEdit]) -> String {
@@ -915,7 +897,7 @@ impl App for CodingApp {
                         &model_content,
                         context.tool_output_max_tokens,
                     )),
-                    ui_event: self.coding_tool_group_event(
+                    ui_event: self.explored_event(
                         "Search",
                         coding_pattern_result_summary(
                             &args.query,
@@ -948,7 +930,7 @@ impl App for CodingApp {
                     summary: format!("read code {summary_target}"),
                     payload: serde_json::to_value(&result).unwrap(),
                     model_content: Some(model_content),
-                    ui_event: self.coding_tool_group_event(
+                    ui_event: self.explored_event(
                         "Read",
                         coding_target_summary(&result.path),
                         vec![format!(

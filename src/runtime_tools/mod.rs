@@ -1127,6 +1127,13 @@ mod tests {
             result.model_content(),
             format!("2#{}|beta", scope_engine::patch::line_hash("beta"))
         );
+        let ToolUiEvent::Explored(ui_event) = &result.ui_event else {
+            panic!("read_file should render as explored activity");
+        };
+        assert_eq!(ui_event.stable_id, crate::tool_ui::EXPLORED_STABLE_ID);
+        assert_eq!(ui_event.calls.len(), 1);
+        assert_eq!(ui_event.calls[0].tool_name, "Read");
+        assert_eq!(ui_event.calls[0].summary, "notes.txt#L2-L2");
     }
 
     #[tokio::test]
@@ -1150,7 +1157,7 @@ mod tests {
             }),
         };
 
-        execute_agent_tool_call(&mut isolated.context, &call)
+        let result = execute_agent_tool_call(&mut isolated.context, &call)
             .await
             .expect("edit file");
 
@@ -1158,6 +1165,13 @@ mod tests {
             std::fs::read_to_string(root.join("README.md")).expect("read markdown fixture"),
             "new\n"
         );
+        let ToolUiEvent::Explored(ui_event) = &result.ui_event else {
+            panic!("edit_file should render as explored activity");
+        };
+        assert_eq!(ui_event.stable_id, crate::tool_ui::EXPLORED_STABLE_ID);
+        assert_eq!(ui_event.calls.len(), 1);
+        assert_eq!(ui_event.calls[0].tool_name, "Edit");
+        assert_eq!(ui_event.calls[0].summary, "README.md");
     }
 
     #[tokio::test]

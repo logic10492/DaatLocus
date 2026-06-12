@@ -17,6 +17,7 @@ use crate::{
 const DASHBOARD_ACTIVITY_HISTORY_DB_FILE: &str = "dashboard_activity.sqlite3";
 const DASHBOARD_ACTIVITY_HISTORY_LIMIT_MAX: usize = 200;
 pub const DASHBOARD_ACTIVITY_HISTORY_INITIAL_LIMIT: usize = 80;
+const MAX_EXPLORED_CALLS: usize = 24;
 
 #[derive(Clone)]
 pub struct DashboardActivityHistoryStore {
@@ -40,7 +41,7 @@ impl DashboardActivityHistoryWindow {
 
         let mut items = std::mem::take(&mut self.items);
         for mut item in incoming {
-            normalize_window_coding_tool_group_item(&mut item, &items);
+            normalize_window_explored_item(&mut item, &items);
             items.push(item);
         }
         self.items = dedupe_activity_items_keep_latest(items);
@@ -252,7 +253,7 @@ impl DashboardActivityHistoryStore {
 
             for item in items {
                 let mut item = item.clone();
-                normalize_window_coding_tool_group_item(&mut item, &existing_items);
+                normalize_window_explored_item(&mut item, &existing_items);
                 let item_json = serde_json::to_string(&item)
                     .into_diagnostic()
                     .wrap_err("encode dashboard activity item failed")?;
@@ -401,68 +402,47 @@ fn load_all_history_items(transaction: &rusqlite::Transaction<'_>) -> Result<Vec
         .map(|items| items.into_iter().flatten().collect())
 }
 
-fn normalize_window_coding_tool_group_item(
-    item: &mut WebActivityItem,
-    existing_items: &[WebActivityItem],
-) {
-    let Some(group_stable_id) = coding_tool_group_stable_id(item).map(str::to_owned) else {
+fn normalize_window_explored_item(item: &mut WebActivityItem, existing_items: &[WebActivityItem]) {
+    let Some(group_stable_id) = explored_stable_id(item).map(str::to_owned) else {
         return;
     };
 
-    let baseline_end = if let Some(active_group_item) = existing_items.last().and_then(|item| {
-        (coding_tool_group_stable_id(item) == Some(group_stable_id.as_str())).then_some(item)
+    if let Some(active_group_item) = existing_items.last().and_then(|item| {
+        (explored_stable_id(item) == Some(group_stable_id.as_str())).then_some(item)
     }) {
         item.id = active_group_item.id.clone();
-        existing_items.len().saturating_sub(1)
-    } else {
-        if !existing_items
-            .iter()
-            .any(|item| coding_tool_group_stable_id(item) == Some(group_stable_id.as_str()))
+        if let (
+            Some(ActivityCell::Explored(active_group)),
+            Some(ActivityCell::Explored(incoming_group)),
+        ) = (active_group_item.cell.as_ref(), item.cell.as_mut())
         {
-            return;
-        }
-
-        let segment = existing_items
-            .iter()
-            .filter(|item| coding_tool_group_stable_id(item) == Some(group_stable_id.as_str()))
-            .filter_map(|item| coding_tool_group_segment(&item.id))
-            .max()
-            .unwrap_or(0)
-            + 1;
-        item.id = format!("{}-segment-{segment}", item.id);
-        existing_items.len()
-    };
-
-    let baseline_calls = existing_items[..baseline_end]
-        .iter()
-        .filter_map(|item| match item.cell.as_ref()? {
-            ActivityCell::CodingToolGroup(group) if group.stable_id == group_stable_id => {
-                Some(group.calls.iter().cloned())
+            let mut calls = active_group.calls.clone();
+            calls.extend(incoming_group.calls.clone());
+            if calls.len() > MAX_EXPLORED_CALLS {
+                let drop_count = calls.len() - MAX_EXPLORED_CALLS;
+                calls.drain(0..drop_count);
             }
-            _ => None,
-        })
-        .flatten()
-        .collect::<Vec<_>>();
-
-    let mut changed = false;
-    if let Some(ActivityCell::CodingToolGroup(group)) = item.cell.as_mut() {
-        let overlap = suffix_prefix_overlap(&baseline_calls, &group.calls);
-        if overlap > 0 {
-            group.calls.drain(0..overlap);
-            changed = true;
+            incoming_group.calls = calls;
+            refresh_web_activity_item_from_cell(item);
         }
+        return;
     }
-    if changed {
-        refresh_web_activity_item_from_cell(item);
-    }
-}
 
-fn suffix_prefix_overlap<T: PartialEq>(baseline: &[T], incoming: &[T]) -> usize {
-    let max_overlap = baseline.len().min(incoming.len());
-    (1..=max_overlap)
-        .rev()
-        .find(|&len| baseline[baseline.len() - len..] == incoming[..len])
+    if !existing_items
+        .iter()
+        .any(|item| explored_stable_id(item) == Some(group_stable_id.as_str()))
+    {
+        return;
+    }
+
+    let segment = existing_items
+        .iter()
+        .filter(|item| explored_stable_id(item) == Some(group_stable_id.as_str()))
+        .filter_map(|item| explored_segment(&item.id))
+        .max()
         .unwrap_or(0)
+        + 1;
+    item.id = format!("{}-segment-{segment}", item.id);
 }
 
 fn refresh_web_activity_item_from_cell(item: &mut WebActivityItem) {
@@ -485,14 +465,14 @@ fn refresh_web_activity_item_from_cell(item: &mut WebActivityItem) {
     *item = refreshed;
 }
 
-fn coding_tool_group_stable_id(item: &WebActivityItem) -> Option<&str> {
+fn explored_stable_id(item: &WebActivityItem) -> Option<&str> {
     match item.cell.as_ref()? {
-        crate::dashboard::ActivityCell::CodingToolGroup(group) => Some(group.stable_id.as_str()),
+        crate::dashboard::ActivityCell::Explored(group) => Some(group.stable_id.as_str()),
         _ => None,
     }
 }
 
-fn coding_tool_group_segment(item_id: &str) -> Option<usize> {
+fn explored_segment(item_id: &str) -> Option<usize> {
     item_id
         .rsplit_once("-segment-")
         .and_then(|(_, segment)| segment.parse::<usize>().ok())
@@ -514,7 +494,7 @@ fn dedupe_activity_items_keep_latest(items: Vec<WebActivityItem>) -> Vec<WebActi
 mod tests {
     use super::*;
     use crate::dashboard::cells::{ActivityCell, WebActivityKind, WebActivityStatus};
-    use crate::tool_ui::{CodingToolCallUiData, CodingToolGroupUiData};
+    use crate::tool_ui::{ExploredCallUiData, ExploredUiData};
 
     fn activity_item(id: &str, cell: Option<ActivityCell>) -> WebActivityItem {
         WebActivityItem {
@@ -537,18 +517,18 @@ mod tests {
         }
     }
 
-    fn coding_group(stable_id: &str, summary: &str) -> ActivityCell {
-        coding_group_with_summaries(stable_id, &[summary])
+    fn explored_group(stable_id: &str, summary: &str) -> ActivityCell {
+        explored_group_with_summaries(stable_id, &[summary])
     }
 
-    fn coding_group_with_summaries(stable_id: &str, summaries: &[&str]) -> ActivityCell {
-        ActivityCell::CodingToolGroup(
-            CodingToolGroupUiData {
+    fn explored_group_with_summaries(stable_id: &str, summaries: &[&str]) -> ActivityCell {
+        ActivityCell::Explored(
+            ExploredUiData {
                 stable_id: stable_id.to_string(),
                 title: "Explored".to_string(),
                 calls: summaries
                     .iter()
-                    .map(|summary| CodingToolCallUiData {
+                    .map(|summary| ExploredCallUiData {
                         tool_name: "grep".to_string(),
                         summary: summary.to_string(),
                         detail_lines: Vec::new(),
@@ -560,65 +540,73 @@ mod tests {
     }
 
     #[test]
-    fn coding_tool_group_item_ids_follow_contiguous_segments() {
+    fn explored_item_ids_follow_contiguous_segments() {
         let mut window = DashboardActivityHistoryWindow::default();
         window.merge_new_items(vec![activity_item(
-            "activity-coding-tools-project",
-            Some(coding_group("coding-tools-project", "first")),
+            "activity-explored",
+            Some(explored_group("explored", "first")),
         )]);
         window.merge_new_items(vec![activity_item(
-            "activity-coding-tools-project",
-            Some(coding_group("coding-tools-project", "second")),
+            "activity-explored",
+            Some(explored_group("explored", "second")),
         )]);
 
         assert_eq!(window.items.len(), 1);
-        assert_eq!(window.items[0].id, "activity-coding-tools-project");
+        assert_eq!(window.items[0].id, "activity-explored");
+        let ActivityCell::Explored(group) = window.items[0].cell.as_ref().unwrap() else {
+            panic!("expected explored group");
+        };
+        assert_eq!(
+            group
+                .calls
+                .iter()
+                .map(|call| call.summary.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
 
         window.merge_new_items(vec![activity_item("activity-boundary", None)]);
         window.merge_new_items(vec![activity_item(
-            "activity-coding-tools-project",
-            Some(coding_group("coding-tools-project", "third")),
+            "activity-explored",
+            Some(explored_group("explored", "third")),
         )]);
 
         assert_eq!(window.items.len(), 3);
-        assert_eq!(window.items[0].id, "activity-coding-tools-project");
+        assert_eq!(window.items[0].id, "activity-explored");
         assert_eq!(window.items[1].id, "activity-boundary");
-        assert_eq!(
-            window.items[2].id,
-            "activity-coding-tools-project-segment-1"
-        );
+        assert_eq!(window.items[2].id, "activity-explored-segment-1");
     }
 
     #[test]
-    fn coding_tool_group_segments_trim_already_rendered_calls() {
-        let stable_id = "coding-tools-project";
-        let item_id = "activity-coding-tools-project";
+    fn explored_active_segment_appends_calls_and_refreshes_preview() {
+        let stable_id = "explored";
+        let item_id = "activity-explored";
         let mut window = DashboardActivityHistoryWindow::default();
         window.merge_new_items(vec![web_activity_item_from_cell(
-            &coding_group_with_summaries(stable_id, &["first", "second"]),
+            &explored_group(stable_id, "first"),
             item_id,
             false,
         )]);
-        window.merge_new_items(vec![activity_item("activity-boundary", None)]);
         window.merge_new_items(vec![web_activity_item_from_cell(
-            &coding_group_with_summaries(stable_id, &["first", "second", "third"]),
+            &explored_group(stable_id, "second"),
             item_id,
             false,
         )]);
 
-        assert_eq!(window.items.len(), 3);
-        assert_eq!(window.items[2].id, format!("{item_id}-segment-1"));
-        let ActivityCell::CodingToolGroup(group) = window.items[2].cell.as_ref().unwrap() else {
-            panic!("expected coding group");
+        assert_eq!(window.items.len(), 1);
+        assert_eq!(window.items[0].id, item_id);
+        let ActivityCell::Explored(group) = window.items[0].cell.as_ref().unwrap() else {
+            panic!("expected explored group");
         };
-        assert_eq!(group.calls.len(), 1);
-        assert_eq!(group.calls[0].summary, "third");
+        assert_eq!(group.calls.len(), 2);
+        assert_eq!(group.calls[0].summary, "first");
+        assert_eq!(group.calls[1].summary, "second");
         assert_eq!(
-            window.items[2]
+            window.items[0]
                 .tool
                 .as_ref()
                 .and_then(|tool| tool.input_preview.as_deref()),
-            Some("1 call(s)")
+            Some("2 call(s)")
         );
     }
 }

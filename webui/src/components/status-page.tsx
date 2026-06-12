@@ -4087,7 +4087,7 @@ function agentChatActivityGlyph(bubble: AgentChatBubble) {
     }
     if (
       bubble.appName === "Coding" ||
-      bubble.toolName === "coding_tool_group"
+      bubble.toolName === "explored"
     ) {
       return "◎";
     }
@@ -4159,7 +4159,7 @@ function agentChatActivityStatusClass(status: string, live?: boolean) {
 
 function agentChatActivitySubtitle(bubble: AgentChatBubble) {
   const primaryLabel =
-    bubble.appName === "Coding"
+    bubble.appName === "Coding" || bubble.toolName === "explored"
       ? null
       : bubble.appName || bubble.toolName || bubble.kind;
 

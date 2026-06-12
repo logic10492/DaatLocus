@@ -13,13 +13,15 @@ pub mod glyph {
     pub const WORKFLOW: &str = "⌘";
 }
 
+pub const EXPLORED_STABLE_ID: &str = "explored";
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum ToolUiEvent {
     Exec(ToolUiData),
     Terminal(TerminalUiData),
     CodingOpenProject(CodingOpenProjectUiData),
-    CodingToolGroup(CodingToolGroupUiData),
+    Explored(ExploredUiData),
     CodingEdit(CodingEditUiData),
     CodingReview(CodingReviewUiData),
     Browser(BrowserUiData),
@@ -88,15 +90,15 @@ pub struct CodingOpenProjectUiData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingToolGroupUiData {
+pub struct ExploredUiData {
     pub stable_id: String,
     pub title: String,
     #[serde(default)]
-    pub calls: Vec<CodingToolCallUiData>,
+    pub calls: Vec<ExploredCallUiData>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingToolCallUiData {
+pub struct ExploredCallUiData {
     pub tool_name: String,
     pub summary: String,
     #[serde(default)]
@@ -278,13 +280,6 @@ pub enum TelegramUiAction {
 }
 
 impl ToolUiEvent {
-    pub fn patch(summary_line: impl Into<String>, files: Vec<PatchFileUiData>) -> Self {
-        Self::Patch(PatchUiData {
-            summary_line: summary_line.into(),
-            files,
-        })
-    }
-
     pub fn terminal(
         action: TerminalUiAction,
         title: impl Into<String>,
@@ -304,12 +299,12 @@ impl ToolUiEvent {
         })
     }
 
-    pub fn coding_tool_group(
+    pub fn explored(
         stable_id: impl Into<String>,
         title: impl Into<String>,
-        calls: Vec<CodingToolCallUiData>,
+        calls: Vec<ExploredCallUiData>,
     ) -> Self {
-        Self::CodingToolGroup(CodingToolGroupUiData {
+        Self::Explored(ExploredUiData {
             stable_id: stable_id.into(),
             title: title.into(),
             calls,

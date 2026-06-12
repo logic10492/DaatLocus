@@ -12,7 +12,10 @@ use crate::{
         RuntimeTool, StaticRuntimeTool, ToolExecutionResult, ToolFuture, parse_tool_args,
     },
     schema_utils::structured_edit_args_schema,
-    tool_ui::{PatchFileOperation, PatchFileUiData, ToolCallUiEvent, ToolUiEvent},
+    tool_ui::{
+        EXPLORED_STABLE_ID, ExploredCallUiData, PatchFileOperation, PatchFileUiData,
+        ToolCallUiEvent, ToolUiEvent,
+    },
 };
 
 const DEFAULT_READ_LINE_COUNT: usize = 80;
@@ -135,18 +138,21 @@ fn execute_read_file_runtime_tool<'a>(
                 .min(total_lines)
         };
         let model_content = prefix_file_lines_with_hash(&content, start_line, line_count);
-        let summary = if total_lines == 0 {
-            format!(
-                "read {} (empty file)",
-                display_tool_path(&args.path, &resolved)
-            )
+        let display_path = display_tool_path(&args.path, &resolved);
+        let actual_line_count = if total_lines == 0 {
+            0
         } else {
-            format!(
-                "read {}#L{}-L{}",
-                display_tool_path(&args.path, &resolved),
-                start_line,
-                end_line
-            )
+            end_line - start_line + 1
+        };
+        let summary = if total_lines == 0 {
+            format!("read {display_path} (empty file)")
+        } else {
+            format!("read {display_path}#L{start_line}-L{end_line}")
+        };
+        let ui_summary = if total_lines == 0 {
+            format!("{display_path} (empty file)")
+        } else {
+            format!("{display_path}#L{start_line}-L{end_line}")
         };
         Ok(ToolExecutionResult::new(
             summary.clone(),
@@ -155,11 +161,15 @@ fn execute_read_file_runtime_tool<'a>(
                 "resolved_path": resolved.display().to_string(),
                 "start_line": start_line,
                 "end_line": end_line,
-                "line_count": if total_lines == 0 { 0 } else { end_line - start_line + 1 },
+                "line_count": actual_line_count,
                 "total_lines": total_lines,
                 "content": model_content,
             }),
-            ToolUiEvent::app("Read File", vec![summary]),
+            explored_tool_event(
+                "Read",
+                ui_summary,
+                vec![format!("{actual_line_count} lines")],
+            ),
         )
         .with_model_content(model_content))
     })
@@ -187,11 +197,6 @@ fn execute_edit_file_runtime_tool<'a>(
         }
         let result = scope_engine::patch::edit_file_apply(&args.edits, &context.execution_cwd)
             .map_err(|err| miette!("edit_file failed: {err}"))?;
-        let files = result
-            .files
-            .iter()
-            .map(edit_file_ui_file)
-            .collect::<Vec<_>>();
         let added_lines = result
             .files
             .iter()
@@ -202,6 +207,17 @@ fn execute_edit_file_runtime_tool<'a>(
             .iter()
             .map(|file| file.removed_lines)
             .sum::<usize>();
+        let ui_summary = match result.files.as_slice() {
+            [file] => file.path.clone(),
+            files => format!("{} files", files.len()),
+        };
+        let mut detail_lines = vec![format!("+{} -{}", added_lines, removed_lines)];
+        detail_lines.extend(result.files.iter().map(|file| {
+            format!(
+                "{} (+{} -{})",
+                file.path, file.added_lines, file.removed_lines
+            )
+        }));
         Ok(ToolExecutionResult::new(
             format!("edited {} file(s)", result.files.len()),
             json!({
@@ -220,17 +236,25 @@ fn execute_edit_file_runtime_tool<'a>(
                     })
                 }).collect::<Vec<_>>(),
             }),
-            ToolUiEvent::patch(
-                format!(
-                    "{} file(s) edited (+{} -{})",
-                    result.files.len(),
-                    added_lines,
-                    removed_lines
-                ),
-                files,
-            ),
+            explored_tool_event("Edit", ui_summary, detail_lines),
         ))
     })
+}
+
+fn explored_tool_event(
+    tool_name: impl Into<String>,
+    summary: impl Into<String>,
+    detail_lines: Vec<String>,
+) -> ToolUiEvent {
+    ToolUiEvent::explored(
+        EXPLORED_STABLE_ID,
+        "Explored",
+        vec![ExploredCallUiData {
+            tool_name: tool_name.into(),
+            summary: summary.into(),
+            detail_lines,
+        }],
+    )
 }
 
 fn resolve_runtime_file_path(context: &Context, path: &str) -> PathBuf {
@@ -276,20 +300,5 @@ fn edit_content_line_count(content: Option<&scope_engine::api::EditContent>) -> 
         Some(scope_engine::api::EditContent::Lines(lines)) => lines.len(),
         Some(scope_engine::api::EditContent::Text(text)) => text.lines().count(),
         None => 0,
-    }
-}
-
-fn edit_file_ui_file(file: &scope_engine::patch::AppliedStructuredEditFile) -> PatchFileUiData {
-    PatchFileUiData {
-        path: file.path.clone(),
-        operation: match file.operation {
-            scope_engine::patch::AppliedStructuredEditOperation::Add => PatchFileOperation::Add,
-            scope_engine::patch::AppliedStructuredEditOperation::Update => {
-                PatchFileOperation::Update
-            }
-        },
-        added_lines: file.added_lines,
-        removed_lines: file.removed_lines,
-        diff_lines: Vec::new(),
     }
 }

@@ -20,7 +20,7 @@ use crate::{
 use super::DashboardState;
 use apps::{AppAttentionActivityCell, BrowserActivityCell, LiveBrowserActivityCell};
 #[cfg(test)]
-pub(crate) use common::CodingToolCallActivityCell;
+pub(crate) use common::ExploredCallActivityCell;
 use common::{
     AssistantActivityCell, ErrorActivityCell, GenericAppActivityCell, MessageImageAttachment,
     TerminalWaitActivityCell, UserActivityCell, assistant_cell_with_body, error_cell,
@@ -28,7 +28,7 @@ use common::{
 };
 use common::{
     CodingEditActivityCell, CodingOpenProjectActivityCell, CodingReviewActivityCell,
-    CodingToolGroupActivityCell, ThinkingActivityCell,
+    ExploredActivityCell, ThinkingActivityCell,
 };
 use common::{render_exposed_tool_names, render_exposed_tool_names_in_lines, thinking_cell};
 use exec::{ExecResultActivityCell, LiveExecActivityCell, live_exec_cell};
@@ -51,6 +51,8 @@ pub use web_activity::{
 
 pub use common::ReducedMotion;
 
+const MAX_EXPLORED_CALLS: usize = 24;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ActivityCell {
     Assistant(AssistantActivityCell),
@@ -59,7 +61,7 @@ pub enum ActivityCell {
     Browser(BrowserActivityCell),
     LiveBrowser(LiveBrowserActivityCell),
     CodingOpenProject(CodingOpenProjectActivityCell),
-    CodingToolGroup(CodingToolGroupActivityCell),
+    Explored(ExploredActivityCell),
     CodingEdit(CodingEditActivityCell),
     CodingReview(CodingReviewActivityCell),
     #[serde(alias = "ToolResult")]
@@ -254,7 +256,7 @@ pub fn activity_cell_from_tool_ui_event(ui_event: ToolUiEvent) -> Option<Activit
         ToolUiEvent::CodingOpenProject(event) => {
             Some(ActivityCell::CodingOpenProject(event.into()))
         }
-        ToolUiEvent::CodingToolGroup(event) => Some(ActivityCell::CodingToolGroup(event.into())),
+        ToolUiEvent::Explored(event) => Some(ActivityCell::Explored(event.into())),
         ToolUiEvent::CodingEdit(event) => Some(ActivityCell::CodingEdit(event.into())),
         ToolUiEvent::CodingReview(event) => Some(ActivityCell::CodingReview(event.into())),
         ToolUiEvent::Patch(event) => Some(ActivityCell::Patch(event.into())),
@@ -499,12 +501,16 @@ fn upsert_live_activity_cell(cells: &mut Vec<LiveActivityCell>, incoming: LiveAc
 fn coalesce_activity_cells(cells: Vec<ActivityCell>) -> Vec<ActivityCell> {
     let mut merged: Vec<ActivityCell> = Vec::new();
     for cell in cells {
-        if let ActivityCell::CodingToolGroup(new_group) = &cell
-            && let Some(ActivityCell::CodingToolGroup(existing_group)) = merged.last_mut()
+        if let ActivityCell::Explored(new_group) = &cell
+            && let Some(ActivityCell::Explored(existing_group)) = merged.last_mut()
             && existing_group.stable_id == new_group.stable_id
         {
             existing_group.title = new_group.title.clone();
-            existing_group.calls = new_group.calls.clone();
+            existing_group.calls.extend(new_group.calls.clone());
+            if existing_group.calls.len() > MAX_EXPLORED_CALLS {
+                let drop_count = existing_group.calls.len() - MAX_EXPLORED_CALLS;
+                existing_group.calls.drain(0..drop_count);
+            }
             continue;
         }
 
@@ -661,22 +667,22 @@ mod tests {
     }
 
     #[test]
-    fn coding_tool_groups_only_merge_while_contiguous() {
-        let first_group = ActivityCell::CodingToolGroup(CodingToolGroupActivityCell {
-            stable_id: "coding-tools-project".to_string(),
+    fn explored_calls_only_merge_while_contiguous() {
+        let first_group = ActivityCell::Explored(ExploredActivityCell {
+            stable_id: "explored".to_string(),
             title: "Explored".to_string(),
-            calls: vec![CodingToolCallActivityCell {
-                tool_name: "grep".to_string(),
+            calls: vec![ExploredCallActivityCell {
+                tool_name: "Search".to_string(),
                 summary: "first".to_string(),
                 detail_lines: Vec::new(),
                 detail_title: None,
             }],
         });
-        let updated_group = ActivityCell::CodingToolGroup(CodingToolGroupActivityCell {
-            stable_id: "coding-tools-project".to_string(),
+        let updated_group = ActivityCell::Explored(ExploredActivityCell {
+            stable_id: "explored".to_string(),
             title: "Explored".to_string(),
-            calls: vec![CodingToolCallActivityCell {
-                tool_name: "read_code".to_string(),
+            calls: vec![ExploredCallActivityCell {
+                tool_name: "Read".to_string(),
                 summary: "second".to_string(),
                 detail_lines: Vec::new(),
                 detail_title: None,
@@ -692,8 +698,17 @@ mod tests {
         let contiguous = coalesce_activity_cells(vec![first_group.clone(), updated_group.clone()]);
         assert_eq!(contiguous.len(), 1);
         match &contiguous[0] {
-            ActivityCell::CodingToolGroup(group) => assert_eq!(group.calls[0].summary, "second"),
-            _ => panic!("expected coding group"),
+            ActivityCell::Explored(group) => {
+                assert_eq!(
+                    group
+                        .calls
+                        .iter()
+                        .map(|call| call.summary.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["first", "second"]
+                );
+            }
+            _ => panic!("expected explored group"),
         }
 
         let separated = coalesce_activity_cells(vec![first_group, boundary, updated_group]);

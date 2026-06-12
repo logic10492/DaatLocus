@@ -1442,7 +1442,7 @@ fn dashboard_activity_items_from_cells(
 
 fn stable_dashboard_activity_id_for_cell(cell: &crate::dashboard::ActivityCell) -> Option<String> {
     match cell {
-        crate::dashboard::ActivityCell::CodingToolGroup(group) => {
+        crate::dashboard::ActivityCell::Explored(group) => {
             Some(format!("activity-{}", group.stable_id))
         }
         crate::dashboard::ActivityCell::CodingEdit(edit) => {

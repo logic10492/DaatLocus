@@ -984,8 +984,8 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
                 summarize_runtime_inline_text(&data.project_root)
             )
         }
-        ToolUiEvent::CodingToolGroup(data) => format!(
-            "{} with {} coding call(s)",
+        ToolUiEvent::Explored(data) => format!(
+            "{} with {} call(s)",
             summarize_runtime_inline_text(&data.title),
             data.calls.len()
         ),

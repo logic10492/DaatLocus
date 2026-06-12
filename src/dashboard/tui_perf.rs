@@ -15,9 +15,9 @@ use crate::{
     openskills::OpenSkillDashboardSummary,
     telegram_acl::PendingAccessRequest,
     tool_ui::{
-        BrowserUiAction, BrowserUiData, CodingToolCallUiData, CodingToolGroupUiData,
-        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData,
-        ReplyDisposition, ReplySubject, ReplyUiData, TerminalUiAction, TerminalUiData, ToolUiEvent,
+        BrowserUiAction, BrowserUiData, ExploredCallUiData, ExploredUiData, PatchDiffLineKind,
+        PatchDiffLineUiData, PatchFileOperation, PatchFileUiData, ReplyDisposition, ReplySubject,
+        ReplyUiData, TerminalUiAction, TerminalUiData, ToolUiEvent,
     },
 };
 
@@ -344,9 +344,7 @@ fn mock_activity_cells(count: usize) -> Vec<ActivityCell> {
         .filter_map(|idx| match idx % 7 {
             0 => assistant_activity_cell(&mock_markdown(idx)),
             1 => thinking_activity_cell(&mock_reasoning(idx)),
-            2 => activity_cell_from_tool_ui_event(ToolUiEvent::CodingToolGroup(
-                mock_coding_tool_group(idx),
-            )),
+            2 => activity_cell_from_tool_ui_event(ToolUiEvent::Explored(mock_explored(idx))),
             3 => activity_cell_from_tool_ui_event(ToolUiEvent::Terminal(mock_terminal(idx))),
             4 => activity_cell_from_tool_ui_event(ToolUiEvent::Browser(mock_browser(idx))),
             5 => activity_cell_from_tool_ui_event(ToolUiEvent::Patch(mock_patch(idx))),
@@ -411,18 +409,18 @@ fn mock_reasoning(idx: usize) -> String {
     )
 }
 
-fn mock_coding_tool_group(idx: usize) -> CodingToolGroupUiData {
-    CodingToolGroupUiData {
-        stable_id: format!("coding-group-{idx}"),
+fn mock_explored(idx: usize) -> ExploredUiData {
+    ExploredUiData {
+        stable_id: format!("explored-{idx}"),
         title: "Explored".to_string(),
         calls: vec![
-            CodingToolCallUiData {
-                tool_name: "coding__read_code".to_string(),
+            ExploredCallUiData {
+                tool_name: "Read".to_string(),
                 summary: "Read mod.rs".to_string(),
                 detail_lines: vec!["src/dashboard/mod.rs#L350-L590".to_string()],
             },
-            CodingToolCallUiData {
-                tool_name: "coding__search_code".to_string(),
+            ExploredCallUiData {
+                tool_name: "Search".to_string(),
                 summary: "Search schedule_frame|render_tui_dashboard_frame in dashboard"
                     .to_string(),
                 detail_lines: vec!["src/dashboard/mod.rs".to_string()],

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppId;
 use crate::tool_ui::{
-    CodingEditUiData, CodingReviewUiData, CodingToolGroupUiData, PatchFileUiData, ToolUiData,
+    CodingEditUiData, CodingReviewUiData, ExploredUiData, PatchFileUiData, ToolUiData,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,10 +78,10 @@ pub struct CodingOpenProjectActivityCell {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingToolGroupActivityCell {
+pub struct ExploredActivityCell {
     pub stable_id: String,
     pub title: String,
-    pub calls: Vec<CodingToolCallActivityCell>,
+    pub calls: Vec<ExploredCallActivityCell>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,7 +105,7 @@ pub struct CodingReviewActivityCell {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingToolCallActivityCell {
+pub struct ExploredCallActivityCell {
     pub tool_name: String,
     pub summary: String,
     pub detail_lines: Vec<String>,
@@ -204,15 +204,15 @@ impl From<crate::tool_ui::CodingOpenProjectUiData> for CodingOpenProjectActivity
     }
 }
 
-impl From<CodingToolGroupUiData> for CodingToolGroupActivityCell {
-    fn from(data: CodingToolGroupUiData) -> Self {
+impl From<ExploredUiData> for ExploredActivityCell {
+    fn from(data: ExploredUiData) -> Self {
         Self {
             stable_id: data.stable_id,
             title: data.title,
             calls: data
                 .calls
                 .into_iter()
-                .map(|call| CodingToolCallActivityCell {
+                .map(|call| ExploredCallActivityCell {
                     tool_name: AppId::render_exposed_tool_name(&call.tool_name),
                     summary: call.summary,
                     detail_lines: call.detail_lines,

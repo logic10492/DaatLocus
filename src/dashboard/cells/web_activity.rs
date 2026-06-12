@@ -10,8 +10,8 @@ use super::{
     apps::{BrowserActivityCell, LiveBrowserActivityCell},
     common::{
         AssistantActivityCell, CodingEditActivityCell, CodingOpenProjectActivityCell,
-        CodingReviewActivityCell, CodingToolGroupActivityCell, ErrorActivityCell,
-        GenericAppActivityCell, TerminalWaitActivityCell, ThinkingActivityCell, UserActivityCell,
+        CodingReviewActivityCell, ErrorActivityCell, ExploredActivityCell, GenericAppActivityCell,
+        TerminalWaitActivityCell, ThinkingActivityCell, UserActivityCell,
     },
     exec::{ExecResultActivityCell, LiveExecActivityCell},
     messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell},
@@ -260,7 +260,7 @@ pub fn web_activity_item_from_cell(cell: &ActivityCell, id: &str, live: bool) ->
         ActivityCell::Browser(cell) => apply_browser_cell(&mut item, cell),
         ActivityCell::LiveBrowser(cell) => apply_live_browser_cell(&mut item, cell),
         ActivityCell::CodingOpenProject(cell) => apply_coding_open_project_cell(&mut item, cell),
-        ActivityCell::CodingToolGroup(cell) => apply_coding_tool_group_cell(&mut item, cell),
+        ActivityCell::Explored(cell) => apply_explored_cell(&mut item, cell),
         ActivityCell::CodingEdit(cell) => apply_coding_edit_cell(&mut item, cell),
         ActivityCell::CodingReview(cell) => apply_coding_review_cell(&mut item, cell),
         ActivityCell::GenericApp(cell) => apply_generic_app_cell(&mut item, cell),
@@ -296,7 +296,7 @@ fn activity_cell_variant_name(cell: &ActivityCell) -> &'static str {
         ActivityCell::Browser(_) => "Browser",
         ActivityCell::LiveBrowser(_) => "LiveBrowser",
         ActivityCell::CodingOpenProject(_) => "CodingOpenProject",
-        ActivityCell::CodingToolGroup(_) => "CodingToolGroup",
+        ActivityCell::Explored(_) => "Explored",
         ActivityCell::CodingEdit(_) => "CodingEdit",
         ActivityCell::CodingReview(_) => "CodingReview",
         ActivityCell::GenericApp(_) => "GenericApp",
@@ -569,7 +569,7 @@ fn apply_generic_app_cell(item: &mut WebActivityItem, cell: &GenericAppActivityC
     );
 }
 
-fn apply_coding_tool_group_cell(item: &mut WebActivityItem, cell: &CodingToolGroupActivityCell) {
+fn apply_explored_cell(item: &mut WebActivityItem, cell: &ExploredActivityCell) {
     item.kind = WebActivityKind::Tool;
     item.actor = Some(WebActivityActor::Tool);
     item.title = cell.title.clone();
@@ -579,8 +579,8 @@ fn apply_coding_tool_group_cell(item: &mut WebActivityItem, cell: &CodingToolGro
         .map(|call| format!("{} {}", call.tool_name, call.summary))
         .collect::<Vec<_>>();
     item.tool = Some(WebActivityTool {
-        name: "coding_tool_group".to_string(),
-        app: Some("Coding".to_string()),
+        name: "explored".to_string(),
+        app: None,
         input_preview: Some(format!("{} call(s)", cell.calls.len())),
         output_preview: compact_preview(&call_lines),
         output_ref: Some(cell.stable_id.clone()),
@@ -589,7 +589,7 @@ fn apply_coding_tool_group_cell(item: &mut WebActivityItem, cell: &CodingToolGro
         affected_files: Vec::new(),
     });
     item.blocks = if call_lines.is_empty() {
-        text_blocks(vec!["No Coding tool calls yet".to_string()])
+        text_blocks(vec!["No explored tool calls yet".to_string()])
     } else {
         vec![WebActivityBlock::List { items: call_lines }]
     };
