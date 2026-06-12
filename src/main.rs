@@ -38,6 +38,7 @@ mod system_info;
 mod telegram_acl;
 mod telegram_transport;
 mod terminal_app;
+mod terminal_logo;
 mod tool_ui;
 mod workflow;
 mod workspace_app;

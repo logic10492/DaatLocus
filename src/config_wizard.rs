@@ -2676,61 +2676,286 @@ pub async fn run_first_time_setup() -> Result<Config> {
     let locale = Locale::from_language_setup_index(language_idx);
     ui.set_locale(locale);
 
-    let skip = ui.select(
-        &crate::tr!(locale, "setup.init_mode"),
-        &[
-            crate::tr!(locale, "setup.interactive"),
-            crate::tr!(locale, "setup.skip_default"),
-        ],
-        0,
-    )?;
-
-    if skip == 1 {
-        let config = Config {
-            locale,
-            ..Config::default()
-        };
-        write_config(&config).await?;
-        ui.detail(
-            &crate::tr!(locale, "setup.written"),
-            &[crate::tr!(locale, "setup.default_created")],
-        )?;
-        return Ok(config);
-    }
-
-    let (provider_name, provider_config) = prompt_provider(&mut ui, &[]).await?;
-
-    let mut providers = HashMap::new();
-    providers.insert(provider_name.clone(), provider_config.clone());
-
-    let (model_name, model_config) =
-        prompt_model(&mut ui, &provider_name, &provider_config).await?;
-
-    let mut models = HashMap::new();
-    models.insert(model_name.clone(), model_config);
-
-    let telegram = prompt_telegram_config(&mut ui, None)?;
-
-    let config = Config {
-        locale,
-        providers,
-        models,
-        main_model: model_name.clone(),
-        judge: JudgeConfig::default(),
-        telegram,
-        ..Config::default()
-    };
+    let mut config = initial_setup_config(locale);
+    run_setup_model_registry_stage(&mut ui, &mut config).await?;
+    run_setup_model_roles_stage(&mut ui, &mut config)?;
+    config.telegram = prompt_telegram_config(&mut ui, None)?;
+    config
+        .validate()
+        .map_err(|err| miette!("config validation failed after setup: {err}"))?;
 
     write_config(&config).await?;
 
-    ui.detail(
-        &crate::tr!(locale, "setup.written"),
-        &[format!(
-            "main_model = \"{model_name}\" (provider: {provider_name})"
-        )],
-    )?;
+    ui.suspend();
+    print_setup_completion_message(locale, &config);
 
     Ok(config)
+}
+
+fn print_setup_completion_message(locale: Locale, config: &Config) {
+    println!("{}", crate::terminal_logo::render_daat_locus_logo());
+    println!();
+    println!("{}", crate::tr!(locale, "setup.completed_title"));
+    println!();
+    println!("  main_model = \"{}\"", config.main_model);
+    println!("  efficient_model = \"{}\"", config.efficient_model);
+    println!();
+    println!("{}", crate::tr!(locale, "setup.next_steps"));
+    println!("  daat-locus run");
+    println!("  daat-locus code <project-dir>");
+}
+
+fn initial_setup_config(locale: Locale) -> Config {
+    Config {
+        locale,
+        providers: HashMap::new(),
+        models: HashMap::new(),
+        main_model: String::new(),
+        efficient_model: String::new(),
+        judge: JudgeConfig::default(),
+        telegram: TelegramConfig::default(),
+        ..Config::default()
+    }
+}
+
+async fn run_setup_model_registry_stage(ui: &mut PromptUi, config: &mut Config) -> Result<()> {
+    loop {
+        let locale = ui.locale();
+        let items = [
+            crate::tr!(locale, "config.add_provider"),
+            crate::tr!(locale, "config.add_model"),
+            crate::tr!(locale, "setup.continue_to_model_selection"),
+        ];
+        let idx = ui.select(&crate::tr!(locale, "setup.model_registry_stage"), &items, 0)?;
+
+        match idx {
+            0 => match add_provider_to_config(ui, config).await? {
+                Some(name) => ui.detail(
+                    &crate::tr!(locale, "config.add_provider"),
+                    &[crate::tr!(locale, "config.provider_saved", name = name)],
+                )?,
+                None => ui.detail(
+                    &crate::tr!(locale, "config.add_provider"),
+                    &[crate::tr!(locale, "common.cancelled_action")],
+                )?,
+            },
+            1 => {
+                if config.providers.is_empty() {
+                    ui.detail(
+                        &crate::tr!(locale, "config.add_model"),
+                        &[crate::tr!(locale, "common.no_providers")],
+                    )?;
+                    continue;
+                }
+
+                match add_model_to_config(ui, config, false).await? {
+                    Some(name) => ui.detail(
+                        &crate::tr!(locale, "config.add_model"),
+                        &[crate::tr!(locale, "config.model_saved", name = name)],
+                    )?,
+                    None => ui.detail(
+                        &crate::tr!(locale, "config.add_model"),
+                        &[crate::tr!(locale, "common.cancelled_action")],
+                    )?,
+                }
+            }
+            _ => {
+                if config.models.is_empty() {
+                    ui.detail(
+                        &crate::tr!(locale, "setup.model_registry_stage"),
+                        &[crate::tr!(locale, "setup.need_model_before_continue")],
+                    )?;
+                    continue;
+                }
+                ensure_model_role_defaults(config);
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn run_setup_model_roles_stage(ui: &mut PromptUi, config: &mut Config) -> Result<()> {
+    ensure_model_role_defaults(config);
+    loop {
+        let locale = ui.locale();
+        let items = [
+            crate::tr!(locale, "config.change_main_model"),
+            crate::tr!(locale, "config.change_efficient_model"),
+            crate::tr!(locale, "setup.finish_model_selection"),
+        ];
+        let idx = ui.select(&crate::tr!(locale, "setup.model_roles_stage"), &items, 0)?;
+
+        match idx {
+            0 => {
+                select_main_model_in_config(ui, config)?;
+            }
+            1 => {
+                select_efficient_model_in_config(ui, config)?;
+            }
+            _ => {
+                if model_roles_are_valid(config) {
+                    return Ok(());
+                }
+                ensure_model_role_defaults(config);
+                if model_roles_are_valid(config) {
+                    return Ok(());
+                }
+                ui.detail(
+                    &crate::tr!(locale, "setup.model_roles_stage"),
+                    &[crate::tr!(locale, "setup.need_model_before_continue")],
+                )?;
+            }
+        }
+    }
+}
+
+async fn add_provider_to_config(ui: &mut PromptUi, config: &mut Config) -> Result<Option<String>> {
+    let locale = ui.locale();
+    let existing = config_provider_names(config);
+    let (name, provider) = prompt_provider(ui, &existing).await?;
+
+    if config.providers.contains_key(&name)
+        && !ui.confirm(
+            &crate::tr!(locale, "common.overwrite_provider", name = name.clone()),
+            false,
+        )?
+    {
+        return Ok(None);
+    }
+
+    config.providers.insert(name.clone(), provider);
+    Ok(Some(name))
+}
+
+async fn add_model_to_config(
+    ui: &mut PromptUi,
+    config: &mut Config,
+    prompt_set_main: bool,
+) -> Result<Option<String>> {
+    let locale = ui.locale();
+    let provider_names = config_provider_names(config);
+    if provider_names.is_empty() {
+        return Err(miette!("{}", crate::tr!(locale, "common.no_providers")));
+    }
+
+    let provider_idx = if provider_names.len() == 1 {
+        0
+    } else {
+        ui.select(
+            &crate::tr!(locale, "config.bind_provider"),
+            &provider_names,
+            0,
+        )?
+    };
+    let provider_name = &provider_names[provider_idx];
+    let provider_config = config
+        .providers
+        .get(provider_name)
+        .cloned()
+        .expect("provider name selected from config");
+    let (name, model) = prompt_model(ui, provider_name, &provider_config).await?;
+
+    if config.models.contains_key(&name)
+        && !ui.confirm(
+            &crate::tr!(locale, "common.overwrite_model", name = name.clone()),
+            false,
+        )?
+    {
+        return Ok(None);
+    }
+
+    config.models.insert(name.clone(), model);
+
+    if prompt_set_main
+        && ui.confirm(
+            &crate::tr!(locale, "config.set_as_main", name = name.clone()),
+            false,
+        )?
+    {
+        config.main_model = name.clone();
+    }
+
+    Ok(Some(name))
+}
+
+fn select_main_model_in_config(ui: &mut PromptUi, config: &mut Config) -> Result<String> {
+    let locale = ui.locale();
+    let model_names = config_model_names(config);
+    if model_names.is_empty() {
+        return Err(miette!("{}", crate::tr!(locale, "common.no_models")));
+    }
+
+    let current_idx = selected_model_index(&model_names, &config.main_model, None);
+    let idx = ui.select(
+        &crate::tr!(locale, "config.select_main_model"),
+        &model_names,
+        current_idx,
+    )?;
+    config.main_model = model_names[idx].clone();
+    Ok(config.main_model.clone())
+}
+
+fn select_efficient_model_in_config(ui: &mut PromptUi, config: &mut Config) -> Result<String> {
+    let locale = ui.locale();
+    let model_names = config_model_names(config);
+    if model_names.is_empty() {
+        return Err(miette!("{}", crate::tr!(locale, "common.no_models")));
+    }
+
+    let current_idx = selected_model_index(
+        &model_names,
+        &config.efficient_model,
+        Some(&config.main_model),
+    );
+    let idx = ui.select(
+        &crate::tr!(locale, "config.select_efficient_model"),
+        &model_names,
+        current_idx,
+    )?;
+    config.efficient_model = model_names[idx].clone();
+    Ok(config.efficient_model.clone())
+}
+
+fn config_provider_names(config: &Config) -> Vec<String> {
+    let mut names: Vec<String> = config.providers.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+fn config_model_names(config: &Config) -> Vec<String> {
+    let mut names: Vec<String> = config.models.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+fn selected_model_index(model_names: &[String], preferred: &str, fallback: Option<&str>) -> usize {
+    model_names
+        .iter()
+        .position(|name| name == preferred)
+        .or_else(|| fallback.and_then(|fallback| model_names.iter().position(|n| n == fallback)))
+        .unwrap_or(0)
+}
+
+fn ensure_model_role_defaults(config: &mut Config) {
+    if config.models.is_empty() {
+        return;
+    }
+
+    if !config.models.contains_key(&config.main_model) {
+        config.main_model = config_model_names(config)
+            .into_iter()
+            .next()
+            .expect("non-empty model set");
+    }
+
+    if !config.models.contains_key(&config.efficient_model) {
+        config.efficient_model = config.main_model.clone();
+    }
+}
+
+fn model_roles_are_valid(config: &Config) -> bool {
+    config.models.contains_key(&config.main_model)
+        && config.models.contains_key(&config.efficient_model)
 }
 
 /// `config add-provider` subcommand.
@@ -2743,30 +2968,22 @@ pub async fn run_add_provider() -> Result<()> {
     })?;
     let locale = config.locale;
 
-    let existing: Vec<String> = config.providers.keys().cloned().collect();
     let mut ui = PromptUi::new(locale)?;
-    let (name, provider) = prompt_provider(&mut ui, &existing).await?;
-
-    if config.providers.contains_key(&name) {
-        let overwrite = ui.confirm(
-            &crate::tr!(locale, "common.overwrite_provider", name = name.clone()),
-            false,
-        )?;
-        if !overwrite {
+    match add_provider_to_config(&mut ui, &mut config).await? {
+        Some(name) => {
+            write_config(&config).await?;
+            ui.detail(
+                &crate::tr!(locale, "config.add_provider"),
+                &[crate::tr!(locale, "config.provider_saved", name = name)],
+            )?;
+        }
+        None => {
             ui.detail(
                 &crate::tr!(locale, "config.add_provider"),
                 &[crate::tr!(locale, "common.cancelled_action")],
             )?;
-            return Ok(());
         }
     }
-
-    config.providers.insert(name.clone(), provider);
-    write_config(&config).await?;
-    ui.detail(
-        &crate::tr!(locale, "config.add_provider"),
-        &[crate::tr!(locale, "config.provider_saved", name = name)],
-    )?;
     Ok(())
 }
 
@@ -2781,52 +2998,22 @@ pub async fn run_add_model() -> Result<()> {
     let locale = config.locale;
 
     let mut ui = PromptUi::new(locale)?;
-    let provider_names: Vec<String> = config.providers.keys().cloned().collect();
-    if provider_names.is_empty() {
-        return Err(miette!("{}", crate::tr!(locale, "common.no_providers")));
-    }
-    let provider_idx = if provider_names.len() == 1 {
-        0
-    } else {
-        ui.select(
-            &crate::tr!(locale, "config.bind_provider"),
-            &provider_names,
-            0,
-        )?
-    };
-    let provider_name = &provider_names[provider_idx];
-    let provider_config = config.providers.get(provider_name).unwrap();
-    let (name, model) = prompt_model(&mut ui, provider_name, provider_config).await?;
-
-    if config.models.contains_key(&name) {
-        let overwrite = ui.confirm(
-            &crate::tr!(locale, "common.overwrite_model", name = name.clone()),
-            false,
-        )?;
-        if !overwrite {
+    match add_model_to_config(&mut ui, &mut config, true).await? {
+        Some(name) => {
+            ensure_model_role_defaults(&mut config);
+            write_config(&config).await?;
+            ui.detail(
+                &crate::tr!(locale, "config.add_model"),
+                &[crate::tr!(locale, "config.model_saved", name = name)],
+            )?;
+        }
+        None => {
             ui.detail(
                 &crate::tr!(locale, "config.add_model"),
                 &[crate::tr!(locale, "common.cancelled_action")],
             )?;
-            return Ok(());
         }
     }
-
-    config.models.insert(name.clone(), model);
-
-    let set_main = ui.confirm(
-        &crate::tr!(locale, "config.set_as_main", name = name.clone()),
-        false,
-    )?;
-    if set_main {
-        config.main_model = name.clone();
-    }
-
-    write_config(&config).await?;
-    ui.detail(
-        &crate::tr!(locale, "config.add_model"),
-        &[crate::tr!(locale, "config.model_saved", name = name)],
-    )?;
     Ok(())
 }
 
@@ -2841,23 +3028,7 @@ pub async fn run_set_main_model() -> Result<()> {
     let locale = config.locale;
     let mut ui = PromptUi::new(locale)?;
 
-    let model_names: Vec<String> = config.models.keys().cloned().collect();
-    if model_names.is_empty() {
-        return Err(miette!("{}", crate::tr!(locale, "common.no_models")));
-    }
-
-    let current_idx = model_names
-        .iter()
-        .position(|n| n == &config.main_model)
-        .unwrap_or(0);
-
-    let idx = ui.select(
-        &crate::tr!(locale, "config.select_main_model"),
-        &model_names,
-        current_idx,
-    )?;
-
-    config.main_model = model_names[idx].clone();
+    select_main_model_in_config(&mut ui, &mut config)?;
     write_config(&config).await?;
     ui.detail(
         &crate::tr!(locale, "config.select_main_model"),
@@ -3184,20 +3355,13 @@ pub async fn run_config_menu() -> Result<()> {
                             crate::tr!(locale, "common.config_load_failed", error = e)
                         )
                     })?;
-                    let existing: Vec<String> = config.providers.keys().cloned().collect();
-                    let (name, provider) = prompt_provider(&mut ui, &existing).await?;
-                    if config.providers.contains_key(&name)
-                        && !ui.confirm(
-                            &crate::tr!(locale, "common.overwrite_provider", name = name.clone()),
-                            false,
-                        )?
+                    if add_provider_to_config(&mut ui, &mut config)
+                        .await?
+                        .is_some()
                     {
-                        Ok(())
-                    } else {
-                        config.providers.insert(name, provider);
                         write_config(&config).await?;
-                        Ok(())
                     }
+                    Ok(())
                 }
                 1 => {
                     let mut config = crate::config::load_config().await.map_err(|e| {
@@ -3206,42 +3370,14 @@ pub async fn run_config_menu() -> Result<()> {
                             crate::tr!(locale, "common.config_load_failed", error = e)
                         )
                     })?;
-                    let provider_names: Vec<String> = config.providers.keys().cloned().collect();
-                    if provider_names.is_empty() {
-                        ui.suspend();
-                        return Err(miette!("{}", crate::tr!(locale, "common.no_providers")));
-                    }
-                    let provider_idx = if provider_names.len() == 1 {
-                        0
-                    } else {
-                        ui.select(
-                            &crate::tr!(locale, "config.bind_provider"),
-                            &provider_names,
-                            0,
-                        )?
-                    };
-                    let provider_name = &provider_names[provider_idx];
-                    let provider_config = config.providers.get(provider_name).unwrap();
-                    let (name, model) =
-                        prompt_model(&mut ui, provider_name, provider_config).await?;
-                    if config.models.contains_key(&name)
-                        && !ui.confirm(
-                            &crate::tr!(locale, "common.overwrite_model", name = name.clone()),
-                            false,
-                        )?
+                    if add_model_to_config(&mut ui, &mut config, true)
+                        .await?
+                        .is_some()
                     {
-                        Ok(())
-                    } else {
-                        config.models.insert(name.clone(), model);
-                        if ui.confirm(
-                            &crate::tr!(locale, "config.set_as_main", name = name.clone()),
-                            false,
-                        )? {
-                            config.main_model = name;
-                        }
+                        ensure_model_role_defaults(&mut config);
                         write_config(&config).await?;
-                        Ok(())
                     }
+                    Ok(())
                 }
                 2 => {
                     let mut config = crate::config::load_config().await.map_err(|e| {
@@ -3250,21 +3386,7 @@ pub async fn run_config_menu() -> Result<()> {
                             crate::tr!(locale, "common.config_load_failed", error = e)
                         )
                     })?;
-                    let model_names: Vec<String> = config.models.keys().cloned().collect();
-                    if model_names.is_empty() {
-                        ui.suspend();
-                        return Err(miette!("{}", crate::tr!(locale, "common.no_models")));
-                    }
-                    let current_idx = model_names
-                        .iter()
-                        .position(|n| n == &config.main_model)
-                        .unwrap_or(0);
-                    let idx = ui.select(
-                        &crate::tr!(locale, "config.select_main_model"),
-                        &model_names,
-                        current_idx,
-                    )?;
-                    config.main_model = model_names[idx].clone();
+                    select_main_model_in_config(&mut ui, &mut config)?;
                     write_config(&config).await?;
                     Ok(())
                 }
@@ -3275,21 +3397,7 @@ pub async fn run_config_menu() -> Result<()> {
                             crate::tr!(locale, "common.config_load_failed", error = e)
                         )
                     })?;
-                    let model_names: Vec<String> = config.models.keys().cloned().collect();
-                    if model_names.is_empty() {
-                        ui.suspend();
-                        return Err(miette!("{}", crate::tr!(locale, "common.no_models")));
-                    }
-                    let current_idx = model_names
-                        .iter()
-                        .position(|n| n == &config.efficient_model)
-                        .unwrap_or(0);
-                    let idx = ui.select(
-                        &crate::tr!(locale, "config.select_efficient_model"),
-                        &model_names,
-                        current_idx,
-                    )?;
-                    config.efficient_model = model_names[idx].clone();
+                    select_efficient_model_in_config(&mut ui, &mut config)?;
                     write_config(&config).await?;
                     Ok(())
                 }
@@ -3409,23 +3517,7 @@ pub async fn run_set_efficient_model() -> Result<()> {
     let locale = config.locale;
     let mut ui = PromptUi::new(locale)?;
 
-    let model_names: Vec<String> = config.models.keys().cloned().collect();
-    if model_names.is_empty() {
-        return Err(miette!("{}", crate::tr!(locale, "common.no_models")));
-    }
-
-    let current_idx = model_names
-        .iter()
-        .position(|n| n == &config.efficient_model)
-        .unwrap_or(0);
-
-    let idx = ui.select(
-        &crate::tr!(locale, "config.select_efficient_model"),
-        &model_names,
-        current_idx,
-    )?;
-
-    config.efficient_model = model_names[idx].clone();
+    select_efficient_model_in_config(&mut ui, &mut config)?;
     write_config(&config).await?;
     ui.detail(
         &crate::tr!(locale, "config.select_efficient_model"),
@@ -3751,6 +3843,42 @@ mod tests {
                     .collect()
             }])
         );
+    }
+
+    #[test]
+    fn initial_setup_config_starts_without_default_provider_or_model() {
+        let config = initial_setup_config(Locale::EnUs);
+
+        assert!(config.providers.is_empty());
+        assert!(config.models.is_empty());
+        assert!(config.main_model.is_empty());
+        assert!(config.efficient_model.is_empty());
+    }
+
+    #[test]
+    fn model_role_defaults_make_single_model_setup_config_valid() {
+        let mut config = initial_setup_config(Locale::EnUs);
+        config.providers.insert(
+            "openai".to_string(),
+            ProviderConfig::Openai {
+                api_key: "test".to_string(),
+                base_url: None,
+            },
+        );
+        config.models.insert(
+            "gpt-5.5".to_string(),
+            ModelConfig {
+                provider: "openai".to_string(),
+                model_id: "gpt-5.5".to_string(),
+                ..ModelConfig::default()
+            },
+        );
+
+        ensure_model_role_defaults(&mut config);
+
+        assert_eq!(config.main_model, "gpt-5.5");
+        assert_eq!(config.efficient_model, "gpt-5.5");
+        config.validate().expect("setup config validates");
     }
 
     #[test]

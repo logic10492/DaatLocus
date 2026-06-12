@@ -38,6 +38,7 @@ Editors can reference it through GitHub raw, for example:
 - `[models]`: model definition registry.
 - `locale`: UI localization language.
 - `main_model`: model key used by the main runtime.
+- `efficient_model`: model key used by non-main-loop work such as judge and compaction.
 - `[daemon]`: daemon port. The daemon listens on all IPv4 interfaces (`0.0.0.0`) for LAN access; protect remote dashboard/API access with daemon tokens.
 - `[judge]`: judge / pairwise evaluation config.
 - `[sandbox]`: runtime sandbox controls.
@@ -48,6 +49,7 @@ Editors can reference it through GitHub raw, for example:
 ```toml
 locale = "en-US"
 main_model = "default"
+efficient_model = "default"
 
 [providers.openai]
 type = "openai"
@@ -111,8 +113,8 @@ retried without them.
 
 ## Judge
 
-`judge.model = "model-key"` is optional. If unset, the judge also falls back to
-`main_model`.
+`judge.model = "model-key"` is optional. If unset, the judge uses
+`efficient_model`.
 
 ## OpenSkills
 

@@ -33,6 +33,7 @@ cargo run -- config-schema
 - `[models]`：模型定义注册表。
 - `locale`：用户界面本地化语言。
 - `main_model`：主运行时使用的 model key。
+- `efficient_model`：judge、compaction 等非主循环工作使用的 model key。
 - `[daemon]`：daemon 端口。daemon 会监听所有 IPv4 接口（`0.0.0.0`）以支持 LAN 访问；远程 Dashboard/API 访问需要用 daemon token 保护。
 - `[judge]`：judge / pairwise 评估配置。
 - `[sandbox]`：运行时沙箱控制。
@@ -43,6 +44,7 @@ cargo run -- config-schema
 ```toml
 locale = "zh-CN"
 main_model = "default"
+efficient_model = "default"
 
 [providers.openai]
 type = "openai"
@@ -95,7 +97,7 @@ OpenAI Codex 使用 ChatGPT Codex Responses backend，而不是公开 OpenAI API
 
 ## Judge
 
-`judge.model = "model-key"` 是可选项。为空时，judge 同样回退到 `main_model`。
+`judge.model = "model-key"` 是可选项。为空时，judge 使用 `efficient_model`。
 
 ## OpenSkills
 

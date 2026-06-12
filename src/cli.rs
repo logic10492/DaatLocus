@@ -1,4 +1,4 @@
-use std::{io::Read, sync::Arc};
+use std::{env, ffi::OsStr, io::Read, sync::Arc};
 
 use crate::{
     commands::reset::{run_compile_reset, run_memory_reset, run_reset_all, run_state_reset},
@@ -26,7 +26,84 @@ use ratatui::{
 use std::path::PathBuf;
 
 pub(crate) fn parse_args() -> Cli {
+    if is_top_level_help_request(env::args_os()) {
+        print_top_level_help();
+        std::process::exit(0);
+    }
     Cli::parse()
+}
+
+fn is_top_level_help_request<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let args = args.into_iter().collect::<Vec<_>>();
+    matches!(
+        args.get(1).and_then(|arg| arg.as_ref().to_str()),
+        Some("-h" | "--help" | "help")
+    ) && args.len() == 2
+}
+
+fn print_top_level_help() {
+    print!("{}", top_level_help_text());
+}
+
+fn top_level_help_text() -> String {
+    let reset = "\x1b[0m";
+    let dim = "\x1b[2m";
+    let green = "\x1b[38;5;120m";
+    let logo = crate::terminal_logo::render_daat_locus_logo();
+
+    format!(
+        "{logo}
+{green}Run{reset}
+  daat-locus run
+  daat-locus code <project-dir>
+
+{green}Operate{reset}
+  daat-locus attach
+  daat-locus send <prompt>
+
+{green}Configure{reset}
+  daat-locus config
+  daat-locus config show
+
+{green}Daemon{reset}
+  daat-locus daemon status
+  daat-locus daemon token create <name>
+
+{dim}Subcommand help: daat-locus <command> --help{reset}
+"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_level_help_request_is_handled_by_custom_banner() {
+        assert!(is_top_level_help_request(["daat-locus", "--help"]));
+        assert!(is_top_level_help_request(["daat-locus", "-h"]));
+        assert!(is_top_level_help_request(["daat-locus", "help"]));
+        assert!(!is_top_level_help_request([
+            "daat-locus",
+            "config",
+            "--help"
+        ]));
+    }
+
+    #[test]
+    fn custom_help_contains_logo_and_entrypoints() {
+        let help = top_level_help_text();
+
+        assert!(help.contains("daat-locus run"));
+        assert!(help.contains("daat-locus code <project-dir>"));
+        assert!(help.contains("\x1b[38;5;87m"));
+        assert!(!help.contains("long-running local agent runtime"));
+        assert!(!help.contains('╭'));
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -322,7 +399,7 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
     // First run starts the interactive setup when config.toml is missing.
     let config = if !config::config_file_exists().await {
         match config_wizard::run_first_time_setup().await {
-            Ok(c) => c,
+            Ok(_) => return Ok(()),
             Err(e) => {
                 eprintln!(
                     "{}",
