@@ -8,8 +8,7 @@
 /assets/hindsight-sidecars/*.zip
 /assets/hindsight-sidecars/manifest.toml
 
-# WebUI local Yarn state and build output
-/webui/.yarn/
+# WebUI local package manager state and build output
 /webui/dist/
 /webui/node_modules/
 scope-engine.zip

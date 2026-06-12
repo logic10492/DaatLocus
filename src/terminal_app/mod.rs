@@ -120,7 +120,6 @@ impl TerminalApp {
             "docker login",
             "npm login",
             "pnpm login",
-            "yarn login",
             "huggingface-cli login",
             "hf auth login",
         ];

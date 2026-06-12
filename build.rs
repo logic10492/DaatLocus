@@ -23,7 +23,6 @@ fn build_embedded_webui(manifest_dir: &Path) {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("out dir"));
     let webui_work = out_dir.join("webui-work");
     let webui_dist = out_dir.join("webui-dist");
-    println!("cargo:rerun-if-env-changed=DAAT_LOCUS_WEBUI_PM");
     emit_webui_rerun_inputs(&webui_dir);
 
     if !webui_dir.join("package.json").is_file() {
@@ -31,9 +30,9 @@ fn build_embedded_webui(manifest_dir: &Path) {
     }
 
     prepare_webui_worktree(&webui_dir, &webui_work);
-    let package_manager = webui_package_manager();
-    run_webui_command(&package_manager, &["install", "--immutable"], &webui_work);
-    run_webui_build_command(&package_manager, &webui_work, &webui_dist);
+    let bun_command = webui_bun_command();
+    run_webui_command(&bun_command, &["install", "--frozen-lockfile"], &webui_work);
+    run_webui_build_command(&bun_command, &webui_work, &webui_dist);
 
     let dist_index = webui_dist.join("index.html");
     if !dist_index.is_file() {
@@ -46,13 +45,13 @@ fn build_embedded_webui(manifest_dir: &Path) {
 
 fn emit_webui_rerun_inputs(webui_dir: &Path) {
     for path in [
-        webui_dir.join(".yarnrc.yml"),
+        webui_dir.join("bun.lock"),
+        webui_dir.join("components.json"),
         webui_dir.join("index.html"),
         webui_dir.join("package.json"),
         webui_dir.join("tailwind.config.cjs"),
         webui_dir.join("tsconfig.json"),
         webui_dir.join("vite.config.ts"),
-        webui_dir.join("yarn.lock"),
     ] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
@@ -76,13 +75,13 @@ fn prepare_webui_worktree(source_dir: &Path, work_dir: &Path) {
     });
 
     for relative in [
-        ".yarnrc.yml",
+        "bun.lock",
+        "components.json",
         "index.html",
         "package.json",
         "tailwind.config.cjs",
         "tsconfig.json",
         "vite.config.ts",
-        "yarn.lock",
     ] {
         copy_webui_file(source_dir, work_dir, relative);
     }
@@ -155,69 +154,42 @@ fn emit_rerun_if_changed_recursively(path: &Path) {
     }
 }
 
-fn webui_package_manager() -> Vec<String> {
-    if let Ok(value) = env::var("DAAT_LOCUS_WEBUI_PM") {
-        let parts = value
-            .split_whitespace()
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        if !parts.is_empty() {
-            return parts;
-        }
-    }
-
-    default_webui_package_manager()
-}
-
 #[cfg(windows)]
-fn default_webui_package_manager() -> Vec<String> {
-    if resolve_command("corepack").is_some() {
-        return vec![
-            "cmd".to_string(),
-            "/C".to_string(),
-            "corepack".to_string(),
-            "yarn".to_string(),
-        ];
+fn webui_bun_command() -> Vec<String> {
+    if resolve_command("bun").is_none() {
+        panic!("Bun is required to build the embedded WebUI.");
     }
-    vec!["cmd".to_string(), "/C".to_string(), "yarn".to_string()]
+
+    vec!["cmd".to_string(), "/C".to_string(), "bun".to_string()]
 }
 
 #[cfg(not(windows))]
-fn default_webui_package_manager() -> Vec<String> {
-    if resolve_command("corepack").is_some() {
-        return vec!["corepack".to_string(), "yarn".to_string()];
+fn webui_bun_command() -> Vec<String> {
+    if resolve_command("bun").is_none() {
+        panic!("Bun is required to build the embedded WebUI.");
     }
-    vec!["yarn".to_string()]
+
+    vec!["bun".to_string()]
 }
 
-fn run_webui_build_command(package_manager: &[String], webui_dir: &Path, out_dir: &Path) {
-    let mut command = Command::new(&package_manager[0]);
+fn run_webui_build_command(bun_command: &[String], webui_dir: &Path, out_dir: &Path) {
+    let mut command = Command::new(&bun_command[0]);
     command
-        .args(&package_manager[1..])
-        .arg("build")
+        .args(&bun_command[1..])
+        .args(["run", "build"])
         .env("DAAT_LOCUS_WEBUI_OUT_DIR", out_dir)
         .current_dir(webui_dir);
-    configure_webui_command(&mut command);
     run_webui_command_status(command, "WebUI build");
 }
 
-fn run_webui_command(package_manager: &[String], args: &[&str], webui_dir: &Path) {
-    let mut command = Command::new(&package_manager[0]);
+fn run_webui_command(bun_command: &[String], args: &[&str], webui_dir: &Path) {
+    let mut command = Command::new(&bun_command[0]);
     command
-        .args(&package_manager[1..])
+        .args(&bun_command[1..])
         .args(args)
         .current_dir(webui_dir);
-    configure_webui_command(&mut command);
     run_webui_command_status(command, "WebUI command");
 }
-
-#[cfg(windows)]
-fn configure_webui_command(command: &mut Command) {
-    command.env("YARN_NODE_LINKER", "node-modules");
-}
-
-#[cfg(not(windows))]
-fn configure_webui_command(_command: &mut Command) {}
 
 fn run_webui_command_status(mut command: Command, label: &str) {
     let status = command

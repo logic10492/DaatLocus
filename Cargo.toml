@@ -21,7 +21,7 @@ include = [
     "/locales/**",
     "/prompts/**",
     "/src/**",
-    "/webui/.yarnrc.yml",
+    "/webui/bun.lock",
     "/webui/components.json",
     "/webui/index.html",
     "/webui/package.json",
@@ -29,7 +29,6 @@ include = [
     "/webui/tailwind.config.cjs",
     "/webui/tsconfig.json",
     "/webui/vite.config.ts",
-    "/webui/yarn.lock",
     "/workflows/**",
 ]
 

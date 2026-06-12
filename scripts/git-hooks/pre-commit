@@ -59,18 +59,14 @@ if [ ! -f webui/package.json ]; then
     exit 1
 fi
 
-if command -v corepack >/dev/null 2>&1; then
+if command -v bun >/dev/null 2>&1; then
     (
         cd webui
-        run_no_warnings "WebUI warnings" corepack yarn build
-    )
-elif command -v yarn >/dev/null 2>&1; then
-    (
-        cd webui
-        run_no_warnings "WebUI warnings" yarn build
+        run "WebUI dependencies" bun install --frozen-lockfile
+        run_no_warnings "WebUI warnings" bun run build
     )
 else
-    printf 'Neither corepack nor yarn is available; cannot check WebUI warnings.\n' >&2
+    printf 'Bun is not available; cannot check WebUI warnings.\n' >&2
     exit 1
 fi
 
