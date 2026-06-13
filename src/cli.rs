@@ -1,4 +1,4 @@
-use std::{env, ffi::OsStr, io::Read, sync::Arc};
+use std::{env, ffi::OsStr, fs, io::Read, sync::Arc};
 
 use crate::{
     commands::reset::{run_compile_reset, run_memory_reset, run_reset_all, run_state_reset},
@@ -56,10 +56,48 @@ fn top_level_help_text() -> String {
     let logo = crate::terminal_logo::render_daat_locus_logo();
     let mut command = Cli::command()
         .color(ColorChoice::Always)
-        .styles(HELP_STYLES);
+        .styles(HELP_STYLES)
+        .after_help(top_level_after_help_text());
     let help = command.render_help();
 
     format!("{logo}\n\n{}", help.ansi())
+}
+
+fn top_level_after_help_text() -> String {
+    let green = "\x1b[38;5;120m";
+    let cyan = "\x1b[38;5;87m";
+    let reset = "\x1b[0m";
+    let webui_url = webui_help_url();
+
+    format!("{green}WebUI{reset}\n  If Daat Locus is running, open {cyan}{webui_url}{reset}")
+}
+
+fn webui_help_url() -> String {
+    format!(
+        "http://{}:{}",
+        crate::daemon::DAEMON_CLIENT_HOST,
+        configured_help_daemon_port()
+    )
+}
+
+fn configured_help_daemon_port() -> u16 {
+    let default_port = crate::config::DaemonConfig::default().port;
+    let config_path =
+        crate::persistence::PersistenceStore::runtime_sync().config_file("config.toml");
+    let Ok(content) = fs::read_to_string(config_path) else {
+        return default_port;
+    };
+    let Ok(value) = content.parse::<toml::Value>() else {
+        return default_port;
+    };
+
+    value
+        .get("daemon")
+        .and_then(|daemon| daemon.get("port"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port > 0)
+        .unwrap_or(default_port)
 }
 
 const HELP_STYLES: Styles = Styles::styled()
@@ -95,6 +133,8 @@ mod tests {
         assert!(help.contains("Start the foreground runtime flow"));
         assert!(help.contains("code"));
         assert!(help.contains("Open a coding session tied to a project directory"));
+        assert!(help.contains("WebUI"));
+        assert!(help.contains("http://localhost:"));
         assert!(help.contains("\x1b[38;5;87m"));
         assert!(help.contains("\x1b[92mUsage:"));
         assert!(help.contains("\x1b[96mrun"));
