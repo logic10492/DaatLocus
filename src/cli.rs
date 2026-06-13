@@ -16,7 +16,10 @@ use crate::{
 use crate::{config, config_wizard};
 #[cfg(feature = "tui-perf-cmd")]
 use clap::Args;
-use clap::{Parser, Subcommand};
+use clap::{
+    ColorChoice, CommandFactory, Parser, Subcommand,
+    builder::styling::{AnsiColor, Styles},
+};
 use miette::{IntoDiagnostic, Result, miette};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -50,33 +53,22 @@ fn print_top_level_help() {
 }
 
 fn top_level_help_text() -> String {
-    let reset = "\x1b[0m";
-    let dim = "\x1b[2m";
-    let green = "\x1b[38;5;120m";
     let logo = crate::terminal_logo::render_daat_locus_logo();
+    let mut command = Cli::command()
+        .color(ColorChoice::Always)
+        .styles(HELP_STYLES);
+    let help = command.render_help();
 
-    format!(
-        "{logo}
-{green}Run{reset}
-  daat-locus run
-  daat-locus code <project-dir>
-
-{green}Operate{reset}
-  daat-locus attach
-  daat-locus send <prompt>
-
-{green}Configure{reset}
-  daat-locus config
-  daat-locus config show
-
-{green}Daemon{reset}
-  daat-locus daemon status
-  daat-locus daemon token create <name>
-
-{dim}Subcommand help: daat-locus <command> --help{reset}
-"
-    )
+    format!("{logo}\n\n{}", help.ansi())
 }
+
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::BrightGreen.on_default().bold())
+    .usage(AnsiColor::BrightGreen.on_default().bold())
+    .literal(AnsiColor::BrightCyan.on_default().bold())
+    .placeholder(AnsiColor::BrightMagenta.on_default())
+    .valid(AnsiColor::BrightGreen.on_default())
+    .invalid(AnsiColor::BrightYellow.on_default());
 
 #[cfg(test)]
 mod tests {
@@ -98,16 +90,21 @@ mod tests {
     fn custom_help_contains_logo_and_entrypoints() {
         let help = top_level_help_text();
 
-        assert!(help.contains("daat-locus run"));
-        assert!(help.contains("daat-locus code <project-dir>"));
+        assert!(help.contains("Usage:"));
+        assert!(help.contains("run"));
+        assert!(help.contains("Start the foreground runtime flow"));
+        assert!(help.contains("code"));
+        assert!(help.contains("Open a coding session tied to a project directory"));
         assert!(help.contains("\x1b[38;5;87m"));
+        assert!(help.contains("\x1b[92mUsage:"));
+        assert!(help.contains("\x1b[96mrun"));
         assert!(!help.contains("long-running local agent runtime"));
         assert!(!help.contains('╭'));
     }
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "daat-locus", about = "Daat Locus Agent")]
+#[command(name = "daat-locus")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     command: Option<DaatLocusCommand>,
