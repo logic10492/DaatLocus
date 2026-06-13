@@ -104,6 +104,7 @@ pub(crate) async fn daat_locus_loop(
     context.active_runtime_turn = true;
     context.runtime_turn_epoch = context.runtime_turn_epoch.wrapping_add(1);
     context.runtime_turn_started_at = Some(std::time::Instant::now());
+    context.runtime_turn_started_at_ms = Some(chrono::Utc::now().timestamp_millis());
     context.set_runtime_phase(Some(RuntimeTurnPhase::PreflightPreTurnContext));
     sync_dashboard_state(
         context,
@@ -119,6 +120,7 @@ pub(crate) async fn daat_locus_loop(
     }
     context.active_runtime_turn = false;
     context.runtime_turn_started_at = None;
+    context.runtime_turn_started_at_ms = None;
     context.set_runtime_phase(None);
     clear_runtime_status(Some(tx));
     refresh_sleep_status_queues(sleep_status).await;
@@ -216,6 +218,7 @@ pub(crate) fn reset_cancelled_runtime_turn(context: &mut Context, reason: &str) 
     context.active_runtime_turn = false;
     context.set_runtime_phase(None);
     context.runtime_turn_started_at = None;
+    context.runtime_turn_started_at_ms = None;
 }
 
 fn enqueue_app_notice_work(context: &mut Context) {

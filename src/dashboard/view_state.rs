@@ -4,9 +4,14 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use super::command_panels::{CommandFeedback, CommandPanel};
 use super::{
-    ActivityCell, CachedActivityLines, DashboardActivityHistoryPage, DashboardState,
-    LiveActivityCell, activity_cells_from_history_items,
+    ActivityCell, CachedActivityLines, DashboardActivityHistoryPage, DashboardCommandAttachment,
+    DashboardState, LiveActivityCell, activity_cells_from_history_items,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CtrlCReminder {
+    Interrupt,
+}
 
 /// Editable input string with cursor tracking for in-place editing.
 #[derive(Debug)]
@@ -93,10 +98,15 @@ impl InputState {
 pub(super) struct TuiViewState {
     pub(super) command_input: InputState,
     pub(super) pending_pastes: Vec<(String, String)>,
+    pub(super) pending_image_attachments: Vec<DashboardCommandAttachment>,
     pub(super) command_popup_selection: usize,
     pub(super) command_popup_scroll: usize,
     pub(super) command_panel: Option<CommandPanel>,
     pub(super) command_feedback: Option<CommandFeedback>,
+    pub(super) ctrl_c_reminder: Option<CtrlCReminder>,
+    command_history: Vec<String>,
+    command_history_cursor: Option<usize>,
+    command_history_recalled_text: Option<String>,
     pub(super) scroll_offset: u16,
     pub(super) auto_scroll: bool,
     pub(super) max_scroll: u16,
@@ -119,10 +129,15 @@ impl TuiViewState {
         Self {
             command_input: InputState::new(),
             pending_pastes: Vec::new(),
+            pending_image_attachments: Vec::new(),
             command_popup_selection: 0,
             command_popup_scroll: 0,
             command_panel: None,
             command_feedback: None,
+            ctrl_c_reminder: None,
+            command_history: Vec::new(),
+            command_history_cursor: None,
+            command_history_recalled_text: None,
             scroll_offset: 0,
             auto_scroll: true,
             max_scroll: 0,
@@ -143,6 +158,93 @@ impl TuiViewState {
     pub(super) fn reset_command_popup(&mut self) {
         self.command_popup_selection = 0;
         self.command_popup_scroll = 0;
+    }
+
+    pub(super) fn clear_ctrl_c_reminder(&mut self) {
+        self.ctrl_c_reminder = None;
+    }
+
+    pub(super) fn record_command_history(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.reset_command_history_navigation();
+        if self
+            .command_history
+            .last()
+            .is_some_and(|previous| previous == text)
+        {
+            return;
+        }
+        self.command_history.push(text.to_string());
+    }
+
+    pub(super) fn reset_command_history_navigation(&mut self) {
+        self.command_history_cursor = None;
+        self.command_history_recalled_text = None;
+    }
+
+    pub(super) fn navigate_command_history_up(&mut self) -> bool {
+        if !self.should_handle_command_history_navigation() {
+            return false;
+        }
+        let total_entries = self.command_history.len();
+        let Some(next_index) = self
+            .command_history_cursor
+            .map(|index| index.checked_sub(1))
+            .unwrap_or_else(|| total_entries.checked_sub(1))
+        else {
+            return false;
+        };
+        self.replace_command_input_from_history(next_index)
+    }
+
+    pub(super) fn navigate_command_history_down(&mut self) -> bool {
+        if !self.should_handle_command_history_navigation() {
+            return false;
+        }
+        let Some(current_index) = self.command_history_cursor else {
+            return false;
+        };
+        let next_index = current_index + 1;
+        if next_index >= self.command_history.len() {
+            self.command_history_cursor = None;
+            self.command_history_recalled_text = None;
+            self.command_input.clear();
+            self.pending_pastes.clear();
+            self.pending_image_attachments.clear();
+            self.reset_command_popup();
+            return true;
+        }
+        self.replace_command_input_from_history(next_index)
+    }
+
+    fn should_handle_command_history_navigation(&self) -> bool {
+        if self.command_history.is_empty() {
+            return false;
+        }
+        let text = self.command_input.as_str();
+        if text.is_empty() {
+            return true;
+        }
+        if self.command_input.cursor_pos != 0 {
+            return false;
+        }
+        self.command_history_recalled_text.as_deref() == Some(text)
+    }
+
+    fn replace_command_input_from_history(&mut self, index: usize) -> bool {
+        let Some(text) = self.command_history.get(index).cloned() else {
+            return false;
+        };
+        self.command_history_cursor = Some(index);
+        self.command_history_recalled_text = Some(text.clone());
+        self.command_input.set_text(text);
+        self.command_input.move_home();
+        self.pending_pastes.clear();
+        self.pending_image_attachments.clear();
+        self.reset_command_popup();
+        true
     }
 
     pub(super) fn effective_scroll(&self) -> u16 {
@@ -267,6 +369,8 @@ impl TuiViewState {
         self.loading_history = false;
         self.history_load_rx = None;
         self.cached_activity_lines = CachedActivityLines::new();
+        self.pending_image_attachments.clear();
+        self.ctrl_c_reminder = None;
         self.expanded_thinking.clear();
         self.auto_scroll = true;
         self.scroll_offset = 0;
@@ -295,14 +399,6 @@ impl TuiViewState {
 
     pub(super) fn handle_activity_scroll_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Up => {
-                self.handle_activity_scroll_rows(-1);
-                true
-            }
-            KeyCode::Down => {
-                self.handle_activity_scroll_rows(1);
-                true
-            }
             KeyCode::PageUp => {
                 let page_height = self.page_height.min(i16::MAX as u16) as i16;
                 self.handle_activity_scroll_rows(-page_height);
@@ -387,5 +483,40 @@ mod tests {
         assert!(!view.handle_activity_scroll_rows(0));
         assert!(view.auto_scroll);
         assert_eq!(view.scroll_offset, 0);
+    }
+
+    #[test]
+    fn up_down_keys_do_not_scroll_activity_feed() {
+        let mut view = TuiViewState::new();
+        view.max_scroll = 100;
+        view.auto_scroll = true;
+
+        assert!(!view.handle_activity_scroll_key(KeyEvent::new(
+            KeyCode::Up,
+            crossterm::event::KeyModifiers::NONE
+        )));
+        assert!(!view.handle_activity_scroll_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE
+        )));
+
+        assert!(view.auto_scroll);
+        assert_eq!(view.scroll_offset, 0);
+    }
+
+    #[test]
+    fn page_keys_still_scroll_activity_feed() {
+        let mut view = TuiViewState::new();
+        view.max_scroll = 100;
+        view.page_height = 20;
+        view.auto_scroll = true;
+
+        assert!(view.handle_activity_scroll_key(KeyEvent::new(
+            KeyCode::PageUp,
+            crossterm::event::KeyModifiers::NONE
+        )));
+
+        assert!(!view.auto_scroll);
+        assert_eq!(view.scroll_offset, 80);
     }
 }

@@ -47,8 +47,8 @@ use crate::{
     daat_locus_paths::{daat_locus_paths, daat_locus_paths_sync},
     dashboard::{
         DashboardAction, DashboardActionResult, DashboardActivityHistoryPage,
-        DashboardCommandRunner, DashboardControlCommand, DashboardHistoryLoader,
-        DashboardIncomingAttachment, DashboardSessionTitle, DashboardState,
+        DashboardCommandAttachment, DashboardCommandRunner, DashboardControlCommand,
+        DashboardHistoryLoader, DashboardIncomingAttachment, DashboardSessionTitle, DashboardState,
         execute_control_command, execute_dashboard_action,
     },
     model_catalog::catalog_model_capacity,
@@ -2437,13 +2437,23 @@ impl DaemonClient {
     }
 
     pub async fn send_command(&self, command: &str) -> Result<String> {
+        self.send_command_with_attachments(command, Vec::new())
+            .await
+    }
+
+    pub async fn send_command_with_attachments(
+        &self,
+        command: &str,
+        attachments: Vec<DashboardCommandAttachment>,
+    ) -> Result<String> {
+        let attachments = command_attachment_requests(attachments).await?;
         let response = self
             .with_auth(
                 self.http
                     .post(format!("{}/commands/run", self.base_url()))
                     .json(&CommandRequest {
                         command: command.to_string(),
-                        attachments: Vec::new(),
+                        attachments,
                         session_id: self.session_id.clone(),
                     }),
             )?
@@ -2686,8 +2696,19 @@ impl DaemonClient {
 
 #[async_trait::async_trait]
 impl DashboardCommandRunner for DaemonClient {
-    async fn run_command(&self, command: &str, _state: &DashboardState) -> String {
-        match self.send_command(command).await {
+    async fn run_command(
+        &self,
+        command: &str,
+        attachments: Vec<DashboardCommandAttachment>,
+        _state: &DashboardState,
+    ) -> String {
+        let result = if attachments.is_empty() {
+            self.send_command(command).await
+        } else {
+            self.send_command_with_attachments(command, attachments)
+                .await
+        };
+        match result {
             Ok(output) => output,
             Err(err) => format!("command failed: {err}"),
         }
@@ -2707,6 +2728,27 @@ impl DashboardCommandRunner for DaemonClient {
             },
         }
     }
+}
+
+async fn command_attachment_requests(
+    attachments: Vec<DashboardCommandAttachment>,
+) -> Result<Vec<CommandAttachmentRequest>> {
+    let mut requests = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        let bytes = tokio::fs::read(&attachment.path).await.map_err(|err| {
+            miette!(
+                "failed to read image attachment {}: {err}",
+                attachment.path.display()
+            )
+        })?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        requests.push(CommandAttachmentRequest {
+            name: attachment.name,
+            media_type: attachment.media_type.clone(),
+            data_url: format!("data:{};base64,{encoded}", attachment.media_type),
+        });
+    }
+    Ok(requests)
 }
 
 #[async_trait::async_trait]

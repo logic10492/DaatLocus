@@ -871,6 +871,7 @@ mod tests {
                 active_runtime_turn: false,
                 active_runtime_phase: None,
                 runtime_turn_started_at: None,
+                runtime_turn_started_at_ms: None,
                 runtime_turn_epoch: 0,
                 active_app_notices: HashMap::new(),
                 runtime_overflow_failures: std::sync::Arc::new(parking_lot::Mutex::new(

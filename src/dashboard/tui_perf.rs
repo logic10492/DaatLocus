@@ -15,9 +15,9 @@ use crate::{
     openskills::OpenSkillDashboardSummary,
     telegram_acl::PendingAccessRequest,
     tool_ui::{
-        BrowserUiAction, BrowserUiData, ExploredCallUiData, ExploredUiData, PatchDiffLineKind,
-        PatchDiffLineUiData, PatchFileOperation, PatchFileUiData, ReplyDisposition, ReplySubject,
-        ReplyUiData, TerminalUiAction, TerminalUiData, ToolUiEvent,
+        BrowserUiAction, BrowserUiData, ExploredCallUiAction, ExploredCallUiData, ExploredUiData,
+        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData,
+        ReplyDisposition, ReplySubject, ReplyUiData, TerminalUiAction, TerminalUiData, ToolUiEvent,
     },
 };
 
@@ -167,9 +167,9 @@ fn run_tui_perf(command: TuiPerfCommand) -> Result<TuiPerfReport> {
         if apply_perf_scroll_step(scenario, command.warmup + frame, &mut view) {
             scroll_steps += 1;
         }
-        let timing =
+        let frame_render =
             render_tui_dashboard_frame(&mut terminal, &mut view, &state).into_diagnostic()?;
-        timings.record(timing);
+        timings.record(frame_render.timing);
     }
     let cache_stats = view.cached_activity_lines.stats();
     let last_buffer = terminal.backend().buffer();
@@ -452,11 +452,17 @@ fn mock_explored(idx: usize) -> ExploredUiData {
         calls: vec![
             ExploredCallUiData {
                 tool_name: "Read".to_string(),
+                action: Some(ExploredCallUiAction::Read),
+                target: Some("src/dashboard/mod.rs".to_string()),
+                secondary_target: None,
                 summary: "Read mod.rs".to_string(),
                 detail_lines: vec!["src/dashboard/mod.rs#L350-L590".to_string()],
             },
             ExploredCallUiData {
                 tool_name: "Search".to_string(),
+                action: Some(ExploredCallUiAction::Search),
+                target: Some("schedule_frame|render_tui_dashboard_frame".to_string()),
+                secondary_target: Some("dashboard".to_string()),
                 summary: "Search schedule_frame|render_tui_dashboard_frame in dashboard"
                     .to_string(),
                 detail_lines: vec!["src/dashboard/mod.rs".to_string()],
@@ -468,6 +474,7 @@ fn mock_explored(idx: usize) -> ExploredUiData {
 fn mock_terminal(idx: usize) -> TerminalUiData {
     TerminalUiData {
         action: TerminalUiAction::Execute,
+        origin: None,
         title: format!("cargo check #{idx}"),
         body_lines: vec![
             "0.42s".to_string(),

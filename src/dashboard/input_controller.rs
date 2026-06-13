@@ -11,11 +11,14 @@ use super::command_input::{
     expand_paste_placeholders, handle_paste_placeholder, should_insert_newline_on_enter,
 };
 use super::command_panels::{
-    CommandFeedbackLevel, CommandPanel, CommandPanelAction, DashboardCommandContext,
-    SkillsListPanel, SkillsTogglePanel, handle_command_panel_key,
+    CommandFeedback, CommandFeedbackLevel, CommandPanel, CommandPanelAction,
+    DashboardCommandContext, SkillsListPanel, SkillsTogglePanel, handle_command_panel_key,
+    transcript_panel,
 };
-use super::view_state::TuiViewState;
-use super::{DashboardAction, DashboardCommandRunner, DashboardState};
+use super::view_state::{CtrlCReminder, TuiViewState};
+use std::path::{Path, PathBuf};
+
+use super::{DashboardAction, DashboardCommandAttachment, DashboardCommandRunner, DashboardState};
 
 pub(super) enum TuiInputOutcome {
     Continue,
@@ -33,6 +36,7 @@ pub(super) enum TuiInputOutcome {
     },
     SubmitText {
         input: String,
+        attachments: Vec<DashboardCommandAttachment>,
     },
 }
 
@@ -44,6 +48,12 @@ pub(super) fn handle_key_event(
     let pending_requests = state.pending_access_requests.clone();
 
     if view.command_panel.is_some() {
+        if is_ctrl_c(key) {
+            view.command_panel = None;
+            view.command_feedback = None;
+            view.ctrl_c_reminder = ctrl_c_reminder_for_state(state);
+            return TuiInputOutcome::Continue;
+        }
         let action = view
             .command_panel
             .as_mut()
@@ -88,8 +98,34 @@ pub(super) fn handle_key_event(
         return TuiInputOutcome::Continue;
     }
 
+    if is_ctrl_c(key) {
+        return handle_ctrl_c_key(view, state);
+    }
+
+    if key.code == KeyCode::Esc && state.runtime_activity.active_runtime_turn {
+        view.command_feedback = None;
+        view.clear_ctrl_c_reminder();
+        view.reset_command_popup();
+        return TuiInputOutcome::RunDashboardAction {
+            input: "<esc>".to_string(),
+            title: "Interrupt".to_string(),
+            action: DashboardAction::InterruptRuntime,
+            quiet_success: true,
+        };
+    }
+
     if view.command_input.is_empty() {
         if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let (cells, live_cells) = view.visible_activity_cells(state);
+            view.command_panel = Some(transcript_panel(
+                cells,
+                live_cells,
+                state.activity_cells.len(),
+            ));
+            view.command_feedback = None;
+            return TuiInputOutcome::Continue;
+        }
+        if key.code == KeyCode::Enter {
             view.toggle_thinking_expansion(&state.activity_cells);
             return TuiInputOutcome::Continue;
         }
@@ -107,6 +143,8 @@ pub(super) fn handle_key_event(
         KeyCode::Char(c) => {
             view.command_input.insert_char(c);
             view.command_feedback = None;
+            view.clear_ctrl_c_reminder();
+            view.reset_command_history_navigation();
             view.reset_command_popup();
         }
         KeyCode::Tab => {
@@ -117,12 +155,16 @@ pub(super) fn handle_key_event(
             ) {
                 view.command_input.set_text(completion);
                 view.command_feedback = None;
+                view.clear_ctrl_c_reminder();
+                view.reset_command_history_navigation();
                 view.reset_command_popup();
             }
         }
         KeyCode::Backspace => {
             view.command_input.delete_before_cursor();
             view.command_feedback = None;
+            view.clear_ctrl_c_reminder();
+            view.reset_command_history_navigation();
             view.reset_command_popup();
         }
         KeyCode::Up => {
@@ -137,6 +179,9 @@ pub(super) fn handle_key_event(
                     view.command_popup_selection,
                     matches.len(),
                 );
+            } else if view.navigate_command_history_up() {
+                view.command_feedback = None;
+                view.clear_ctrl_c_reminder();
             }
         }
         KeyCode::Down => {
@@ -149,11 +194,17 @@ pub(super) fn handle_key_event(
                     view.command_popup_selection,
                     matches.len(),
                 );
+            } else if view.navigate_command_history_down() {
+                view.command_feedback = None;
+                view.clear_ctrl_c_reminder();
             }
         }
         KeyCode::Esc => {
             view.command_input.clear();
+            view.pending_image_attachments.clear();
             view.command_feedback = None;
+            view.clear_ctrl_c_reminder();
+            view.reset_command_history_navigation();
             view.reset_command_popup();
         }
         KeyCode::Enter => {
@@ -181,6 +232,57 @@ pub(super) fn handle_key_event(
     TuiInputOutcome::Continue
 }
 
+fn is_ctrl_c(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) && c.eq_ignore_ascii_case(&'c'))
+}
+
+fn handle_ctrl_c_key(view: &mut TuiViewState, state: &DashboardState) -> TuiInputOutcome {
+    if composer_has_input(view) {
+        let previous_input = view.command_input.as_str().to_string();
+        view.command_panel = None;
+        view.command_input.clear();
+        view.pending_pastes.clear();
+        view.pending_image_attachments.clear();
+        view.command_feedback = None;
+        view.ctrl_c_reminder = ctrl_c_reminder_for_state(state);
+        view.reset_command_history_navigation();
+        view.record_command_history(&previous_input);
+        view.reset_command_popup();
+        return TuiInputOutcome::Continue;
+    }
+
+    if state.runtime_activity.active_runtime_turn {
+        view.command_feedback = None;
+        view.clear_ctrl_c_reminder();
+        view.reset_command_popup();
+        return TuiInputOutcome::RunDashboardAction {
+            input: "<ctrl-c>".to_string(),
+            title: "Interrupt".to_string(),
+            action: DashboardAction::InterruptRuntime,
+            quiet_success: true,
+        };
+    }
+
+    view.command_feedback = None;
+    view.clear_ctrl_c_reminder();
+    view.reset_command_popup();
+    TuiInputOutcome::Continue
+}
+
+fn composer_has_input(view: &TuiViewState) -> bool {
+    !view.command_input.is_empty()
+        || !view.pending_pastes.is_empty()
+        || !view.pending_image_attachments.is_empty()
+}
+
+fn ctrl_c_reminder_for_state(state: &DashboardState) -> Option<CtrlCReminder> {
+    if state.runtime_activity.active_runtime_turn {
+        Some(CtrlCReminder::Interrupt)
+    } else {
+        None
+    }
+}
+
 fn handle_enter_key(
     key: KeyEvent,
     view: &mut TuiViewState,
@@ -188,6 +290,7 @@ fn handle_enter_key(
 ) -> TuiInputOutcome {
     if should_insert_newline_on_enter(key.modifiers) {
         view.command_input.insert_char('\n');
+        view.reset_command_history_navigation();
         view.reset_command_popup();
         return TuiInputOutcome::Continue;
     }
@@ -201,7 +304,22 @@ fn handle_enter_key(
     }
 
     let input = view.command_input.as_str().trim().to_string();
+    let attachments =
+        pending_attachments_for_input(view.command_input.as_str(), &view.pending_image_attachments);
     if !input.is_empty() {
+        if !attachments.is_empty() && is_dashboard_command_input(&input) {
+            view.command_panel = None;
+            view.command_feedback = Some(CommandFeedback {
+                title: "ATTACHMENTS".to_string(),
+                message: "dashboard commands cannot include image attachments".to_string(),
+                detail: Some(
+                    "Remove image placeholders before running a slash command.".to_string(),
+                ),
+                level: CommandFeedbackLevel::Error,
+            });
+            view.reset_command_popup();
+            return TuiInputOutcome::Continue;
+        }
         if matches!(dashboard_command_body(&input), Some("quit" | "q" | "exit")) {
             return TuiInputOutcome::Exit;
         }
@@ -253,7 +371,7 @@ fn handle_enter_key(
             view.reset_command_popup();
             return TuiInputOutcome::Continue;
         }
-        return TuiInputOutcome::SubmitText { input };
+        return TuiInputOutcome::SubmitText { input, attachments };
     }
     view.command_input.clear();
     view.reset_command_popup();
@@ -295,6 +413,7 @@ pub(super) async fn execute_input_outcome(
             action,
             quiet_success,
         } => {
+            let clear_input_after_action = !matches!(action, DashboardAction::InterruptRuntime);
             let result = command_runner.run_action(action, state).await;
             if is_clear_command_input(&input) && result.success {
                 view.clear_visible_activity();
@@ -304,15 +423,21 @@ pub(super) async fn execute_input_outcome(
             } else {
                 Some(command_feedback_from_action_result(title, result))
             };
-            view.command_input.clear();
+            view.clear_ctrl_c_reminder();
+            if clear_input_after_action {
+                view.command_input.clear();
+                view.pending_image_attachments.clear();
+            }
             view.reset_command_popup();
             false
         }
-        TuiInputOutcome::SubmitText { input } => {
-            let _ = command_runner.run_command(&input, state).await;
+        TuiInputOutcome::SubmitText { input, attachments } => {
+            let _ = command_runner.run_command(&input, attachments, state).await;
+            view.record_command_history(&input);
             view.command_panel = None;
             view.command_feedback = None;
             view.command_input.clear();
+            view.pending_image_attachments.clear();
             view.reset_command_popup();
             false
         }
@@ -320,7 +445,380 @@ pub(super) async fn execute_input_outcome(
 }
 
 pub(super) fn handle_paste_event(text: &str, view: &mut TuiViewState) {
-    handle_paste_placeholder(text, &mut view.command_input.text, &mut view.pending_pastes);
+    if let Some(attachments) = image_attachments_from_paste(text) {
+        let placeholders = attachments
+            .iter()
+            .map(|attachment| attachment.placeholder.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        view.command_input.text.push_str(&placeholders);
+        view.pending_image_attachments.extend(attachments);
+    } else {
+        handle_paste_placeholder(text, &mut view.command_input.text, &mut view.pending_pastes);
+    }
     view.command_input.move_end();
     view.command_feedback = None;
+    view.clear_ctrl_c_reminder();
+    view.reset_command_history_navigation();
+}
+
+fn pending_attachments_for_input(
+    input: &str,
+    attachments: &[DashboardCommandAttachment],
+) -> Vec<DashboardCommandAttachment> {
+    attachments
+        .iter()
+        .filter(|attachment| input.contains(&attachment.placeholder))
+        .cloned()
+        .collect()
+}
+
+fn image_attachments_from_paste(text: &str) -> Option<Vec<DashboardCommandAttachment>> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let paths = normalized
+        .lines()
+        .map(normalize_pasted_path)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if paths.is_empty() || paths.len() > 4 {
+        return None;
+    }
+    let mut attachments = Vec::with_capacity(paths.len());
+    for (index, path_text) in paths.iter().enumerate() {
+        let path = PathBuf::from(path_text);
+        let media_type = media_type_for_image_path(&path)?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(path_text)
+            .to_string();
+        let placeholder = if paths.len() == 1 {
+            format!("[Image: {name}]")
+        } else {
+            format!("[Image {}: {name}]", index + 1)
+        };
+        attachments.push(DashboardCommandAttachment {
+            placeholder,
+            name,
+            path,
+            media_type: media_type.to_string(),
+        });
+    }
+    Some(attachments)
+}
+
+fn normalize_pasted_path(line: &str) -> &str {
+    line.trim().trim_matches(['"', '\''])
+}
+
+fn media_type_for_image_path(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg" | "jpeg") => Some("image/jpeg"),
+        Some("webp") => Some("image/webp"),
+        Some("gif") => Some("image/gif"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct OkRunner;
+
+    #[async_trait::async_trait]
+    impl DashboardCommandRunner for OkRunner {
+        async fn run_command(
+            &self,
+            _command: &str,
+            _attachments: Vec<DashboardCommandAttachment>,
+            _state: &DashboardState,
+        ) -> String {
+            String::new()
+        }
+
+        async fn run_action(
+            &self,
+            _action: DashboardAction,
+            _state: &DashboardState,
+        ) -> crate::dashboard::DashboardActionResult {
+            crate::dashboard::DashboardActionResult {
+                success: true,
+                message: "ok".to_string(),
+                detail: None,
+            }
+        }
+    }
+
+    fn state_with_active_runtime_turn() -> DashboardState {
+        let mut state = DashboardState::default();
+        state.runtime_activity = crate::dashboard::DashboardRuntimeActivity::default()
+            .with_runtime_turn(Some("model request".to_string()), Some(1_000));
+        state
+    }
+
+    #[test]
+    fn ctrl_t_opens_transcript_panel() {
+        let mut view = TuiViewState::new();
+        let state = DashboardState::default();
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            &mut view,
+            &state,
+        );
+
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        let Some(CommandPanel::Transcript(panel)) = view.command_panel else {
+            panic!("ctrl+t should open a transcript panel");
+        };
+        assert_eq!(panel.title, "TRANSCRIPT");
+        assert!(panel.cells.is_empty());
+        assert!(panel.live_cells.is_empty());
+        assert!(panel.follow_bottom);
+        assert_eq!(panel.scroll, 0);
+    }
+
+    #[test]
+    fn pasted_image_path_becomes_pending_attachment() {
+        let mut view = TuiViewState::new();
+        handle_paste_event("\"C:/tmp/dashboard.png\"", &mut view);
+
+        assert_eq!(view.command_input.as_str(), "[Image: dashboard.png]");
+        assert_eq!(view.pending_image_attachments.len(), 1);
+        assert_eq!(view.pending_image_attachments[0].media_type, "image/png");
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut view,
+            &DashboardState::default(),
+        );
+
+        match outcome {
+            TuiInputOutcome::SubmitText { input, attachments } => {
+                assert_eq!(input, "[Image: dashboard.png]");
+                assert_eq!(attachments.len(), 1);
+                assert_eq!(attachments[0].name, "dashboard.png");
+            }
+            _ => panic!("image paste should submit text with an attachment"),
+        }
+    }
+
+    #[test]
+    fn slash_commands_cannot_submit_image_attachments() {
+        let mut view = TuiViewState::new();
+        handle_paste_event("C:/tmp/dashboard.png", &mut view);
+        view.command_input
+            .set_text(format!("/status {}", view.command_input.as_str()));
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut view,
+            &DashboardState::default(),
+        );
+
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert_eq!(
+            view.command_feedback
+                .as_ref()
+                .map(|feedback| feedback.message.as_str()),
+            Some("dashboard commands cannot include image attachments")
+        );
+    }
+
+    #[test]
+    fn esc_interrupts_active_runtime_turn_without_clearing_composer() {
+        let mut view = TuiViewState::new();
+        view.command_input.set_text("keep this draft".to_string());
+        let state = state_with_active_runtime_turn();
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut view,
+            &state,
+        );
+
+        match outcome {
+            TuiInputOutcome::RunDashboardAction { action, .. } => {
+                assert_eq!(action, DashboardAction::InterruptRuntime);
+            }
+            _ => panic!("esc should interrupt an active runtime turn"),
+        }
+        assert_eq!(view.command_input.as_str(), "keep this draft");
+    }
+
+    #[tokio::test]
+    async fn executing_interrupt_action_keeps_composer_text() {
+        let mut view = TuiViewState::new();
+        view.command_input.set_text("keep this draft".to_string());
+        let state = state_with_active_runtime_turn();
+        let outcome = TuiInputOutcome::RunDashboardAction {
+            input: "<esc>".to_string(),
+            title: "Interrupt".to_string(),
+            action: DashboardAction::InterruptRuntime,
+            quiet_success: true,
+        };
+
+        let should_exit = execute_input_outcome(outcome, &mut view, &state, &OkRunner).await;
+
+        assert!(!should_exit);
+        assert_eq!(view.command_input.as_str(), "keep this draft");
+        assert!(view.command_feedback.is_none());
+    }
+
+    #[tokio::test]
+    async fn up_down_navigate_local_composer_history() {
+        let mut view = TuiViewState::new();
+        let state = DashboardState::default();
+        execute_input_outcome(
+            TuiInputOutcome::SubmitText {
+                input: "first".to_string(),
+                attachments: Vec::new(),
+            },
+            &mut view,
+            &state,
+            &OkRunner,
+        )
+        .await;
+        execute_input_outcome(
+            TuiInputOutcome::SubmitText {
+                input: "second".to_string(),
+                attachments: Vec::new(),
+            },
+            &mut view,
+            &state,
+            &OkRunner,
+        )
+        .await;
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            &mut view,
+            &state,
+        );
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert_eq!(view.command_input.as_str(), "second");
+        assert_eq!(view.command_input.cursor_pos, 0);
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            &mut view,
+            &state,
+        );
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert_eq!(view.command_input.as_str(), "first");
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut view,
+            &state,
+        );
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert_eq!(view.command_input.as_str(), "second");
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut view,
+            &state,
+        );
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert_eq!(view.command_input.as_str(), "");
+    }
+
+    #[tokio::test]
+    async fn up_does_not_replace_regular_draft_with_history() {
+        let mut view = TuiViewState::new();
+        let state = DashboardState::default();
+        execute_input_outcome(
+            TuiInputOutcome::SubmitText {
+                input: "previous".to_string(),
+                attachments: Vec::new(),
+            },
+            &mut view,
+            &state,
+            &OkRunner,
+        )
+        .await;
+        view.command_input.set_text("draft".to_string());
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            &mut view,
+            &state,
+        );
+
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert_eq!(view.command_input.as_str(), "draft");
+    }
+
+    #[test]
+    fn ctrl_c_clears_nonempty_composer_before_interrupting() {
+        let mut view = TuiViewState::new();
+        view.command_input.set_text("draft".to_string());
+        let state = state_with_active_runtime_turn();
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut view,
+            &state,
+        );
+
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert!(view.command_input.is_empty());
+        assert_eq!(view.ctrl_c_reminder, Some(CtrlCReminder::Interrupt));
+    }
+
+    #[test]
+    fn ctrl_c_clears_idle_composer_without_quit_reminder() {
+        let mut view = TuiViewState::new();
+        view.command_input.set_text("draft".to_string());
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut view,
+            &DashboardState::default(),
+        );
+
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert!(view.command_input.is_empty());
+        assert_eq!(view.ctrl_c_reminder, None);
+    }
+
+    #[test]
+    fn ctrl_c_interrupts_active_runtime_turn_when_composer_is_empty() {
+        let mut view = TuiViewState::new();
+        let state = state_with_active_runtime_turn();
+
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut view,
+            &state,
+        );
+
+        match outcome {
+            TuiInputOutcome::RunDashboardAction { action, .. } => {
+                assert_eq!(action, DashboardAction::InterruptRuntime);
+            }
+            _ => panic!("ctrl-c should interrupt when an active runtime turn has no draft"),
+        }
+    }
+
+    #[test]
+    fn ctrl_c_is_noop_when_idle_and_composer_is_empty() {
+        let mut view = TuiViewState::new();
+        let outcome = handle_key_event(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut view,
+            &DashboardState::default(),
+        );
+
+        assert!(matches!(outcome, TuiInputOutcome::Continue));
+        assert_eq!(view.ctrl_c_reminder, None);
+    }
 }

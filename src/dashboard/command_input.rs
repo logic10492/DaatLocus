@@ -4,6 +4,7 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span, Text},
 };
+use unicode_width::UnicodeWidthStr;
 
 pub(super) fn should_insert_newline_on_enter(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT)
@@ -33,7 +34,7 @@ pub(super) fn wrapped_input_height(text: &str, term_width: u16) -> u16 {
             total += 1;
             continue;
         }
-        let display_width: usize = line.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+        let display_width = line.width();
         let lines = display_width.div_ceil(available).max(1);
         total += lines as u16;
     }
@@ -101,7 +102,7 @@ pub(super) fn cursor_display_row(text: &str, byte_pos: usize, available_width: u
     let mut total_rows: u16 = 0;
     let mut lines = before.split('\n').peekable();
     while let Some(line) = lines.next() {
-        let dw: usize = line.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+        let dw = line.width();
         if lines.peek().is_some() {
             if dw == 0 {
                 total_rows += 1;
@@ -129,7 +130,7 @@ pub(super) fn cursor_display_xy(
     let mut col: u16 = 0;
     let mut lines = before.split('\n').peekable();
     while let Some(line) = lines.next() {
-        let dw: usize = line.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+        let dw = line.width();
         if lines.peek().is_some() {
             // completed logical line
             if dw == 0 {

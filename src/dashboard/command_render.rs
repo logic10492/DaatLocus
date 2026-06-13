@@ -6,6 +6,8 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use super::DashboardRuntimeActivity;
+use super::cells::activity_transcript_lines;
 use super::command_flow::{
     command_completion_body, dashboard_command_parts, dashboard_parts_open_panel,
     dashboard_parts_run_action, is_dashboard_command_input, matching_commands,
@@ -14,11 +16,12 @@ use super::command_flow::{
 use super::command_input::{command_input_display_text, cursor_display_row, cursor_display_xy};
 use super::command_panels::{
     CommandDetailPanel, CommandFeedback, CommandFeedbackLevel, CommandPanel, CommandSelectionPanel,
-    DashboardCommandContext, SkillsListPanel, SkillsTogglePanel,
+    CommandTranscriptPanel, DashboardCommandContext, SkillsListPanel, SkillsTogglePanel,
     TELEGRAM_ACCESS_PICKER_VISIBLE_ROWS, TelegramAccessPicker,
 };
 use super::command_registry::dashboard_command_is_known;
 use super::command_text::{truncate_command_text, truncate_display_width};
+use super::view_state::CtrlCReminder;
 
 impl CommandPanel {
     pub(super) fn desired_height(&self) -> u16 {
@@ -26,6 +29,11 @@ impl CommandPanel {
             CommandPanel::Detail(panel) => {
                 let line_count = render_panel_text_lines(&panel.text).len() as u16;
                 line_count.saturating_add(3).clamp(5, 16)
+            }
+            CommandPanel::Transcript(panel) => {
+                let line_count =
+                    activity_transcript_lines(&panel.cells, &panel.live_cells, 80).len() as u16;
+                line_count.saturating_add(3).clamp(8, 20)
             }
             CommandPanel::Selection(panel) => {
                 let header = 1 + u16::from(panel.subtitle.is_some());
@@ -66,7 +74,11 @@ pub(super) struct CommandBarRenderState<'a> {
     pub(super) context: &'a DashboardCommandContext<'a>,
     pub(super) feedback: Option<&'a CommandFeedback>,
     pub(super) runtime_status: Option<&'a str>,
+    pub(super) runtime_activity: &'a DashboardRuntimeActivity,
     pub(super) footer_context: &'a str,
+    pub(super) pending_paste_count: usize,
+    pub(super) pending_image_attachment_count: usize,
+    pub(super) ctrl_c_reminder: Option<CtrlCReminder>,
     pub(super) panel: Option<&'a CommandPanel>,
     pub(super) panel_rows: u16,
     pub(super) popup_selection: usize,
@@ -127,6 +139,7 @@ pub(super) fn render_command_panel(f: &mut Frame, area: Rect, panel: &CommandPan
     let inner = inset_rect(area, 1, 2);
     match panel {
         CommandPanel::Detail(detail) => render_detail_panel(f, inner, detail),
+        CommandPanel::Transcript(transcript) => render_transcript_panel(f, inner, transcript),
         CommandPanel::Selection(selection) => render_selection_panel(f, inner, selection),
         CommandPanel::SkillsList(skills) => render_skills_list_panel(f, inner, skills),
         CommandPanel::SkillsToggle(skills) => render_skills_toggle_panel(f, inner, skills),
@@ -142,7 +155,11 @@ pub(super) fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRen
         context,
         feedback,
         runtime_status,
+        runtime_activity,
         footer_context,
+        pending_paste_count,
+        pending_image_attachment_count,
+        ctrl_c_reminder,
         panel,
         panel_rows,
         popup_selection,
@@ -192,14 +209,7 @@ pub(super) fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRen
         render_command_panel(f, rows[row_index], panel);
         row_index += 1;
     }
-    let status_line = match runtime_status {
-        Some("Working") => render_working_status_line(),
-        Some(status) if !status.trim().is_empty() => Line::from(vec![Span::styled(
-            status.to_string(),
-            Style::default().fg(Color::DarkGray),
-        )]),
-        _ => Line::from(""),
-    };
+    let status_line = render_runtime_status_line(runtime_status, runtime_activity);
     f.render_widget(Paragraph::new(status_line), rows[row_index]);
     row_index += 1;
     if let Some(feedback) = feedback
@@ -251,19 +261,65 @@ pub(super) fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRen
             Span::raw("  "),
             Span::styled(panel.footer_hint(), Style::default().fg(Color::DarkGray)),
         ])
-    } else if !footer_context.trim().is_empty() {
-        Line::from(vec![Span::styled(
-            footer_context.to_string(),
-            Style::default().fg(Color::DarkGray),
-        )])
     } else {
-        Line::from(vec![
-            Span::styled("hint", Style::default().fg(Color::DarkGray)),
-            Span::raw("  "),
-            Span::styled(hint, Style::default().fg(Color::DarkGray)),
-        ])
+        render_footer_line(
+            footer_context,
+            &hint,
+            pending_paste_count,
+            pending_image_attachment_count,
+            ctrl_c_reminder,
+            footer_row.width,
+        )
     };
     f.render_widget(Paragraph::new(footer_line), footer_row);
+}
+
+fn render_footer_line(
+    footer_context: &str,
+    hint: &str,
+    pending_paste_count: usize,
+    pending_image_attachment_count: usize,
+    ctrl_c_reminder: Option<CtrlCReminder>,
+    width: u16,
+) -> Line<'static> {
+    let mut parts = Vec::new();
+    if !footer_context.trim().is_empty() {
+        parts.push(footer_context.trim().to_string());
+    }
+    if pending_paste_count > 0 {
+        parts.push(format!(
+            "{} pasted block{} queued",
+            pending_paste_count,
+            if pending_paste_count == 1 { "" } else { "s" }
+        ));
+    }
+    if pending_image_attachment_count > 0 {
+        parts.push(format!(
+            "{} image attachment{} queued",
+            pending_image_attachment_count,
+            if pending_image_attachment_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+    let hint = match ctrl_c_reminder {
+        Some(CtrlCReminder::Interrupt) => "ctrl + c again to interrupt",
+        None => hint.trim(),
+    };
+    if !hint.is_empty() {
+        parts.push(hint.to_string());
+    }
+    let text = if parts.is_empty() {
+        String::new()
+    } else {
+        truncate_display_width(&parts.join("  ·  "), width as usize)
+    };
+    Line::from(vec![Span::styled(
+        text,
+        Style::default().fg(Color::DarkGray),
+    )])
 }
 
 fn render_panel_text_lines(text: &str) -> Vec<Line<'static>> {
@@ -495,6 +551,26 @@ fn render_detail_panel(f: &mut Frame, area: Rect, panel: &CommandDetailPanel) {
     let lines = render_panel_text_lines(&panel.text);
     let max_scroll = lines.len().saturating_sub(body.height as usize) as u16;
     let scroll = panel.scroll.min(max_scroll);
+    f.render_widget(
+        Paragraph::new(Text::from(lines))
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false }),
+        body,
+    );
+}
+
+fn render_transcript_panel(f: &mut Frame, area: Rect, panel: &CommandTranscriptPanel) {
+    let body = render_panel_title(f, area, &panel.title, Some("styled per-cell transcript"));
+    if body.height == 0 {
+        return;
+    }
+    let lines = activity_transcript_lines(&panel.cells, &panel.live_cells, body.width);
+    let max_scroll = lines.len().saturating_sub(body.height as usize) as u16;
+    let scroll = if panel.follow_bottom {
+        max_scroll
+    } else {
+        panel.scroll.min(max_scroll)
+    };
     f.render_widget(
         Paragraph::new(Text::from(lines))
             .scroll((scroll, 0))
@@ -818,17 +894,18 @@ fn render_telegram_access_panel(f: &mut Frame, area: Rect, picker: &TelegramAcce
     );
 }
 
-fn render_working_status_line() -> Line<'static> {
-    let frame = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        / 200) as usize
-        % 4;
-    let glyph = ["•", "◦", "▪", "◦"][frame];
+fn render_working_status_line(runtime_started_at_ms: Option<i64>) -> Line<'static> {
+    render_working_status_line_at(runtime_started_at_ms, chrono::Utc::now().timestamp_millis())
+}
+
+fn render_working_status_line_at(runtime_started_at_ms: Option<i64>, now_ms: i64) -> Line<'static> {
+    let elapsed_secs = runtime_started_at_ms
+        .map(|started_at_ms| now_ms.saturating_sub(started_at_ms).max(0) as u64 / 1000)
+        .unwrap_or(0);
+    let pretty_elapsed = fmt_elapsed_compact(elapsed_secs);
     Line::from(vec![
         Span::styled(
-            glyph,
+            "•",
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -840,7 +917,44 @@ fn render_working_status_line() -> Line<'static> {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw(" "),
+        Span::styled(
+            format!("({pretty_elapsed} • "),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "esc",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" to interrupt)", Style::default().fg(Color::DarkGray)),
     ])
+}
+
+fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
+    if elapsed_secs < 60 {
+        return format!("{elapsed_secs}s");
+    }
+    if elapsed_secs < 3600 {
+        let minutes = elapsed_secs / 60;
+        let seconds = elapsed_secs % 60;
+        return format!("{minutes}m {seconds:02}s");
+    }
+    let hours = elapsed_secs / 3600;
+    let minutes = (elapsed_secs % 3600) / 60;
+    let seconds = elapsed_secs % 60;
+    format!("{hours}h {minutes:02}m {seconds:02}s")
+}
+
+fn render_runtime_status_line(
+    _runtime_status: Option<&str>,
+    runtime_activity: &DashboardRuntimeActivity,
+) -> Line<'static> {
+    if runtime_activity.active_runtime_turn {
+        return render_working_status_line(runtime_activity.active_runtime_started_at_ms);
+    }
+    Line::from("")
 }
 
 fn command_hint(input: &str, context: &DashboardCommandContext<'_>) -> String {
@@ -884,4 +998,65 @@ fn command_hint(input: &str, context: &DashboardCommandContext<'_>) -> String {
         }
     }
     "unknown command".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn footer_line_combines_context_queue_and_hint() {
+        let line = render_footer_line("gpt-5.5 · 10k/100k used", "Enter send.", 2, 1, None, 120);
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains("gpt-5.5"));
+        assert!(text.contains("2 pasted blocks queued"));
+        assert!(text.contains("1 image attachment queued"));
+        assert!(text.contains("Enter send."));
+    }
+
+    #[test]
+    fn footer_line_can_show_ctrl_c_interrupt_reminder() {
+        let line = render_footer_line("", "Enter send.", 0, 0, Some(CtrlCReminder::Interrupt), 120);
+        assert_eq!(line_text(&line), "ctrl + c again to interrupt");
+    }
+
+    #[test]
+    fn runtime_status_line_hides_internal_phase_text() {
+        let activity = DashboardRuntimeActivity::default();
+        let line = render_runtime_status_line(
+            Some("processing: runtime turn / preflight: preturn context"),
+            &activity,
+        );
+        assert_eq!(line_text(&line), "");
+    }
+
+    #[test]
+    fn runtime_status_line_keeps_working_indicator_with_interrupt_hint() {
+        let activity = DashboardRuntimeActivity::default()
+            .with_runtime_turn(Some("model request".to_string()), Some(1_000));
+        let line = render_working_status_line_at(activity.active_runtime_started_at_ms, 83_000);
+        assert_eq!(line_text(&line), "• Working (1m 22s • esc to interrupt)");
+    }
+
+    #[test]
+    fn fmt_elapsed_compact_formats_seconds_minutes_hours() {
+        assert_eq!(fmt_elapsed_compact(0), "0s");
+        assert_eq!(fmt_elapsed_compact(59), "59s");
+        assert_eq!(fmt_elapsed_compact(60), "1m 00s");
+        assert_eq!(fmt_elapsed_compact(61), "1m 01s");
+        assert_eq!(fmt_elapsed_compact(3600), "1h 00m 00s");
+        assert_eq!(fmt_elapsed_compact(3661), "1h 01m 01s");
+    }
 }

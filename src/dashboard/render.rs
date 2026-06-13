@@ -544,8 +544,8 @@ pub fn runtime_activity_for_dashboard(
             DashboardRuntimeActivityStatus::Tooling => "Using tools",
             _ => "Running",
         };
-        return DashboardRuntimeActivity::new(status, label, runtime_status.map(str::to_string))
-            .with_runtime_turn(active_runtime_phase);
+        return DashboardRuntimeActivity::new(status, label, None)
+            .with_runtime_turn(active_runtime_phase, context.runtime_turn_started_at_ms);
     }
 
     if sleep_status.running {

@@ -24,10 +24,10 @@ use crate::{
         runtime_optimization_snapshot_for_dashboard, token_usage_snapshot_for_dashboard,
     },
     dashboard::{
-        DashboardActivityHistoryStore, DashboardControlCommand, DashboardRuntimeActivity,
-        DashboardRuntimeActivityStatus, DashboardRuntimeStatusLevel, DashboardState, ReducedMotion,
-        activity_cells_from_history_items, dashboard_agent_name, execute_control_command,
-        execute_dashboard_action, sync_web_activity_state,
+        DashboardAction, DashboardActivityHistoryStore, DashboardControlCommand,
+        DashboardRuntimeActivity, DashboardRuntimeActivityStatus, DashboardRuntimeStatusLevel,
+        DashboardState, ReducedMotion, activity_cells_from_history_items, dashboard_agent_name,
+        execute_control_command, execute_dashboard_action, sync_web_activity_state,
     },
     events::{
         EventStore, TelegramIncomingEvent, TerminalIncomingAttachment,
@@ -97,6 +97,7 @@ pub(crate) async fn run_session_serve(
     });
     let (dashboard_control_tx, mut dashboard_control_rx) =
         mpsc::unbounded_channel::<DashboardControlCommand>();
+    let (runtime_interrupt_tx, mut runtime_interrupt_rx) = mpsc::unbounded_channel::<()>();
     let (sleep_result_tx, mut sleep_result_rx) = mpsc::unbounded_channel::<SleepTaskResult>();
     let (workspace_app_invalidation_tx, mut workspace_app_invalidation_rx) =
         mpsc::unbounded_channel::<WorkspaceAppInvalidation>();
@@ -119,6 +120,7 @@ pub(crate) async fn run_session_serve(
         telegram: telegram_handle.clone(),
         telegram_acl: telegram_acl.clone(),
         dashboard_control_tx: dashboard_control_tx.clone(),
+        runtime_interrupt_tx: runtime_interrupt_tx.clone(),
         daemon_control_tx: daemon_control_tx.clone(),
     }));
 
@@ -207,6 +209,7 @@ pub(crate) async fn run_session_serve(
         active_runtime_turn: false,
         active_runtime_phase: None,
         runtime_turn_started_at: None,
+        runtime_turn_started_at_ms: None,
         runtime_turn_epoch: 0,
         active_app_notices: HashMap::new(),
         runtime_overflow_failures: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -327,6 +330,17 @@ pub(crate) async fn run_session_serve(
                 );
                 break;
             }
+            Some(()) = runtime_interrupt_rx.recv() => {
+                handle_dashboard_control_command(
+                    &mut context,
+                    &tx,
+                    &sleep_result_tx,
+                    &mut sleep_running,
+                    &mut sleep_status,
+                    DashboardControlCommand::InterruptRuntime,
+                )
+                .await;
+            }
             signal = tokio::signal::ctrl_c(), if !ctrl_c_disabled => {
                 match signal {
                     Ok(()) => {
@@ -377,6 +391,7 @@ struct SessionIpcServerState {
     telegram: TelegramTransportStateHandle,
     telegram_acl: TelegramAclHandle,
     dashboard_control_tx: mpsc::UnboundedSender<DashboardControlCommand>,
+    runtime_interrupt_tx: mpsc::UnboundedSender<()>,
     daemon_control_tx: mpsc::UnboundedSender<DaemonControlCommand>,
 }
 
@@ -473,8 +488,22 @@ async fn handle_ipc_connection(
             )
         }
         SessionIpcRequest::DashboardAction { action } => {
-            let result =
-                execute_dashboard_action(action, &state.telegram_acl, &state.dashboard_control_tx);
+            let result = if matches!(&action, DashboardAction::InterruptRuntime) {
+                match state.runtime_interrupt_tx.send(()) {
+                    Ok(()) => crate::dashboard::DashboardActionResult {
+                        success: true,
+                        message: "queued runtime interrupt".to_string(),
+                        detail: None,
+                    },
+                    Err(err) => crate::dashboard::DashboardActionResult {
+                        success: false,
+                        message: format!("failed to queue interrupt: {err}"),
+                        detail: None,
+                    },
+                }
+            } else {
+                execute_dashboard_action(action, &state.telegram_acl, &state.dashboard_control_tx)
+            };
             IpcResponseEnvelope::ok(
                 request_id,
                 SessionIpcResponse::DashboardActionResult { result },

@@ -131,6 +131,7 @@ pub(crate) async fn handle_dashboard_control_command(
             context.active_runtime_turn = false;
             context.set_runtime_phase(None);
             context.runtime_turn_started_at = None;
+            context.runtime_turn_started_at_ms = None;
             context.current_work_origin = None;
             context.workflow_step_started_bound_id = None;
             context.memory.clear_runtime_conversation().await;
@@ -154,6 +155,26 @@ pub(crate) async fn handle_dashboard_control_command(
                     "runtime conversation, current plan, events, and dashboard activity cleared (events={cleared_events}, event_work={cleared_event_work}, telegram_outbox={cleared_outbound}, live_drafts={cleared_live_drafts}, activity_items={cleared_dashboard_history})"
                 ),
             );
+            sync_dashboard_state(context, tx, sleep_status, None);
+        }
+        DashboardControlCommand::InterruptRuntime => {
+            if context.active_runtime_turn {
+                crate::runtime::runtime_loop::reset_cancelled_runtime_turn(
+                    context,
+                    "dashboard interrupt",
+                );
+                set_runtime_status(
+                    Some(tx),
+                    RuntimeStatusLevel::Info,
+                    "runtime turn interrupted",
+                );
+            } else {
+                set_runtime_status(
+                    Some(tx),
+                    RuntimeStatusLevel::Info,
+                    "no runtime turn to interrupt",
+                );
+            }
             sync_dashboard_state(context, tx, sleep_status, None);
         }
     }

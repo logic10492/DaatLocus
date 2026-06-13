@@ -15,6 +15,7 @@ pub mod history;
 mod input_controller;
 pub mod render;
 pub mod renderable;
+mod terminal_hyperlinks;
 mod tui_animation;
 pub mod tui_event;
 #[cfg(feature = "tui-perf-cmd")]
@@ -31,7 +32,8 @@ pub use cells::{
 };
 pub(crate) use command_flow::execute_control_command;
 pub use commands::{
-    DashboardAction, DashboardActionResult, DashboardCommandRunner, DashboardControlCommand,
+    DashboardAction, DashboardActionResult, DashboardCommandAttachment, DashboardCommandRunner,
+    DashboardControlCommand,
 };
 pub use history::{
     DashboardActivityHistoryPage, DashboardActivityHistoryStore, DashboardActivityHistoryWindow,
@@ -89,6 +91,7 @@ use command_text::{render_pending_access_requests, render_skills_list};
 pub(crate) use commands::execute_dashboard_action;
 use frame_profiler::{TuiFrameProfiler, TuiFrameTiming};
 use serde::{Deserialize, Serialize};
+use terminal_hyperlinks::{TerminalHyperlinkOverlay, collect_terminal_hyperlink_overlays};
 use tui_animation::dashboard_state_needs_animation;
 use view_state::TuiViewState;
 
@@ -225,6 +228,8 @@ pub struct DashboardRuntimeActivity {
     pub active_runtime_turn: bool,
     #[serde(default)]
     pub active_runtime_phase: Option<String>,
+    #[serde(default)]
+    pub active_runtime_started_at_ms: Option<i64>,
 }
 
 impl DashboardRuntimeActivity {
@@ -239,12 +244,18 @@ impl DashboardRuntimeActivity {
             detail,
             active_runtime_turn: false,
             active_runtime_phase: None,
+            active_runtime_started_at_ms: None,
         }
     }
 
-    pub fn with_runtime_turn(mut self, active_runtime_phase: Option<String>) -> Self {
+    pub fn with_runtime_turn(
+        mut self,
+        active_runtime_phase: Option<String>,
+        active_runtime_started_at_ms: Option<i64>,
+    ) -> Self {
         self.active_runtime_turn = true;
         self.active_runtime_phase = active_runtime_phase;
+        self.active_runtime_started_at_ms = active_runtime_started_at_ms;
         self
     }
 }
@@ -474,8 +485,13 @@ pub async fn run_tui_dashboard(
         // On first iteration, sync cursor from state
         view.sync_history_cursor_from_state(&state);
 
-        let timing = render_tui_dashboard_frame(&mut terminal, &mut view, &state)?;
-        frame_profiler.record(timing);
+        let frame_render = render_tui_dashboard_frame(&mut terminal, &mut view, &state)?;
+        terminal_hyperlinks::write_terminal_hyperlink_overlays(
+            terminal.backend_mut(),
+            &frame_render.hyperlink_overlays,
+            view.last_cursor_pos,
+        )?;
+        frame_profiler.record(frame_render.timing);
         if dashboard_state_needs_animation(&state) {
             frame_requester.schedule_frame_in(TUI_ANIMATION_INTERVAL);
         }
@@ -494,11 +510,16 @@ pub async fn run_tui_dashboard(
     Ok(())
 }
 
+struct TuiFrameRender {
+    timing: TuiFrameTiming,
+    hyperlink_overlays: Vec<TerminalHyperlinkOverlay>,
+}
+
 fn render_tui_dashboard_frame<B: Backend>(
     terminal: &mut Terminal<B>,
     view: &mut TuiViewState,
     state: &DashboardState,
-) -> Result<TuiFrameTiming, B::Error> {
+) -> Result<TuiFrameRender, B::Error> {
     let frame_start = Instant::now();
     let prep_start = Instant::now();
     let pending_requests = state.pending_access_requests.clone();
@@ -554,6 +575,7 @@ fn render_tui_dashboard_frame<B: Backend>(
     let prep_elapsed = prep_start.elapsed();
     let mut activity_elapsed = Duration::ZERO;
     let mut command_elapsed = Duration::ZERO;
+    let mut hyperlink_overlays = Vec::new();
     let draw_start = Instant::now();
     terminal.draw(|f| {
         let root = Layout::default()
@@ -590,7 +612,11 @@ fn render_tui_dashboard_frame<B: Backend>(
                     state,
                 },
                 runtime_status: state.runtime_status.as_deref(),
+                runtime_activity: &state.runtime_activity,
                 footer_context: &state.footer_context,
+                pending_paste_count: view.pending_pastes.len(),
+                pending_image_attachment_count: view.pending_image_attachments.len(),
+                ctrl_c_reminder: view.ctrl_c_reminder,
                 panel: view.command_panel.as_ref(),
                 panel_rows,
                 popup_selection: view.command_popup_selection,
@@ -601,16 +627,21 @@ fn render_tui_dashboard_frame<B: Backend>(
             },
         );
         command_elapsed = command_start.elapsed();
+        let area = f.area();
+        hyperlink_overlays = collect_terminal_hyperlink_overlays(f.buffer_mut(), area);
     })?;
     let draw_elapsed = draw_start.elapsed();
-    Ok(TuiFrameTiming {
-        committed_cells: committed_cell_count,
-        live_cells: live_cell_count,
-        frame: frame_start.elapsed(),
-        prep: prep_elapsed,
-        draw: draw_elapsed,
-        activity: activity_elapsed,
-        command: command_elapsed,
+    Ok(TuiFrameRender {
+        timing: TuiFrameTiming {
+            committed_cells: committed_cell_count,
+            live_cells: live_cell_count,
+            frame: frame_start.elapsed(),
+            prep: prep_elapsed,
+            draw: draw_elapsed,
+            activity: activity_elapsed,
+            command: command_elapsed,
+        },
+        hyperlink_overlays,
     })
 }
 
@@ -622,6 +653,10 @@ mod tests {
         matching_commands, telegram_access_picker_for_input,
     };
     use super::*;
+    use crate::tool_ui::{
+        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData, PatchUiData,
+        TerminalUiAction, ToolUiEvent,
+    };
     use ratatui::{Terminal, backend::TestBackend};
 
     fn pending_request(chat_id: i64) -> PendingAccessRequest {
@@ -653,6 +688,153 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    fn trimmed_buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer_text(buffer)
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn transcript_panel_visual_snapshot() {
+        let cells = vec![
+            assistant_activity_cell(
+                "## Result\nSee [docs](https://example.test/docs).\n\n```rust\nfn main() {}\n```",
+            )
+            .expect("assistant cell"),
+            activity_cell_from_tool_ui_event(ToolUiEvent::terminal(
+                TerminalUiAction::Execute,
+                "cargo check",
+                vec![
+                    "main  exited  exit=0  cwd=C:/repo".to_string(),
+                    "Finished dev profile".to_string(),
+                ],
+            ))
+            .expect("terminal cell"),
+        ];
+        let panel = command_panels::transcript_panel(cells, Vec::new(), 2);
+        let backend = TestBackend::new(72, 14);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|f| render_command_panel(f, f.area(), &panel))
+            .expect("draw transcript panel");
+
+        let output = trimmed_buffer_text(terminal.backend().buffer());
+        assert_eq!(
+            output,
+            [
+                "",
+                "  TRANSCRIPT",
+                "  styled per-cell transcript",
+                "  ASSISTANT",
+                "    └ Result",
+                "      See docs (https://example.test/docs).",
+                "      fn main() {}",
+                "",
+                "  COMMAND",
+                "    └ $ cargo check",
+                "    └ Finished dev profile",
+                "    └ ✓ exit=0",
+                "    └ main  exited  exit=0  cwd=C:/repo",
+                "",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn dashboard_full_frame_visual_snapshot() {
+        let mut state = DashboardState {
+            activity_cells: vec![
+                assistant_activity_cell(
+                    "I updated the renderer.\n\n- transcript\n- markdown\n- composer",
+                )
+                .expect("assistant cell"),
+                activity_cell_from_tool_ui_event(ToolUiEvent::Patch(PatchUiData {
+                    summary_line: "updated dashboard renderer".to_string(),
+                    files: vec![PatchFileUiData {
+                        path: "src/dashboard/cells/tui.rs".to_string(),
+                        operation: PatchFileOperation::Update,
+                        added_lines: 2,
+                        removed_lines: 1,
+                        diff_lines: vec![
+                            PatchDiffLineUiData {
+                                kind: PatchDiffLineKind::Context,
+                                old_lineno: Some(10),
+                                new_lineno: Some(10),
+                                text: "fn render() {".to_string(),
+                            },
+                            PatchDiffLineUiData {
+                                kind: PatchDiffLineKind::Delete,
+                                old_lineno: Some(11),
+                                new_lineno: None,
+                                text: "old();".to_string(),
+                            },
+                            PatchDiffLineUiData {
+                                kind: PatchDiffLineKind::Add,
+                                old_lineno: None,
+                                new_lineno: Some(11),
+                                text: "new();".to_string(),
+                            },
+                        ],
+                    }],
+                }))
+                .expect("patch cell"),
+            ],
+            footer_context: "gpt-5.5 · 10k/100k used".to_string(),
+            ..DashboardState::default()
+        };
+        sync_web_activity_state(&mut state);
+        let mut view = TuiViewState::new();
+        view.command_input.set_text("review this".to_string());
+        view.pending_image_attachments
+            .push(DashboardCommandAttachment {
+                placeholder: "[Image: dashboard.png]".to_string(),
+                name: "dashboard.png".to_string(),
+                path: PathBuf::from("C:/tmp/dashboard.png"),
+                media_type: "image/png".to_string(),
+            });
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        render_tui_dashboard_frame(&mut terminal, &mut view, &state)
+            .expect("render dashboard frame");
+
+        let output = trimmed_buffer_text(terminal.backend().buffer());
+        assert_eq!(
+            output,
+            [
+                " • I updated the renderer.",
+                "   - transcript",
+                "   - markdown",
+                "   - composer",
+                "",
+                " • Edited src/dashboard/cells/tui.rs (+2 -1)",
+                "   └ 10 10   fn render() {",
+                "     11    - old();",
+                "        11 + new();",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "› review this",
+                "gpt-5.5 · 10k/100k used  ·  1 image attachment queued  ·  Enter send. Shift+E...",
+            ]
+            .join("\n")
+        );
     }
 
     #[test]

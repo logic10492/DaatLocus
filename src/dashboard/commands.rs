@@ -10,6 +10,7 @@ use crate::telegram_acl::TelegramAclHandle;
 pub enum DashboardControlCommand {
     RunSleep,
     ClearConversation,
+    InterruptRuntime,
     RestartDaemon,
     ReloadSkills,
     SetSkillAutoUse { path: PathBuf, enabled: bool },
@@ -20,6 +21,7 @@ pub enum DashboardControlCommand {
 pub enum DashboardAction {
     RunSleep,
     ClearConversation,
+    InterruptRuntime,
     RestartDaemon,
     ReloadSkills,
     SetSkillAutoUse { path: PathBuf, enabled: bool },
@@ -53,9 +55,22 @@ impl DashboardActionResult {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DashboardCommandAttachment {
+    pub placeholder: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub media_type: String,
+}
+
 #[async_trait]
 pub trait DashboardCommandRunner: Send + Sync {
-    async fn run_command(&self, command: &str, state: &DashboardState) -> String;
+    async fn run_command(
+        &self,
+        command: &str,
+        attachments: Vec<DashboardCommandAttachment>,
+        state: &DashboardState,
+    ) -> String;
     async fn run_action(
         &self,
         action: DashboardAction,
@@ -77,6 +92,14 @@ pub(crate) fn execute_dashboard_action(
             match control_tx.send(DashboardControlCommand::ClearConversation) {
                 Ok(()) => DashboardActionResult::ok("queued runtime clear"),
                 Err(err) => DashboardActionResult::error(format!("failed to queue clear: {err}")),
+            }
+        }
+        DashboardAction::InterruptRuntime => {
+            match control_tx.send(DashboardControlCommand::InterruptRuntime) {
+                Ok(()) => DashboardActionResult::ok("queued runtime interrupt"),
+                Err(err) => {
+                    DashboardActionResult::error(format!("failed to queue interrupt: {err}"))
+                }
             }
         }
         DashboardAction::RestartDaemon => {
