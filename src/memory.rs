@@ -964,7 +964,7 @@ fn summarize_tool_call_ui_events(events: &[ToolCallUiEvent]) -> String {
         .map(tool_call_ui_event_title)
         .filter(|title| !title.trim().is_empty())
         .take(4)
-        .map(summarize_runtime_inline_text)
+        .map(|title| summarize_runtime_inline_text(&title))
         .collect::<Vec<_>>();
     if titles.is_empty() {
         "assistant tool-call protocol".to_string()
@@ -1000,6 +1000,9 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
         ToolUiEvent::Browser(crate::tool_ui::BrowserUiData { title, .. }) => {
             summarize_runtime_inline_text(title)
         }
+        ToolUiEvent::WebSearch(data) => {
+            format!("web search {}", summarize_runtime_inline_text(&data.query))
+        }
         ToolUiEvent::AppAttention(data) => match data.action {
             crate::tool_ui::AppAttentionUiAction::Focus => data
                 .app
@@ -1008,7 +1011,9 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
                 .unwrap_or_else(|| "focused app".to_string()),
             crate::tool_ui::AppAttentionUiAction::PutAway => "put away focused app".to_string(),
         },
-        ToolUiEvent::Plan(PlanUiData { steps }) => format!("plan with {} step(s)", steps.len()),
+        ToolUiEvent::Plan(PlanUiData { steps, .. }) => {
+            format!("plan with {} step(s)", steps.len())
+        }
         ToolUiEvent::CreatePrimitiveSpec(CreatePrimitiveSpecUiData { primitive_id }) => {
             format!("created primitive spec {primitive_id}")
         }
@@ -1017,6 +1022,7 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
         }
         ToolUiEvent::Terminal(data) => summarize_runtime_inline_text(&data.title),
         ToolUiEvent::Patch(data) => summarize_runtime_inline_text(&data.summary_line),
+        ToolUiEvent::Warning(data) => summarize_runtime_inline_text(&data.title),
         ToolUiEvent::Telegram(data) => summarize_runtime_inline_text(&data.title),
         ToolUiEvent::Reply(data) => data
             .message_lines
@@ -1027,18 +1033,20 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
     }
 }
 
-fn tool_call_ui_event_title(event: &ToolCallUiEvent) -> &str {
+fn tool_call_ui_event_title(event: &ToolCallUiEvent) -> String {
     match event {
         ToolCallUiEvent::Exec(ToolUiData { title, .. })
-        | ToolCallUiEvent::Plan(ToolUiData { title, .. })
         | ToolCallUiEvent::CreatePrimitiveSpec(ToolUiData { title, .. })
         | ToolCallUiEvent::ActivatePrimitive(ToolUiData { title, .. })
         | ToolCallUiEvent::App(ToolUiData { title, .. })
-        | ToolCallUiEvent::Error(ToolUiData { title, .. }) => title,
-        ToolCallUiEvent::Terminal(TerminalUiData { title, .. }) => title,
-        ToolCallUiEvent::Browser(crate::tool_ui::BrowserUiData { title, .. }) => title,
-        ToolCallUiEvent::Patch(PatchUiData { summary_line, .. }) => summary_line,
-        ToolCallUiEvent::Telegram(TelegramUiData { title, .. }) => title,
+        | ToolCallUiEvent::Error(ToolUiData { title, .. }) => title.clone(),
+        ToolCallUiEvent::Plan(PlanUiData { steps, .. }) => {
+            format!("plan with {} step(s)", steps.len())
+        }
+        ToolCallUiEvent::Terminal(TerminalUiData { title, .. }) => title.clone(),
+        ToolCallUiEvent::Browser(crate::tool_ui::BrowserUiData { title, .. }) => title.clone(),
+        ToolCallUiEvent::Patch(PatchUiData { summary_line, .. }) => summary_line.clone(),
+        ToolCallUiEvent::Telegram(TelegramUiData { title, .. }) => title.clone(),
     }
 }
 

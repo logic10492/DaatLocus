@@ -3,13 +3,10 @@ use serde::{Deserialize, Serialize};
 pub mod glyph {
     pub const APP_ATTENTION: &str = "◉";
     pub const BROWSER: &str = "↗";
-    pub const CODING: &str = "◎";
     pub const ERROR: &str = "!";
     pub const EXEC: &str = "•";
     pub const PATCH: &str = "∂";
     pub const PLAN: &str = "∷";
-    pub const REPLY: &str = "✣";
-    pub const TELEGRAM: &str = "◦";
     pub const WORKFLOW: &str = "⌘";
 }
 
@@ -30,10 +27,12 @@ pub enum ToolUiEvent {
     Reply(ReplyUiData),
     AppAttention(AppAttentionUiData),
     Plan(PlanUiData),
+    WebSearch(WebSearchUiData),
     CreatePrimitiveSpec(CreatePrimitiveSpecUiData),
     ActivatePrimitive(ActivatePrimitiveUiData),
     #[serde(alias = "Finish", alias = "Work")]
     App(ToolUiData),
+    Warning(ToolUiData),
     Error(ToolUiData),
 }
 
@@ -45,7 +44,7 @@ pub enum ToolCallUiEvent {
     Browser(BrowserUiData),
     Patch(PatchUiData),
     Telegram(TelegramUiData),
-    Plan(ToolUiData),
+    Plan(PlanUiData),
     CreatePrimitiveSpec(ToolUiData),
     ActivatePrimitive(ToolUiData),
     #[serde(alias = "Finish", alias = "Work")]
@@ -63,6 +62,8 @@ pub struct ToolUiData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TerminalUiData {
     pub action: TerminalUiAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<TerminalUiOrigin>,
     pub title: String,
     #[serde(default)]
     pub body_lines: Vec<String>,
@@ -83,6 +84,23 @@ pub struct BrowserUiData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebSearchUiData {
+    pub action: WebSearchUiAction,
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub body_lines: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchUiAction {
+    Searching,
+    Searched,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CodingOpenProjectUiData {
     pub project_root: String,
     #[serde(default)]
@@ -100,9 +118,24 @@ pub struct ExploredUiData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExploredCallUiData {
     pub tool_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<ExploredCallUiAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_target: Option<String>,
     pub summary: String,
     #[serde(default)]
     pub detail_lines: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExploredCallUiAction {
+    Read,
+    List,
+    Search,
+    Run,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,6 +167,13 @@ pub enum TerminalUiAction {
     Continue,
     Poll,
     Terminate,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalUiOrigin {
+    Agent,
+    User,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -219,7 +259,19 @@ pub struct AppAttentionUiData {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanUiData {
+    #[serde(default)]
+    pub kind: PlanUiKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
     pub steps: Vec<PlanStepUiData>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanUiKind {
+    Proposed,
+    #[default]
+    Updated,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -285,8 +337,18 @@ impl ToolUiEvent {
         title: impl Into<String>,
         body_lines: Vec<String>,
     ) -> Self {
+        Self::terminal_with_origin(action, None, title, body_lines)
+    }
+
+    pub fn terminal_with_origin(
+        action: TerminalUiAction,
+        origin: Option<TerminalUiOrigin>,
+        title: impl Into<String>,
+        body_lines: Vec<String>,
+    ) -> Self {
         Self::Terminal(TerminalUiData {
             action,
+            origin,
             title: title.into(),
             body_lines,
         })
@@ -328,7 +390,19 @@ impl ToolUiEvent {
     }
 
     pub fn plan(steps: Vec<PlanStepUiData>) -> Self {
-        Self::Plan(PlanUiData { steps })
+        Self::Plan(PlanUiData {
+            kind: PlanUiKind::Updated,
+            explanation: None,
+            steps,
+        })
+    }
+
+    pub fn plan_with_explanation(explanation: Option<String>, steps: Vec<PlanStepUiData>) -> Self {
+        Self::Plan(PlanUiData {
+            kind: PlanUiKind::Updated,
+            explanation,
+            steps,
+        })
     }
 
     pub fn create_primitive_spec(primitive_id: impl Into<String>) -> Self {
@@ -403,16 +477,14 @@ impl ToolCallUiEvent {
     ) -> Self {
         Self::Terminal(TerminalUiData {
             action,
+            origin: None,
             title: title.into(),
             body_lines,
         })
     }
 
-    pub fn plan(title: impl Into<String>, body_lines: Vec<String>) -> Self {
-        Self::Plan(ToolUiData {
-            title: title.into(),
-            body_lines,
-        })
+    pub fn plan(data: PlanUiData) -> Self {
+        Self::Plan(data)
     }
 
     pub fn create_primitive_spec(title: impl Into<String>, body_lines: Vec<String>) -> Self {

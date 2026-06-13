@@ -12,7 +12,10 @@ use crate::{
     events::{EventDisposition, EventPayload, EventStatus},
     plan::{Plan, PlanStatus, PlanStep},
     reasoning::{episode::EpisodeActionRecord, runtime::AgentToolCall},
-    tool_ui::{PlanStepUiData, PlanStepUiStatus, ReplyDisposition, ToolCallUiEvent, ToolUiEvent},
+    tool_ui::{
+        PlanStepUiData, PlanStepUiStatus, PlanUiData, PlanUiKind, ReplyDisposition,
+        ToolCallUiEvent, ToolUiEvent,
+    },
     workflow::{NewPrimitiveSpec, PrimitiveActivation, PrimitiveRunOutcome, PrimitiveSpec},
 };
 
@@ -402,14 +405,16 @@ fn summarize_update_plan_tool(call: &AgentToolCall) -> Result<EpisodeActionRecor
 
 fn render_update_plan_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
     let args: UpdatePlanArgs = parse_tool_args(call)?;
-    Ok(ToolCallUiEvent::plan(
-        "update_plan",
-        args.plan
+    Ok(ToolCallUiEvent::plan(PlanUiData {
+        kind: PlanUiKind::Proposed,
+        explanation: args.explanation,
+        steps: args
+            .plan
             .into_iter()
-            .take(6)
-            .map(|step| format!("[{}] {}", step.status, summarize_inline_text(&step.step)))
+            .take(8)
+            .map(plan_ui_step_from_args)
             .collect(),
-    ))
+    }))
 }
 
 fn execute_update_plan_tool<'a>(
@@ -418,6 +423,7 @@ fn execute_update_plan_tool<'a>(
 ) -> ToolFuture<'a> {
     Box::pin(async move {
         let args: UpdatePlanArgs = parse_tool_args(call)?;
+        let explanation = args.explanation.clone();
         let plan = build_plan_from_args(args)?;
         let changed = context.plan.replace(plan.steps().to_vec());
         if changed {
@@ -444,12 +450,20 @@ fn execute_update_plan_tool<'a>(
         } else {
             format!("plan unchanged with {} steps", effective_steps.len())
         };
+        let plan_ui_steps = plan_ui_steps(&context.plan);
+        let plan_ui_event = match explanation.clone() {
+            Some(explanation) => {
+                ToolUiEvent::plan_with_explanation(Some(explanation), plan_ui_steps)
+            }
+            None => ToolUiEvent::plan(plan_ui_steps),
+        };
         Ok(ToolExecutionResult::new(
             summary.clone(),
             json!({
+                "explanation": explanation,
                 "plan": effective_steps,
             }),
-            ToolUiEvent::plan(plan_ui_steps(&context.plan)),
+            plan_ui_event,
         ))
     })
 }
@@ -845,6 +859,17 @@ fn plan_ui_steps(plan: &Plan) -> Vec<PlanStepUiData> {
         .collect()
 }
 
+fn plan_ui_step_from_args(step: crate::core::UpdatePlanStepArgs) -> PlanStepUiData {
+    PlanStepUiData {
+        status: match step.status {
+            PlanStatus::Pending => PlanStepUiStatus::Pending,
+            PlanStatus::InProgress => PlanStepUiStatus::InProgress,
+            PlanStatus::Completed => PlanStepUiStatus::Completed,
+        },
+        text: summarize_inline_text(&step.step),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -882,6 +907,35 @@ mod tests {
                 );
             }
             other => panic!("expected app call ui, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_plan_call_ui_renders_proposed_plan() {
+        let call = AgentToolCall {
+            id: "call_1".to_string(),
+            name: "update_plan".to_string(),
+            arguments: json!({
+                "explanation": "Need a short setup sequence.",
+                "plan": [
+                    { "step": "Inspect state", "status": "in_progress" },
+                    { "step": "Apply fix", "status": "pending" }
+                ],
+            }),
+        };
+
+        let event = render_update_plan_call_ui(&call).expect("render update_plan call ui");
+        match event {
+            ToolCallUiEvent::Plan(plan) => {
+                assert_eq!(plan.kind, PlanUiKind::Proposed);
+                assert_eq!(
+                    plan.explanation.as_deref(),
+                    Some("Need a short setup sequence.")
+                );
+                assert_eq!(plan.steps.len(), 2);
+                assert_eq!(plan.steps[0].status, PlanStepUiStatus::InProgress);
+            }
+            other => panic!("expected plan call ui, got {other:?}"),
         }
     }
 

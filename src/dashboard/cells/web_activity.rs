@@ -3,11 +3,12 @@ use serde_json::Value;
 
 use crate::tool_ui::{
     PatchDiffLineKind, PatchFileOperation, PatchFileUiData, ReplyDisposition, ReplySubject,
+    WebSearchUiAction,
 };
 
 use super::{
     ActivityCell, LiveActivityCell,
-    apps::{BrowserActivityCell, LiveBrowserActivityCell},
+    apps::{BrowserActivityCell, LiveBrowserActivityCell, WebSearchActivityCell},
     common::{
         AssistantActivityCell, CodingEditActivityCell, CodingOpenProjectActivityCell,
         CodingReviewActivityCell, ErrorActivityCell, ExploredActivityCell, GenericAppActivityCell,
@@ -81,6 +82,8 @@ pub enum WebActivityKind {
     Primitive,
     Memory,
     Patch,
+    WebSearch,
+    Warning,
     Error,
     Unknown,
 }
@@ -259,6 +262,7 @@ pub fn web_activity_item_from_cell(cell: &ActivityCell, id: &str, live: bool) ->
         ),
         ActivityCell::Browser(cell) => apply_browser_cell(&mut item, cell),
         ActivityCell::LiveBrowser(cell) => apply_live_browser_cell(&mut item, cell),
+        ActivityCell::WebSearch(cell) => apply_web_search_cell(&mut item, cell),
         ActivityCell::CodingOpenProject(cell) => apply_coding_open_project_cell(&mut item, cell),
         ActivityCell::Explored(cell) => apply_explored_cell(&mut item, cell),
         ActivityCell::CodingEdit(cell) => apply_coding_edit_cell(&mut item, cell),
@@ -277,6 +281,7 @@ pub fn web_activity_item_from_cell(cell: &ActivityCell, id: &str, live: bool) ->
         ActivityCell::Telegram(cell) => apply_telegram_cell(&mut item, cell),
         ActivityCell::Reply(cell) => apply_reply_cell(&mut item, cell),
         ActivityCell::TerminalWait(cell) => apply_terminal_wait_cell(&mut item, cell),
+        ActivityCell::Warning(cell) => apply_warning_cell(&mut item, cell),
         ActivityCell::Error(cell) => apply_error_cell(&mut item, cell),
         ActivityCell::Thinking(cell) => apply_thinking_cell(&mut item, cell),
     }
@@ -295,6 +300,7 @@ fn activity_cell_variant_name(cell: &ActivityCell) -> &'static str {
         ActivityCell::AppAttention(_) => "AppAttention",
         ActivityCell::Browser(_) => "Browser",
         ActivityCell::LiveBrowser(_) => "LiveBrowser",
+        ActivityCell::WebSearch(_) => "WebSearch",
         ActivityCell::CodingOpenProject(_) => "CodingOpenProject",
         ActivityCell::Explored(_) => "Explored",
         ActivityCell::CodingEdit(_) => "CodingEdit",
@@ -309,6 +315,7 @@ fn activity_cell_variant_name(cell: &ActivityCell) -> &'static str {
         ActivityCell::Telegram(_) => "Telegram",
         ActivityCell::Reply(_) => "Reply",
         ActivityCell::TerminalWait(_) => "TerminalWait",
+        ActivityCell::Warning(_) => "Warning",
         ActivityCell::Error(_) => "Error",
         ActivityCell::Thinking(_) => "Thinking",
     }
@@ -747,14 +754,25 @@ fn apply_plan_cell(item: &mut WebActivityItem, cell: &PlanActivityCell) {
     item.kind = WebActivityKind::Plan;
     item.actor = Some(WebActivityActor::System);
     item.title = "Plan".to_string();
-    item.blocks = vec![WebActivityBlock::List {
-        items: cell
-            .steps
-            .iter()
-            .map(|step| format!("{} {}", plan_status_marker(step.status), step.text))
-            .collect(),
-    }];
+    let mut blocks = Vec::new();
+    if let Some(explanation) = cell.explanation.as_deref()
+        && !explanation.trim().is_empty()
+    {
+        blocks.extend(text_blocks(vec![explanation.trim().to_string()]));
+    }
+    blocks.push(WebActivityBlock::List {
+        items: if cell.steps.is_empty() {
+            vec!["No active plan.".to_string()]
+        } else {
+            cell.steps
+                .iter()
+                .map(|step| format!("{} {}", plan_status_marker(step.status), step.text))
+                .collect()
+        },
+    });
+    item.blocks = blocks;
     item.metadata = Some(serde_json::json!({
+        "explanation": cell.explanation.clone(),
         "steps": cell.steps.iter().map(|step| serde_json::json!({
             "status": plan_status_name(step.status),
             "text": step.text.clone(),
@@ -831,6 +849,47 @@ fn apply_error_cell(item: &mut WebActivityItem, cell: &ErrorActivityCell) {
         details: cell.body_lines.clone(),
     });
     item.blocks = text_blocks(primary_lines(&cell.title, &cell.body_lines));
+}
+
+fn apply_warning_cell(item: &mut WebActivityItem, cell: &ErrorActivityCell) {
+    item.kind = WebActivityKind::Warning;
+    item.actor = Some(WebActivityActor::System);
+    item.status = WebActivityStatus::Completed;
+    item.title = if cell.title.trim().is_empty() {
+        "Warning".to_string()
+    } else {
+        cell.title.clone()
+    };
+    item.blocks = text_blocks(primary_lines(&cell.title, &cell.body_lines));
+}
+
+fn apply_web_search_cell(item: &mut WebActivityItem, cell: &WebSearchActivityCell) {
+    item.kind = WebActivityKind::WebSearch;
+    item.actor = Some(WebActivityActor::Tool);
+    item.status = match cell.action {
+        WebSearchUiAction::Searching => WebActivityStatus::Running,
+        WebSearchUiAction::Searched => WebActivityStatus::Completed,
+    };
+    item.title = match cell.action {
+        WebSearchUiAction::Searching => format!("Searching the web: {}", cell.query),
+        WebSearchUiAction::Searched => format!("Searched the web: {}", cell.query),
+    };
+    item.tool = Some(WebActivityTool {
+        name: "web_search".to_string(),
+        app: Some("Browser".to_string()),
+        input_preview: Some(cell.query.clone()),
+        output_preview: compact_preview(&cell.body_lines).or_else(|| cell.url.clone()),
+        output_ref: cell.url.clone(),
+        duration_ms: None,
+        exit_code: None,
+        affected_files: Vec::new(),
+    });
+    let mut lines = Vec::new();
+    if let Some(url) = cell.url.as_deref() {
+        lines.push(url.to_string());
+    }
+    lines.extend(cell.body_lines.clone());
+    item.blocks = text_blocks(lines);
 }
 
 fn web_diff_file_from_patch_file(file: &PatchFileUiData) -> WebActivityDiffFile {

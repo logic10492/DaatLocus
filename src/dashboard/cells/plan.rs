@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-use crate::tool_ui::{PlanStepUiStatus, PlanUiData};
+use crate::tool_ui::{PlanStepUiStatus, PlanUiData, PlanUiKind};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanActivityCell {
+    #[serde(default)]
+    pub kind: PlanUiKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
     pub steps: Vec<PlanStepActivityCell>,
 }
 
@@ -23,6 +27,8 @@ pub enum PlanStepDisplayStatus {
 impl From<PlanUiData> for PlanActivityCell {
     fn from(data: PlanUiData) -> Self {
         PlanActivityCell {
+            kind: data.kind,
+            explanation: data.explanation,
             steps: data
                 .steps
                 .into_iter()

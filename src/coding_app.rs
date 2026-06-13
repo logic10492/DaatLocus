@@ -22,9 +22,9 @@ use crate::{
     runtime::scope_client::ScopeClient,
     schema_utils::structured_edit_args_schema,
     tool_ui::{
-        CodingEditUiData, EXPLORED_STABLE_ID, ExploredCallUiData, PatchDiffLineKind,
-        PatchDiffLineUiData, PatchFileOperation, PatchFileUiData, ToolCallUiEvent, ToolUiEvent,
-        compact_body_lines,
+        CodingEditUiData, EXPLORED_STABLE_ID, ExploredCallUiAction, ExploredCallUiData,
+        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData,
+        ToolCallUiEvent, ToolUiEvent, compact_body_lines,
     },
 };
 
@@ -654,6 +654,9 @@ impl CodingApp {
     fn explored_event(
         &self,
         tool_name: impl Into<String>,
+        action: ExploredCallUiAction,
+        target: Option<String>,
+        secondary_target: Option<String>,
         summary: impl Into<String>,
         detail_lines: Vec<String>,
     ) -> ToolUiEvent {
@@ -662,6 +665,9 @@ impl CodingApp {
             "Explored",
             vec![ExploredCallUiData {
                 tool_name: tool_name.into(),
+                action: Some(action),
+                target,
+                secondary_target,
                 summary: summary.into(),
                 detail_lines,
             }],
@@ -899,6 +905,9 @@ impl App for CodingApp {
                     )),
                     ui_event: self.explored_event(
                         "Search",
+                        ExploredCallUiAction::Search,
+                        Some(args.query.clone()),
+                        args.path.clone(),
                         coding_pattern_result_summary(
                             &args.query,
                             args.path.as_deref(),
@@ -932,6 +941,9 @@ impl App for CodingApp {
                     model_content: Some(model_content),
                     ui_event: self.explored_event(
                         "Read",
+                        ExploredCallUiAction::Read,
+                        Some(result.path.clone()),
+                        None,
                         coding_target_summary(&result.path),
                         vec![format!(
                             "{} lines",

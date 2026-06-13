@@ -18,7 +18,9 @@ use crate::{
 };
 
 use super::DashboardState;
-use apps::{AppAttentionActivityCell, BrowserActivityCell, LiveBrowserActivityCell};
+use apps::{
+    AppAttentionActivityCell, BrowserActivityCell, LiveBrowserActivityCell, WebSearchActivityCell,
+};
 #[cfg(test)]
 pub(crate) use common::ExploredCallActivityCell;
 use common::{
@@ -43,6 +45,7 @@ pub struct LiveActivityCell {
 }
 
 pub use tui::CachedActivityLines;
+pub(super) use tui::activity_transcript_lines;
 pub use tui::render_activity_feed_cached;
 pub use web_activity::{
     LiveWebActivityItem, WebActivityItem, WebActivityKind, WebActivityStatus,
@@ -60,6 +63,7 @@ pub enum ActivityCell {
     AppAttention(AppAttentionActivityCell),
     Browser(BrowserActivityCell),
     LiveBrowser(LiveBrowserActivityCell),
+    WebSearch(WebSearchActivityCell),
     CodingOpenProject(CodingOpenProjectActivityCell),
     Explored(ExploredActivityCell),
     CodingEdit(CodingEditActivityCell),
@@ -75,6 +79,7 @@ pub enum ActivityCell {
     Telegram(TelegramActivityCell),
     Reply(ReplyActivityCell),
     TerminalWait(TerminalWaitActivityCell),
+    Warning(ErrorActivityCell),
     Error(ErrorActivityCell),
     Thinking(ThinkingActivityCell),
 }
@@ -253,6 +258,7 @@ pub fn activity_cell_from_tool_ui_event(ui_event: ToolUiEvent) -> Option<Activit
             | crate::tool_ui::BrowserUiAction::Reload
             | crate::tool_ui::BrowserUiAction::ClosePage => None,
         },
+        ToolUiEvent::WebSearch(event) => Some(ActivityCell::WebSearch(event.into())),
         ToolUiEvent::CodingOpenProject(event) => {
             Some(ActivityCell::CodingOpenProject(event.into()))
         }
@@ -275,6 +281,7 @@ pub fn activity_cell_from_tool_ui_event(ui_event: ToolUiEvent) -> Option<Activit
             Some(ActivityCell::ActivatePrimitiveResult(event.into()))
         }
         ToolUiEvent::App(event) => Some(ActivityCell::GenericApp(event.into())),
+        ToolUiEvent::Warning(event) => Some(ActivityCell::Warning(event.into())),
         ToolUiEvent::Error(event) => Some(ActivityCell::Error(event.into())),
     }
 }
@@ -636,8 +643,11 @@ mod tests {
 
     #[test]
     fn empty_plan_ui_event_does_not_create_activity_cell() {
-        let cell =
-            activity_cell_from_tool_ui_event(ToolUiEvent::Plan(PlanUiData { steps: Vec::new() }));
+        let cell = activity_cell_from_tool_ui_event(ToolUiEvent::Plan(PlanUiData {
+            kind: crate::tool_ui::PlanUiKind::Updated,
+            explanation: None,
+            steps: Vec::new(),
+        }));
 
         assert!(cell.is_none());
     }
@@ -673,6 +683,9 @@ mod tests {
             title: "Explored".to_string(),
             calls: vec![ExploredCallActivityCell {
                 tool_name: "Search".to_string(),
+                action: None,
+                target: None,
+                secondary_target: None,
                 summary: "first".to_string(),
                 detail_lines: Vec::new(),
                 detail_title: None,
@@ -683,6 +696,9 @@ mod tests {
             title: "Explored".to_string(),
             calls: vec![ExploredCallActivityCell {
                 tool_name: "Read".to_string(),
+                action: None,
+                target: None,
+                secondary_target: None,
                 summary: "second".to_string(),
                 detail_lines: Vec::new(),
                 detail_title: None,

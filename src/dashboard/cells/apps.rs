@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::tool_ui::{AppAttentionUiAction, AppAttentionUiData, BrowserUiAction, BrowserUiData};
+use crate::tool_ui::{
+    AppAttentionUiAction, AppAttentionUiData, BrowserUiAction, BrowserUiData, WebSearchUiAction,
+    WebSearchUiData,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppAttentionActivityCell {
@@ -22,6 +25,14 @@ pub struct LiveBrowserActivityCell {
     pub title: String,
     pub body_lines: Vec<String>,
     pub url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebSearchActivityCell {
+    pub action: WebSearchUiAction,
+    pub query: String,
+    pub url: Option<String>,
+    pub body_lines: Vec<String>,
 }
 
 impl From<AppAttentionUiData> for AppAttentionActivityCell {
@@ -75,6 +86,17 @@ impl From<BrowserUiData> for LiveBrowserActivityCell {
             title,
             body_lines: data.body_lines,
             url: data.url,
+        }
+    }
+}
+
+impl From<WebSearchUiData> for WebSearchActivityCell {
+    fn from(data: WebSearchUiData) -> Self {
+        Self {
+            action: data.action,
+            query: data.query,
+            url: data.url,
+            body_lines: data.body_lines,
         }
     }
 }

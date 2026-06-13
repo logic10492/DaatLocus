@@ -826,6 +826,20 @@ pub(crate) async fn execute_agent_loop_step(
                                 );
                             });
                         }
+                        ToolCallUiEvent::Plan(event) => {
+                            if let Some(cell) =
+                                activity_cell_from_tool_ui_event(ToolUiEvent::Plan(event))
+                            {
+                                tx.send_modify(|state| {
+                                    apply_activity_event(
+                                        state,
+                                        DashboardActivityEvent::AppendCommittedCells {
+                                            cells: vec![cell],
+                                        },
+                                    );
+                                });
+                            }
+                        }
                         _ => {}
                     }
                 }

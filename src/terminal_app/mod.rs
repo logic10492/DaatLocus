@@ -870,11 +870,7 @@ impl App for TerminalApp {
                     }),
                     model_content: Some(model_content),
                     ui_event: ToolUiEvent::terminal(
-                        if running {
-                            TerminalUiAction::Execute
-                        } else {
-                            TerminalUiAction::Continue
-                        },
+                        TerminalUiAction::Execute,
                         summarize_terminal_inline_text(
                             result.session.command.as_deref().unwrap_or(&args.command),
                         ),
@@ -1286,20 +1282,53 @@ mod tests {
         }
     }
 
-    fn delayed_output_command(text: &str) -> String {
-        if cfg!(windows) {
-            format!("Start-Sleep -Milliseconds 100; Write-Output '{text}'")
-        } else {
-            format!("sleep 0.1; printf '%s\\n' '{text}'")
-        }
-    }
-
     fn delayed_output_then_sleep_command(text: &str) -> String {
         if cfg!(windows) {
             format!("Start-Sleep -Milliseconds 100; Write-Output '{text}'; Start-Sleep -Seconds 2")
         } else {
             format!("sleep 0.1; printf '%s\\n' '{text}'; sleep 2")
         }
+    }
+
+    fn immediate_output_then_sleep_command(text: &str) -> String {
+        if cfg!(windows) {
+            format!("Write-Output '{text}'; Start-Sleep -Seconds 2")
+        } else {
+            format!("printf '%s\\n' '{text}'; sleep 2")
+        }
+    }
+
+    fn interactive_shell_command() -> String {
+        if cfg!(windows) {
+            "powershell.exe -NoLogo -NoProfile -NoExit -Command -".to_string()
+        } else {
+            "bash".to_string()
+        }
+    }
+
+    async fn wait_for_interactive_shell_ready(app: &mut TerminalApp, session_id: &str) {
+        let marker = "daat-locus-shell-ready";
+        let input = if cfg!(windows) {
+            format!("Write-Output '{marker}'\n")
+        } else {
+            format!("printf '%s\\n' '{marker}'\n")
+        };
+        let result = app
+            .write_stdin_with_progress(
+                session_id,
+                input,
+                TerminalWaitMode::AnyOutput,
+                Some(5_000),
+                None,
+                |_session, _delta| {},
+            )
+            .await
+            .expect("interactive shell readiness probe should succeed");
+        assert!(
+            result.output.contains(marker),
+            "interactive shell should echo readiness marker before timed tests: {:?}",
+            result.output
+        );
     }
 
     fn env_value_command(name: &str) -> String {
@@ -1559,11 +1588,7 @@ mod tests {
         let started = app
             .exec_command_with_progress(
                 TerminalExecCommandRequest {
-                    command: if cfg!(windows) {
-                        "powershell.exe".to_string()
-                    } else {
-                        "bash".to_string()
-                    },
+                    command: interactive_shell_command(),
                     session_id: None,
                     workdir: None,
                     sandbox_policy: &sandbox_policy,
@@ -1616,11 +1641,7 @@ mod tests {
         let started = app
             .exec_command_with_progress(
                 TerminalExecCommandRequest {
-                    command: if cfg!(windows) {
-                        "powershell.exe".to_string()
-                    } else {
-                        "bash".to_string()
-                    },
+                    command: interactive_shell_command(),
                     session_id: None,
                     workdir: None,
                     sandbox_policy: &sandbox_policy,
@@ -1633,6 +1654,7 @@ mod tests {
             .expect("exec should succeed");
 
         if started.session.status == "running" {
+            wait_for_interactive_shell_ready(&mut app, &started.session.session_id).await;
             let input = format!("{}\n", delayed_output_then_sleep_command("any-output-mode"));
             let started_at = Instant::now();
             let result = app
@@ -1675,11 +1697,7 @@ mod tests {
         let started = app
             .exec_command_with_progress(
                 TerminalExecCommandRequest {
-                    command: if cfg!(windows) {
-                        "powershell.exe".to_string()
-                    } else {
-                        "bash".to_string()
-                    },
+                    command: interactive_shell_command(),
                     session_id: None,
                     workdir: None,
                     sandbox_policy: &sandbox_policy,
@@ -1692,7 +1710,8 @@ mod tests {
             .expect("exec should succeed");
 
         if started.session.status == "running" {
-            let input = format!("{}\n", delayed_output_command("timeout-mode"));
+            wait_for_interactive_shell_ready(&mut app, &started.session.session_id).await;
+            let input = format!("{}\n", immediate_output_then_sleep_command("timeout-mode"));
             let started_at = Instant::now();
             let mut progress_calls = 0usize;
             let waited = app
@@ -1700,7 +1719,7 @@ mod tests {
                     &started.session.session_id,
                     input,
                     TerminalWaitMode::Timeout,
-                    Some(400),
+                    Some(1_000),
                     None,
                     |_session, _delta| {
                         progress_calls += 1;
@@ -1711,7 +1730,7 @@ mod tests {
 
             assert_eq!(progress_calls, 0, "timeout wait must not stream progress");
             assert!(
-                started_at.elapsed() >= Duration::from_millis(350),
+                started_at.elapsed() >= Duration::from_millis(850),
                 "timeout wait should wait for the requested yield window"
             );
             assert!(

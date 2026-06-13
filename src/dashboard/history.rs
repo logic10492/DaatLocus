@@ -530,6 +530,9 @@ mod tests {
                     .iter()
                     .map(|summary| ExploredCallUiData {
                         tool_name: "grep".to_string(),
+                        action: None,
+                        target: None,
+                        secondary_target: None,
                         summary: summary.to_string(),
                         detail_lines: Vec::new(),
                     })

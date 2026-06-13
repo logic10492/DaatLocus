@@ -13,8 +13,8 @@ use crate::{
     },
     schema_utils::structured_edit_args_schema,
     tool_ui::{
-        EXPLORED_STABLE_ID, ExploredCallUiData, PatchFileOperation, PatchFileUiData,
-        ToolCallUiEvent, ToolUiEvent,
+        EXPLORED_STABLE_ID, ExploredCallUiAction, ExploredCallUiData, PatchDiffLineKind,
+        PatchDiffLineUiData, PatchFileOperation, PatchFileUiData, ToolCallUiEvent, ToolUiEvent,
     },
 };
 
@@ -90,7 +90,7 @@ fn render_edit_file_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
             operation: PatchFileOperation::Update,
             added_lines: edit_content_line_count(edit.content.as_ref()),
             removed_lines: 0,
-            diff_lines: Vec::new(),
+            diff_lines: structured_edit_preview_lines(edit.content.as_ref()),
         })
         .collect();
     Ok(ToolCallUiEvent::patch(
@@ -167,6 +167,9 @@ fn execute_read_file_runtime_tool<'a>(
             }),
             explored_tool_event(
                 "Read",
+                Some(ExploredCallUiAction::Read),
+                Some(args.path.clone()),
+                None,
                 ui_summary,
                 vec![format!("{actual_line_count} lines")],
             ),
@@ -236,13 +239,16 @@ fn execute_edit_file_runtime_tool<'a>(
                     })
                 }).collect::<Vec<_>>(),
             }),
-            explored_tool_event("Edit", ui_summary, detail_lines),
+            explored_tool_event("Edit", None, None, None, ui_summary, detail_lines),
         ))
     })
 }
 
 fn explored_tool_event(
     tool_name: impl Into<String>,
+    action: Option<ExploredCallUiAction>,
+    target: Option<String>,
+    secondary_target: Option<String>,
     summary: impl Into<String>,
     detail_lines: Vec<String>,
 ) -> ToolUiEvent {
@@ -251,6 +257,9 @@ fn explored_tool_event(
         "Explored",
         vec![ExploredCallUiData {
             tool_name: tool_name.into(),
+            action,
+            target,
+            secondary_target,
             summary: summary.into(),
             detail_lines,
         }],
@@ -300,5 +309,46 @@ fn edit_content_line_count(content: Option<&scope_engine::api::EditContent>) -> 
         Some(scope_engine::api::EditContent::Lines(lines)) => lines.len(),
         Some(scope_engine::api::EditContent::Text(text)) => text.lines().count(),
         None => 0,
+    }
+}
+
+fn structured_edit_preview_lines(
+    content: Option<&scope_engine::api::EditContent>,
+) -> Vec<PatchDiffLineUiData> {
+    match content {
+        Some(scope_engine::api::EditContent::Lines(lines)) => lines
+            .iter()
+            .map(|line| patch_preview_add_line(line))
+            .collect(),
+        Some(scope_engine::api::EditContent::Text(text)) => {
+            text.lines().map(patch_preview_add_line).collect()
+        }
+        None => Vec::new(),
+    }
+}
+
+fn patch_preview_add_line(line: impl AsRef<str>) -> PatchDiffLineUiData {
+    PatchDiffLineUiData {
+        kind: PatchDiffLineKind::Add,
+        old_lineno: None,
+        new_lineno: None,
+        text: line.as_ref().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structured_edit_preview_lines_render_added_diff_rows() {
+        let lines = structured_edit_preview_lines(Some(&scope_engine::api::EditContent::Text(
+            "alpha\nbeta".to_string(),
+        )));
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().all(|line| line.kind == PatchDiffLineKind::Add));
+        assert_eq!(lines[0].text, "alpha");
+        assert_eq!(lines[1].text, "beta");
     }
 }

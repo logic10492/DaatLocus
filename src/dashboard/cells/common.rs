@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppId;
 use crate::tool_ui::{
-    CodingEditUiData, CodingReviewUiData, ExploredUiData, PatchFileUiData, ToolUiData,
+    CodingEditUiData, CodingReviewUiData, ExploredCallUiAction, ExploredUiData, PatchFileUiData,
+    ToolUiData,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,6 +108,12 @@ pub struct CodingReviewActivityCell {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExploredCallActivityCell {
     pub tool_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<ExploredCallUiAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_target: Option<String>,
     pub summary: String,
     pub detail_lines: Vec<String>,
     pub detail_title: Option<String>,
@@ -214,6 +221,9 @@ impl From<ExploredUiData> for ExploredActivityCell {
                 .into_iter()
                 .map(|call| ExploredCallActivityCell {
                     tool_name: AppId::render_exposed_tool_name(&call.tool_name),
+                    action: call.action,
+                    target: call.target,
+                    secondary_target: call.secondary_target,
                     summary: call.summary,
                     detail_lines: call.detail_lines,
                     detail_title: None,
