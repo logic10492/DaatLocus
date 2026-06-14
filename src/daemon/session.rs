@@ -6,6 +6,7 @@ use miette::{Result, miette};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::daat_locus_paths::{DaatLocusPaths, daat_locus_paths};
@@ -144,6 +145,7 @@ struct PersistedTelegramSessionDefaults {
 pub struct SessionRegistry {
     path: PathBuf,
     inner: Arc<RwLock<PersistedSessionRegistry>>,
+    persist_lock: Arc<Mutex<()>>,
 }
 
 impl SessionRegistry {
@@ -173,6 +175,7 @@ impl SessionRegistry {
         Ok(Self {
             path,
             inner: Arc::new(RwLock::new(state)),
+            persist_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -273,6 +276,7 @@ impl SessionRegistry {
     }
 
     async fn persist(&self) -> Result<()> {
+        let _guard = self.persist_lock.lock().await;
         let bytes = {
             let inner = self.inner.read();
             serde_json::to_vec_pretty(&*inner)
@@ -307,6 +311,7 @@ impl SessionRegistry {
 pub struct TelegramSessionDefaults {
     path: PathBuf,
     inner: Arc<RwLock<PersistedTelegramSessionDefaults>>,
+    persist_lock: Arc<Mutex<()>>,
 }
 
 impl TelegramSessionDefaults {
@@ -340,6 +345,7 @@ impl TelegramSessionDefaults {
         Ok(Self {
             path,
             inner: Arc::new(RwLock::new(state)),
+            persist_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -377,6 +383,7 @@ impl TelegramSessionDefaults {
     }
 
     async fn persist(&self) -> Result<()> {
+        let _guard = self.persist_lock.lock().await;
         let bytes = {
             let inner = self.inner.read();
             serde_json::to_vec_pretty(&*inner)
@@ -583,6 +590,59 @@ mod tests {
             .expect("reload after remove");
         assert_eq!(reloaded_again.list().len(), 1);
         assert!(reloaded_again.get(&second.session_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn session_registry_serializes_concurrent_persists() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("runtime").join("sessions.json");
+        let registry = SessionRegistry::load_from_path(path.clone())
+            .await
+            .expect("load registry");
+        let mut sessions = Vec::new();
+
+        for index in 0..16 {
+            sessions.push(
+                registry
+                    .create(SessionScope::General, Some(format!("session {index}")))
+                    .await
+                    .expect("create session"),
+            );
+        }
+
+        let mut tasks = Vec::new();
+        for (index, session) in sessions.iter().enumerate() {
+            let registry = registry.clone();
+            let session_id = session.session_id.clone();
+            tasks.push(tokio::spawn(async move {
+                registry
+                    .mark_starting(
+                        &session_id,
+                        10_000 + index as u32,
+                        session_ipc_name(&session_id),
+                        &format!("token-{index}"),
+                    )
+                    .await
+                    .expect("mark starting");
+                registry.mark_ready(&session_id).await.expect("mark ready");
+                registry.mark_dead(&session_id).await.expect("mark dead");
+            }));
+        }
+
+        for task in tasks {
+            task.await.expect("persist task joins");
+        }
+
+        let reloaded = SessionRegistry::load_from_path(path)
+            .await
+            .expect("reload after concurrent persists");
+        assert_eq!(reloaded.list().len(), sessions.len());
+        assert!(
+            reloaded
+                .list()
+                .into_iter()
+                .all(|session| session.status == SessionStatus::Dead)
+        );
     }
 
     #[test]
