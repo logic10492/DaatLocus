@@ -221,7 +221,7 @@ type AgentChatPendingImageAttachment = {
 
 type WebSlashCommandLevel = "info" | "warning" | "error";
 
-type WebSlashCommandSuggestion = {
+type WebInputSuggestion = {
   display: string;
   completion: string;
   description: string;
@@ -463,18 +463,16 @@ function AgentChatComposer({
   const [slashActionFeedback, setSlashActionFeedback] =
     useState<WebSlashActionFeedback | null>(null);
 
-  const slashCommandSuggestions = useMemo(
-    () => webSlashCommandSuggestions(message, snapshot),
+  const inputSuggestions = useMemo(
+    () => webInputSuggestions(message, snapshot),
     [message, snapshot],
   );
   const slashCommandFeedback = useMemo(
     () => webSlashCommandFeedback(message, snapshot, imageAttachments.length),
     [imageAttachments.length, message, snapshot],
   );
-  const selectedSlashSuggestion =
-    slashCommandSuggestions[
-      Math.min(slashCommandSelection, slashCommandSuggestions.length - 1)
-    ];
+  const selectedInputSuggestion =
+    inputSuggestions[Math.min(slashCommandSelection, inputSuggestions.length - 1)];
   const slashCommandBlocksSubmit =
     Boolean(slashCommandFeedback?.blocksSubmit) ||
     (isWebSlashCommandInput(message) &&
@@ -482,9 +480,9 @@ function AgentChatComposer({
 
   useEffect(() => {
     setSlashCommandSelection((current) =>
-      Math.min(current, Math.max(0, slashCommandSuggestions.length - 1)),
+      Math.min(current, Math.max(0, inputSuggestions.length - 1)),
     );
-  }, [slashCommandSuggestions.length]);
+  }, [inputSuggestions.length]);
 
   useEffect(() => {
     imageAttachmentsRef.current = imageAttachments;
@@ -699,7 +697,7 @@ function AgentChatComposer({
     await submitComposerInput(message);
   }
 
-  function applySlashSuggestion(suggestion: WebSlashCommandSuggestion) {
+  function applyInputSuggestion(suggestion: WebInputSuggestion) {
     setMessage(suggestion.completion);
     setSendError(null);
     setSlashCommandSelection(0);
@@ -831,13 +829,13 @@ function AgentChatComposer({
         snapshot={snapshot}
         feedback={slashCommandFeedback}
         actionFeedback={slashActionFeedback}
-        suggestions={slashCommandSuggestions}
+        suggestions={inputSuggestions}
         selectedSuggestionIndex={slashCommandSelection}
         isSending={isSending}
         onClosePanel={() => setSlashPanel(null)}
         onSetPanel={setSlashPanel}
         onCloseActionFeedback={() => setSlashActionFeedback(null)}
-        onSelectSuggestion={applySlashSuggestion}
+        onSelectSuggestion={applyInputSuggestion}
         onHoverSuggestion={setSlashCommandSelection}
         onRunAction={(command) => void runSlashAction(command)}
         onRunDashboardAction={(action) => void runSlashDashboardAction(action)}
@@ -921,14 +919,11 @@ function AgentChatComposer({
           }}
           onPaste={handlePaste}
           onKeyDown={(event) => {
-            if (
-              isWebSlashCommandInput(message) &&
-              slashCommandSuggestions.length > 0
-            ) {
+            if (inputSuggestions.length > 0) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
                 setSlashCommandSelection((current) =>
-                  (current + 1) % slashCommandSuggestions.length,
+                  (current + 1) % inputSuggestions.length,
                 );
                 return;
               }
@@ -936,15 +931,14 @@ function AgentChatComposer({
                 event.preventDefault();
                 setSlashCommandSelection(
                   (current) =>
-                    (current - 1 + slashCommandSuggestions.length) %
-                    slashCommandSuggestions.length,
+                    (current - 1 + inputSuggestions.length) % inputSuggestions.length,
                 );
                 return;
               }
               if (event.key === "Tab") {
                 event.preventDefault();
-                applySlashSuggestion(
-                  selectedSlashSuggestion ?? slashCommandSuggestions[0],
+                applyInputSuggestion(
+                  selectedInputSuggestion ?? inputSuggestions[0],
                 );
                 return;
               }
@@ -956,10 +950,11 @@ function AgentChatComposer({
             ) {
               event.preventDefault();
               if (
-                selectedSlashSuggestion &&
-                selectedSlashSuggestion.completion !== message.trim()
+                selectedInputSuggestion &&
+                selectedInputSuggestion.completion !==
+                  (isWebSlashCommandInput(message) ? message.trim() : message)
               ) {
-                applySlashSuggestion(selectedSlashSuggestion);
+                applyInputSuggestion(selectedInputSuggestion);
                 return;
               }
               event.currentTarget.form?.requestSubmit();
@@ -1065,13 +1060,13 @@ function WebSlashCommandPanel({
   snapshot: DashboardSnapshot | null;
   feedback: WebSlashCommandFeedback | null;
   actionFeedback: WebSlashActionFeedback | null;
-  suggestions: WebSlashCommandSuggestion[];
+  suggestions: WebInputSuggestion[];
   selectedSuggestionIndex: number;
   isSending: boolean;
   onClosePanel: () => void;
   onSetPanel: (panel: WebSlashPanel | null) => void;
   onCloseActionFeedback: () => void;
-  onSelectSuggestion: (suggestion: WebSlashCommandSuggestion) => void;
+  onSelectSuggestion: (suggestion: WebInputSuggestion) => void;
   onHoverSuggestion: (index: number) => void;
   onRunAction: (command: string, detailTitle?: string) => void;
   onRunDashboardAction: (action: DashboardAction) => void;
@@ -1881,10 +1876,64 @@ function parseWebSlashCommand(input: string) {
   };
 }
 
+function webInputSuggestions(
+  input: string,
+  snapshot: DashboardSnapshot | null,
+): WebInputSuggestion[] {
+  if (isWebSlashCommandInput(input)) {
+    return webSlashCommandSuggestions(input, snapshot);
+  }
+  return webSkillMentionSuggestions(input, snapshot);
+}
+
+function webSkillMentionSuggestions(
+  input: string,
+  snapshot: DashboardSnapshot | null,
+): WebInputSuggestion[] {
+  const target = webSkillCompletionTarget(input);
+  if (!target) {
+    return [];
+  }
+  return (snapshot?.skills ?? [])
+    .filter((skill) => skill.name.startsWith(target.prefix))
+    .filter((skill) => webSkillNameIsUnique(snapshot, skill.name))
+    .map((skill) => ({
+      display: `$${skill.name}`,
+      completion: `${input.slice(0, target.mentionStart)}$${skill.name}`,
+      description: webSkillSuggestionDescription(skill),
+    }));
+}
+
+function webSkillCompletionTarget(input: string) {
+  const mentionStart = input.lastIndexOf("$");
+  if (mentionStart < 0) {
+    return null;
+  }
+  const prefix = input.slice(mentionStart + 1);
+  if (!/^[A-Za-z0-9_:-]*$/.test(prefix)) {
+    return null;
+  }
+  return { mentionStart, prefix };
+}
+
+function webSkillNameIsUnique(
+  snapshot: DashboardSnapshot | null,
+  name: string,
+) {
+  return (snapshot?.skills ?? []).filter((skill) => skill.name === name).length === 1;
+}
+
+function webSkillSuggestionDescription(
+  skill: NonNullable<DashboardSnapshot["skills"]>[number],
+) {
+  const status = webSlashSkillStatusDescription(skill);
+  return skill.description ? `${skill.description} — ${status}` : status;
+}
+
 function webSlashCommandSuggestions(
   input: string,
   _snapshot: DashboardSnapshot | null,
-): WebSlashCommandSuggestion[] {
+): WebInputSuggestion[] {
   const parsed = parseWebSlashCommand(input);
   if (!parsed) {
     return [];
@@ -2404,7 +2453,7 @@ function webSlashCommandAccepts(primaryVerb: string, verb: string) {
 
 function webSlashRootSuggestion(
   command: WebSlashCommandDefinition,
-): WebSlashCommandSuggestion {
+): WebInputSuggestion {
   return {
     display: command.name,
     completion: `/${command.name}`,

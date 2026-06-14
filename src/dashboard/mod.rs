@@ -886,16 +886,38 @@ mod tests {
     }
 
     #[test]
-    fn matching_commands_only_triggers_for_slash_inputs() {
-        let context = test_command_context();
+    fn matching_commands_supports_slash_and_skill_prefixes() {
+        let state = DashboardState {
+            skills: vec![OpenSkillDashboardSummary {
+                name: "writer".to_string(),
+                description: "Write release notes".to_string(),
+                path: "/tmp/skills/writer/SKILL.md".to_string(),
+                scope: "user".to_string(),
+                allow_implicit_invocation: true,
+                user_disabled: false,
+                auto_use_enabled: true,
+            }],
+            ..DashboardState::default()
+        };
+        let context = DashboardCommandContext {
+            requests: &[],
+            state: &state,
+        };
+
         assert!(matching_commands("status", &context).is_empty());
-        let matches = matching_commands("/sta", &context);
-        assert!(!matches.is_empty());
+        let slash_matches = matching_commands("/sta", &context);
+        assert!(!slash_matches.is_empty());
         assert!(
-            matches
+            slash_matches
                 .iter()
                 .all(|suggestion| suggestion.completion.starts_with('/'))
         );
+
+        let skill_matches = matching_commands("please use $wri", &context);
+        assert_eq!(skill_matches.len(), 1);
+        assert_eq!(skill_matches[0].display, "$writer");
+        assert_eq!(skill_matches[0].completion, "please use $writer");
+        assert!(skill_matches[0].description.contains("Write release notes"));
     }
 
     #[test]
@@ -938,6 +960,13 @@ mod tests {
         assert!(matching_commands("/app-status ", &context).is_empty());
         assert!(matching_commands("/telegram approve ", &context).is_empty());
         assert!(matching_commands("/skills disable ", &context).is_empty());
+        assert_eq!(
+            matching_commands("$wri", &context)
+                .into_iter()
+                .map(|suggestion| suggestion.completion)
+                .collect::<Vec<_>>(),
+            vec!["$writer".to_string()]
+        );
     }
 
     #[test]

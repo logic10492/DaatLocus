@@ -19,6 +19,7 @@ use super::command_text::{
 };
 use super::{DashboardAction, DashboardActionResult, DashboardControlCommand, DashboardState};
 use crate::{
+    openskills::OpenSkillDashboardSummary,
     reasoning::turn_compile::{
         load_prompt_persona_spec_sync, prompt_persona_path_sync, render_prompt_persona_markdown,
     },
@@ -822,11 +823,15 @@ pub(super) fn is_dashboard_command_input(input: &str) -> bool {
 
 pub(super) fn matching_commands(
     input: &str,
-    _context: &DashboardCommandContext<'_>,
+    context: &DashboardCommandContext<'_>,
 ) -> Vec<CommandSuggestion> {
-    let Some(command_input) = command_completion_body(input) else {
-        return Vec::new();
-    };
+    if let Some(command_input) = command_completion_body(input) {
+        return matching_slash_commands(command_input);
+    }
+    matching_skill_mentions(input, context)
+}
+
+fn matching_slash_commands(command_input: &str) -> Vec<CommandSuggestion> {
     let trimmed = command_input.trim();
     if trimmed.is_empty() {
         return dashboard_commands()
@@ -852,6 +857,63 @@ pub(super) fn matching_commands(
             description: command.description.to_string(),
         })
         .collect::<Vec<_>>()
+}
+
+fn matching_skill_mentions(
+    input: &str,
+    context: &DashboardCommandContext<'_>,
+) -> Vec<CommandSuggestion> {
+    let Some((mention_start, prefix)) = skill_completion_target(input) else {
+        return Vec::new();
+    };
+    context
+        .state
+        .skills
+        .iter()
+        .filter(|skill| skill.name.starts_with(prefix))
+        .filter(|skill| skill_name_is_unique(&context.state.skills, &skill.name))
+        .map(|skill| CommandSuggestion {
+            display: format!("${}", skill.name),
+            completion: format!("{}${}", &input[..mention_start], skill.name),
+            description: skill_suggestion_description(skill),
+        })
+        .collect::<Vec<_>>()
+}
+
+fn skill_completion_target(input: &str) -> Option<(usize, &str)> {
+    let mention_start = input.rfind('$')?;
+    let name_start = mention_start + 1;
+    let prefix = &input[name_start..];
+    if !prefix
+        .as_bytes()
+        .iter()
+        .all(|byte| is_skill_mention_name_char(*byte))
+    {
+        return None;
+    }
+    Some((mention_start, prefix))
+}
+
+fn is_skill_mention_name_char(byte: u8) -> bool {
+    matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b':')
+}
+
+fn skill_name_is_unique(skills: &[OpenSkillDashboardSummary], name: &str) -> bool {
+    skills
+        .iter()
+        .filter(|skill| skill.name == name)
+        .take(2)
+        .count()
+        == 1
+}
+
+fn skill_suggestion_description(skill: &OpenSkillDashboardSummary) -> String {
+    let status = skill_status_description(skill);
+    if skill.description.is_empty() {
+        status
+    } else {
+        format!("{} — {}", skill.description, status)
+    }
 }
 
 pub(super) fn adjusted_popup_scroll(

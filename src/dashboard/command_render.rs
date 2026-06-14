@@ -931,14 +931,26 @@ fn render_runtime_status_line(
 }
 
 fn command_hint(input: &str, context: &DashboardCommandContext<'_>) -> String {
+    let matches = matching_commands(input, context);
     if !is_dashboard_command_input(input) {
+        if matches.len() == 1 {
+            let suggestion = &matches[0];
+            return format!("{} — {}", suggestion.display, suggestion.description);
+        }
+        if matches.len() > 1 {
+            return matches
+                .iter()
+                .take(4)
+                .map(|suggestion| suggestion.display.clone())
+                .collect::<Vec<_>>()
+                .join(" | ");
+        }
         if input.trim().is_empty() {
             return "Enter send. Shift+Enter newline. Prefix / for commands. Esc clear."
                 .to_string();
         }
         return "Enter send. Shift+Enter newline. Prefix / for commands.".to_string();
     }
-    let matches = matching_commands(input, context);
     if command_completion_body(input)
         .map(str::trim)
         .unwrap_or_default()
