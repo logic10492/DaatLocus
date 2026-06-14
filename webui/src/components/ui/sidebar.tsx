@@ -86,7 +86,7 @@ function SidebarProvider({
             ...style,
           } as React.CSSProperties
         }
-        className={cn("flex min-h-svh w-full bg-background", className)}
+        className={cn("flex min-h-svh w-full max-w-full overflow-x-hidden bg-background", className)}
         {...props}
       >
         {children}
@@ -133,7 +133,7 @@ function Sidebar({
       data-sidebar="sidebar"
       data-slot="sidebar"
       className={cn(
-        "hidden h-svh w-(--sidebar-width) shrink-0 flex-col border-sidebar-border bg-sidebar text-sidebar-foreground md:flex",
+        "hidden h-svh w-(--sidebar-width) shrink-0 flex-col overflow-hidden border-sidebar-border bg-sidebar text-sidebar-foreground md:flex",
         side === "left" ? "border-r" : "border-l",
         className,
       )}
@@ -164,7 +164,7 @@ function SidebarTrigger({
       }}
       {...props}
     >
-      <PanelLeftIcon className="size-4" />
+      <PanelLeftIcon aria-hidden="true" />
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   );

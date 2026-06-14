@@ -1,9 +1,10 @@
 import {
   ActivityIcon,
-  ChevronRightIcon,
-  Code2Icon,
+  ChevronDownIcon,
   FolderIcon,
+  FolderPlusIcon,
   MessageSquareIcon,
+  MoreHorizontalIcon,
   PlusIcon,
   ScrollTextIcon,
   SettingsIcon,
@@ -12,8 +13,6 @@ import {
 import { useState, type ReactNode } from "react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -25,17 +24,21 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarSeparator,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
@@ -73,6 +76,9 @@ type SessionTree = {
   general: SessionInfo[];
   projectGroups: SessionProjectGroup[];
 };
+
+const PROJECT_VISIBLE_SESSION_COUNT = 4;
+const GENERAL_VISIBLE_SESSION_COUNT = 8;
 
 const navigationItems: NavigationItem[] = [
   {
@@ -128,6 +134,8 @@ function AppSidebarBody({
 }: AppSidebarProps) {
   const { setOpenMobile } = useSidebar();
   const sessionTree = buildSessionTree(sessions);
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [conversationsOpen, setConversationsOpen] = useState(true);
   const [deleteCandidate, setDeleteCandidate] = useState<SessionInfo | null>(
     null,
   );
@@ -135,6 +143,11 @@ function AppSidebarBody({
 
   function closeMobile() {
     setOpenMobile(false);
+  }
+
+  function navigateTo(item: NavigationItem) {
+    window.location.hash = item.href;
+    closeMobile();
   }
 
   async function confirmDeleteSession() {
@@ -154,139 +167,80 @@ function AppSidebarBody({
 
   return (
     <>
-      <SidebarHeader className="border-b border-sidebar-border p-3">
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              type="button"
-              size="lg"
-              className="h-12 cursor-default gap-3 rounded-lg px-2"
-            >
-              <Avatar className="size-8 rounded-lg">
-                <AvatarFallback className="rounded-lg text-xs font-semibold">
-                  DL
-                </AvatarFallback>
-              </Avatar>
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-sm font-semibold">
-                  Daat Locus
-                </span>
-                <span className="truncate text-xs font-normal text-sidebar-foreground/55">
-                  Local agent runtime
-                </span>
-              </span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarHeader>
-
-      <SidebarContent className="gap-0 px-2 py-3">
+      <SidebarContent className="px-2 py-2">
         {sessionError ? (
-          <Alert variant="destructive" className="mb-3">
+          <Alert variant="destructive" className="mb-2">
             <AlertDescription className="text-xs">
               {sessionError}
             </AlertDescription>
           </Alert>
         ) : null}
 
-        <SidebarGroup className="min-h-0 flex-1 p-0">
-          <SidebarGroupLabel className="h-7 justify-between px-1">
-            <span>Sessions</span>
-            <Badge variant="secondary">{sessions.length}</Badge>
-          </SidebarGroupLabel>
-          <SidebarGroupContent className="min-h-0">
-            <div
-              role="tree"
-              aria-label="Sessions"
-              className="flex flex-col gap-2"
-            >
-              <SessionTreeBranch
-                icon={MessageSquareIcon}
-                label="General"
-                count={sessionTree.general.length}
-              >
-                <SessionLeafList
-                  createLabel="New general session"
+        <SidebarSessionSection
+          label="Projects"
+          open={projectsOpen}
+          onOpenChange={setProjectsOpen}
+          actions={
+            <>
+              <NewCodingSessionMenu
+                projectGroups={sessionTree.projectGroups}
+                disabled={isCreatingSession}
+                onCreateSession={(projectDir) => {
+                  onCreateSession(projectDir);
+                  closeMobile();
+                }}
+              />
+              <SidebarMoreMenu
+                activePage={activePage}
+                onNavigate={navigateTo}
+              />
+            </>
+          }
+        >
+          {sessionTree.projectGroups.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              {sessionTree.projectGroups.map((group) => (
+                <ProjectSessionGroup
+                  key={group.projectDir}
+                  group={group}
+                  selectedSessionId={selectedSessionId}
                   isCreatingSession={isCreatingSession}
                   deletingSessionId={deletingSessionId}
-                  sessions={sessionTree.general}
-                  selectedSessionId={selectedSessionId}
                   onCreateSession={() => {
-                    onCreateSession();
+                    onCreateSession(group.projectDir);
                     closeMobile();
                   }}
-                  onSelectSession={onSelectSession}
+                  onSelectSession={(sessionId) => {
+                    onSelectSession(sessionId);
+                    closeMobile();
+                  }}
                   onRequestDeleteSession={setDeleteCandidate}
-                  onCloseMobile={closeMobile}
                 />
-              </SessionTreeBranch>
-
-              {sessionTree.projectGroups.length > 0 ? (
-                <SessionTreeBranch
-                  icon={Code2Icon}
-                  label="Coding"
-                  count={sessionTree.projectGroups.reduce(
-                    (count, group) => count + group.sessions.length,
-                    0,
-                  )}
-                >
-                  <div className="flex flex-col gap-2">
-                    {sessionTree.projectGroups.map((group) => (
-                      <SessionProjectBranch key={group.projectDir} group={group}>
-                        <SessionLeafList
-                          createLabel="New coding session"
-                          isCreatingSession={isCreatingSession}
-                          deletingSessionId={deletingSessionId}
-                          sessions={group.sessions}
-                          selectedSessionId={selectedSessionId}
-                          onCreateSession={() => {
-                            onCreateSession(group.projectDir);
-                            closeMobile();
-                          }}
-                          onSelectSession={onSelectSession}
-                          onRequestDeleteSession={setDeleteCandidate}
-                          onCloseMobile={closeMobile}
-                        />
-                      </SessionProjectBranch>
-                    ))}
-                  </div>
-                </SessionTreeBranch>
-              ) : null}
+              ))}
             </div>
-          </SidebarGroupContent>
-        </SidebarGroup>
+          ) : (
+            <SidebarEmptyText>No projects</SidebarEmptyText>
+          )}
+        </SidebarSessionSection>
+
+        <ConversationSessionGroup
+          sessions={sessionTree.general}
+          selectedSessionId={selectedSessionId}
+          open={conversationsOpen}
+          isCreatingSession={isCreatingSession}
+          deletingSessionId={deletingSessionId}
+          onOpenChange={setConversationsOpen}
+          onCreateSession={() => {
+            onCreateSession();
+            closeMobile();
+          }}
+          onSelectSession={(sessionId) => {
+            onSelectSession(sessionId);
+            closeMobile();
+          }}
+          onRequestDeleteSession={setDeleteCandidate}
+        />
       </SidebarContent>
-
-      <SidebarSeparator />
-
-      <SidebarFooter className="p-2">
-        <SidebarGroupLabel className="h-6 px-1">Navigation</SidebarGroupLabel>
-        <SidebarMenu className="grid grid-cols-2 gap-1">
-          {navigationItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activePage === item.page;
-
-            return (
-              <SidebarMenuItem key={item.href}>
-                <SidebarMenuButton
-                  asChild
-                  isActive={isActive}
-                  className="h-9 justify-center gap-1.5"
-                >
-                  <a
-                    href={item.href}
-                    aria-current={isActive ? "page" : undefined}
-                    onClick={closeMobile}
-                  >
-                    <Icon />
-                    <span>{item.label}</span>
-                  </a>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            );
-          })}
-        </SidebarMenu>
-      </SidebarFooter>
 
       <DeleteSessionDialog
         session={deleteCandidate}
@@ -302,169 +256,371 @@ function AppSidebarBody({
   );
 }
 
-function SessionTreeBranch({
-  icon: Icon,
+function SidebarSessionSection({
   label,
-  count,
+  open,
+  actions,
   children,
+  onOpenChange,
 }: {
-  icon: typeof MessageSquareIcon;
   label: string;
-  count: number;
+  open: boolean;
+  actions?: ReactNode;
   children: ReactNode;
+  onOpenChange: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(true);
-
   return (
-    <div
-      role="group"
-      className="min-w-0 rounded-lg border border-sidebar-border bg-sidebar"
-    >
-      <div className="flex h-9 items-center gap-2 px-2">
+    <SidebarGroup className="gap-1 p-0">
+      <div className="flex h-8 min-w-0 items-center gap-1">
         <Button
           type="button"
           variant="ghost"
-          size="icon-xs"
-          aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
+          size="sm"
           aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-          className="text-sidebar-foreground/55 hover:text-sidebar-foreground"
+          onClick={() => onOpenChange(!open)}
+          className="h-8 min-w-0 flex-1 justify-start px-2 text-base font-normal"
         >
-          <ChevronRightIcon
-            className={cn("transition-transform", open && "rotate-90")}
+          <span className="truncate">{label}</span>
+          <ChevronDownIcon
+            data-icon="inline-end"
+            className={cn("transition-transform", !open && "-rotate-90")}
           />
         </Button>
-        <Icon className="size-3.5 shrink-0 text-sidebar-foreground/60" />
-        <span className="min-w-0 flex-1 truncate text-xs font-medium text-sidebar-foreground/80">
-          {label}
-        </span>
-        <Badge variant="outline">{count}</Badge>
+        {actions ? <div className="flex items-center gap-1">{actions}</div> : null}
       </div>
       {open ? (
-        <div className="flex flex-col gap-2 p-1 pt-0">{children}</div>
+        <SidebarGroupContent className="pt-2">{children}</SidebarGroupContent>
       ) : null}
-    </div>
+    </SidebarGroup>
   );
 }
 
-function SessionProjectBranch({
-  group,
-  children,
+function NewCodingSessionMenu({
+  projectGroups,
+  disabled,
+  onCreateSession,
 }: {
-  group: SessionProjectGroup;
-  children: ReactNode;
+  projectGroups: SessionProjectGroup[];
+  disabled: boolean;
+  onCreateSession: (projectDir: string) => void;
 }) {
-  const [open, setOpen] = useState(true);
-
   return (
-    <div role="group" className="min-w-0 rounded-md bg-sidebar-accent/35">
-      <div className="flex min-h-10 items-center gap-2 px-2 py-1.5">
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
         <Button
           type="button"
           variant="ghost"
-          size="icon-xs"
-          aria-label={`${open ? "Collapse" : "Expand"} ${group.label}`}
-          aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
-          className="text-sidebar-foreground/55 hover:text-sidebar-foreground"
+          size="icon-sm"
+          aria-label="New coding session"
+          title="New coding session"
+          disabled={disabled || projectGroups.length === 0}
         >
-          <ChevronRightIcon
-            className={cn("transition-transform", open && "rotate-90")}
-          />
+          <FolderPlusIcon />
         </Button>
-        <FolderIcon className="size-3.5 shrink-0 text-sidebar-foreground/60" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-medium text-sidebar-foreground/80">
-            {group.label}
-          </div>
-          <div className="truncate text-[11px] text-sidebar-foreground/45">
-            {group.projectDir}
-          </div>
-        </div>
-        <Badge variant="secondary">{group.sessions.length}</Badge>
-      </div>
-      {open ? (
-        <div className="flex flex-col gap-1 p-1 pt-0">{children}</div>
-      ) : null}
-    </div>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuLabel>New project session</DropdownMenuLabel>
+        <DropdownMenuGroup>
+          {projectGroups.map((group) => (
+            <DropdownMenuItem
+              key={group.projectDir}
+              onSelect={() => onCreateSession(group.projectDir)}
+            >
+              <FolderIcon />
+              <span className="truncate">{group.label}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
-function SessionLeafList({
-  createLabel,
+function SidebarMoreMenu({
+  activePage,
+  onNavigate,
+}: {
+  activePage: AppPage;
+  onNavigate: (item: NavigationItem) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Sidebar actions"
+          title="Sidebar actions"
+        >
+          <MoreHorizontalIcon />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuLabel>Navigation</DropdownMenuLabel>
+        <DropdownMenuGroup>
+          {navigationItems.map((item) => {
+            const Icon = item.icon;
+
+            return (
+              <DropdownMenuItem
+                key={item.href}
+                aria-current={activePage === item.page ? "page" : undefined}
+                onSelect={() => onNavigate(item)}
+              >
+                <Icon />
+                <span>{item.label}</span>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ProjectSessionGroup({
+  group,
+  selectedSessionId,
   isCreatingSession,
   deletingSessionId,
-  sessions,
-  selectedSessionId,
   onCreateSession,
   onSelectSession,
   onRequestDeleteSession,
-  onCloseMobile,
 }: {
-  createLabel: string;
+  group: SessionProjectGroup;
+  selectedSessionId: string | null;
   isCreatingSession: boolean;
   deletingSessionId: string | null;
-  sessions: SessionInfo[];
-  selectedSessionId: string | null;
   onCreateSession: () => void;
   onSelectSession: (sessionId: string) => void;
   onRequestDeleteSession: (session: SessionInfo) => void;
-  onCloseMobile: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleSessions = expanded
+    ? group.sessions
+    : group.sessions.slice(0, PROJECT_VISIBLE_SESSION_COUNT);
+  const hiddenSessionCount = group.sessions.length - visibleSessions.length;
+
   return (
-    <SidebarMenu className="gap-1">
-      <SidebarMenuItem>
-        <SidebarMenuButton
+    <div className="min-w-0">
+      <div className="flex h-9 min-w-0 items-center gap-1">
+        <div
+          className="flex min-w-0 flex-1 items-center gap-2 px-2 text-sm font-medium"
+          title={group.projectDir}
+        >
+          <FolderIcon className="size-4 shrink-0 text-sidebar-foreground/75" />
+          <span className="truncate">{group.label}</span>
+        </div>
+        <Button
           type="button"
-          role="treeitem"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`New session in ${group.label}`}
+          title={`New session in ${group.label}`}
           disabled={isCreatingSession}
           onClick={onCreateSession}
-          className="h-8 justify-start text-sidebar-foreground/75"
         >
           <PlusIcon />
-          <span className="block max-w-full truncate font-medium">
-            {isCreatingSession ? "Creating session" : createLabel}
-          </span>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
+        </Button>
+      </div>
+
+      <SessionRows
+        className="pl-8"
+        sessions={visibleSessions}
+        selectedSessionId={selectedSessionId}
+        deletingSessionId={deletingSessionId}
+        onSelectSession={onSelectSession}
+        onRequestDeleteSession={onRequestDeleteSession}
+      />
+
+      {hiddenSessionCount > 0 ? (
+        <button
+          type="button"
+          className="h-8 px-8 text-left text-sm text-sidebar-foreground/45 hover:text-sidebar-foreground"
+          onClick={() => setExpanded(true)}
+        >
+          Show more
+        </button>
+      ) : expanded && group.sessions.length > PROJECT_VISIBLE_SESSION_COUNT ? (
+        <button
+          type="button"
+          className="h-8 px-8 text-left text-sm text-sidebar-foreground/45 hover:text-sidebar-foreground"
+          onClick={() => setExpanded(false)}
+        >
+          Show less
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ConversationSessionGroup({
+  sessions,
+  selectedSessionId,
+  open,
+  isCreatingSession,
+  deletingSessionId,
+  onOpenChange,
+  onCreateSession,
+  onSelectSession,
+  onRequestDeleteSession,
+}: {
+  sessions: SessionInfo[];
+  selectedSessionId: string | null;
+  open: boolean;
+  isCreatingSession: boolean;
+  deletingSessionId: string | null;
+  onOpenChange: (open: boolean) => void;
+  onCreateSession: () => void;
+  onSelectSession: (sessionId: string) => void;
+  onRequestDeleteSession: (session: SessionInfo) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleSessions = expanded
+    ? sessions
+    : sessions.slice(0, GENERAL_VISIBLE_SESSION_COUNT);
+  const hiddenSessionCount = sessions.length - visibleSessions.length;
+
+  return (
+    <SidebarSessionSection
+      label="Conversations"
+      open={open}
+      onOpenChange={onOpenChange}
+      actions={
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="New conversation"
+          title="New conversation"
+          disabled={isCreatingSession}
+          onClick={onCreateSession}
+        >
+          <PlusIcon />
+        </Button>
+      }
+    >
+        {visibleSessions.length > 0 ? (
+          <SessionRows
+            sessions={visibleSessions}
+            selectedSessionId={selectedSessionId}
+            deletingSessionId={deletingSessionId}
+            onSelectSession={onSelectSession}
+            onRequestDeleteSession={onRequestDeleteSession}
+          />
+        ) : (
+          <SidebarEmptyText>No chats</SidebarEmptyText>
+        )}
+
+        {hiddenSessionCount > 0 ? (
+          <button
+            type="button"
+            className="h-8 px-2 text-left text-sm text-sidebar-foreground/45 hover:text-sidebar-foreground"
+            onClick={() => setExpanded(true)}
+          >
+            Show more
+          </button>
+        ) : expanded && sessions.length > GENERAL_VISIBLE_SESSION_COUNT ? (
+          <button
+            type="button"
+            className="h-8 px-2 text-left text-sm text-sidebar-foreground/45 hover:text-sidebar-foreground"
+            onClick={() => setExpanded(false)}
+          >
+            Show less
+          </button>
+        ) : null}
+    </SidebarSessionSection>
+  );
+}
+
+function SessionRows({
+  className,
+  sessions,
+  selectedSessionId,
+  deletingSessionId,
+  onSelectSession,
+  onRequestDeleteSession,
+}: {
+  className?: string;
+  sessions: SessionInfo[];
+  selectedSessionId: string | null;
+  deletingSessionId: string | null;
+  onSelectSession: (sessionId: string) => void;
+  onRequestDeleteSession: (session: SessionInfo) => void;
+}) {
+  return (
+    <SidebarMenu className={cn("gap-0.5", className)}>
       {sessions.map((session) => (
-        <SidebarMenuItem key={session.session_id}>
-          <div className="group/session-row flex min-w-0 items-stretch gap-1 rounded-md">
-            <SidebarMenuButton
-              type="button"
-              size="lg"
-              role="treeitem"
-              aria-selected={session.session_id === selectedSessionId}
-              isActive={session.session_id === selectedSessionId}
-              onClick={() => {
-                onSelectSession(session.session_id);
-                onCloseMobile();
-              }}
-              className="h-12 flex-1 flex-col items-start justify-center gap-0.5 px-2 py-1.5"
-            >
-              <span className="block max-w-full truncate font-medium">
-                {sessionTitle(session)}
-              </span>
-              <span className="block max-w-full truncate text-xs font-normal text-sidebar-foreground/55">
-                {sessionSubtitle(session)}
-              </span>
-            </SidebarMenuButton>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`Delete ${sessionTitle(session)}`}
-              title="Delete session"
-              disabled={deletingSessionId !== null}
-              onClick={() => onRequestDeleteSession(session)}
-              className="mt-1 opacity-100 transition-opacity md:opacity-0 md:group-hover/session-row:opacity-100 md:focus-visible:opacity-100"
-            >
-              <Trash2Icon />
-            </Button>
-          </div>
-        </SidebarMenuItem>
+        <SessionRow
+          key={session.session_id}
+          session={session}
+          selected={session.session_id === selectedSessionId}
+          deletingSessionId={deletingSessionId}
+          onSelectSession={onSelectSession}
+          onRequestDeleteSession={onRequestDeleteSession}
+        />
       ))}
     </SidebarMenu>
+  );
+}
+
+function SessionRow({
+  session,
+  selected,
+  deletingSessionId,
+  onSelectSession,
+  onRequestDeleteSession,
+}: {
+  session: SessionInfo;
+  selected: boolean;
+  deletingSessionId: string | null;
+  onSelectSession: (sessionId: string) => void;
+  onRequestDeleteSession: (session: SessionInfo) => void;
+}) {
+  const title = sessionTitle(session);
+  const isDeleting = deletingSessionId === session.session_id;
+
+  return (
+    <SidebarMenuItem>
+      <div className="group/session-row relative min-w-0">
+        <SidebarMenuButton
+          type="button"
+          aria-selected={selected}
+          isActive={selected}
+          onClick={() => onSelectSession(session.session_id)}
+          className="h-8 gap-2 pr-8 pl-2 text-sidebar-foreground/85"
+        >
+          <span className="min-w-0 flex-1 truncate">{title}</span>
+          <span className="shrink-0 text-xs font-normal text-sidebar-foreground/45">
+            {relativeSessionTime(session)}
+          </span>
+        </SidebarMenuButton>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`Delete ${title}`}
+          title="Delete session"
+          disabled={deletingSessionId !== null}
+          onClick={() => onRequestDeleteSession(session)}
+          className={cn(
+            "absolute top-1 right-1 opacity-0 transition-opacity group-hover/session-row:opacity-100 focus-visible:opacity-100",
+            isDeleting && "opacity-100",
+          )}
+        >
+          <Trash2Icon />
+        </Button>
+      </div>
+    </SidebarMenuItem>
+  );
+}
+
+function SidebarEmptyText({ children }: { children: ReactNode }) {
+  return (
+    <div className="px-2 py-3 text-sm text-sidebar-foreground/35">
+      {children}
+    </div>
   );
 }
 
@@ -516,8 +672,31 @@ function sessionTitle(session: SessionInfo) {
   return session.title?.trim() || "Untitled session";
 }
 
-function sessionSubtitle(session: SessionInfo) {
-  return shortSessionId(session.session_id);
+function relativeSessionTime(session: SessionInfo) {
+  const timestamp = session.last_seen_at_ms ?? session.started_at_ms;
+  const elapsedMs = Math.max(0, Date.now() - timestamp);
+  const minuteMs = 60_000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+  const monthMs = 30 * dayMs;
+  const yearMs = 365 * dayMs;
+
+  if (elapsedMs < minuteMs) {
+    return "now";
+  }
+  if (elapsedMs < hourMs) {
+    return `${Math.floor(elapsedMs / minuteMs)} min`;
+  }
+  if (elapsedMs < dayMs) {
+    return `${Math.floor(elapsedMs / hourMs)} hr`;
+  }
+  if (elapsedMs < monthMs) {
+    return `${Math.floor(elapsedMs / dayMs)} d`;
+  }
+  if (elapsedMs < yearMs) {
+    return `${Math.floor(elapsedMs / monthMs)} mo`;
+  }
+  return `${Math.floor(elapsedMs / yearMs)} yr`;
 }
 
 function buildSessionTree(sessions: SessionInfo[]): SessionTree {
@@ -541,7 +720,14 @@ function buildSessionTree(sessions: SessionInfo[]): SessionTree {
       label: projectLabel(projectDir),
       sessions: sortSessions(projectSessions),
     }))
-    .sort((a, b) => a.projectDir.localeCompare(b.projectDir));
+    .sort((a, b) => {
+      const recencyOrder =
+        latestSessionTime(b.sessions) - latestSessionTime(a.sessions);
+      if (recencyOrder !== 0) {
+        return recencyOrder;
+      }
+      return a.label.localeCompare(b.label);
+    });
 
   return {
     general,
@@ -551,6 +737,11 @@ function buildSessionTree(sessions: SessionInfo[]): SessionTree {
 
 function sortSessions(sessions: SessionInfo[]) {
   return [...sessions].sort((a, b) => {
+    const recencyOrder = sessionTime(b) - sessionTime(a);
+    if (recencyOrder !== 0) {
+      return recencyOrder;
+    }
+
     const titleOrder = sessionTitle(a)
       .toLocaleLowerCase()
       .localeCompare(sessionTitle(b).toLocaleLowerCase());
@@ -558,16 +749,23 @@ function sortSessions(sessions: SessionInfo[]) {
       return titleOrder;
     }
 
-    if (a.started_at_ms !== b.started_at_ms) {
-      return a.started_at_ms - b.started_at_ms;
-    }
-
     return a.session_id.localeCompare(b.session_id);
   });
 }
 
+function latestSessionTime(sessions: SessionInfo[]) {
+  return sessions.reduce(
+    (latest, session) => Math.max(latest, sessionTime(session)),
+    0,
+  );
+}
+
+function sessionTime(session: SessionInfo) {
+  return session.last_seen_at_ms ?? session.started_at_ms;
+}
+
 function projectLabel(projectDir: string) {
-  const parts = projectDir.split("/").filter(Boolean);
+  const parts = projectDir.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? projectDir;
 }
 
