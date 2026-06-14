@@ -1256,6 +1256,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn coding_search_code_tool_schema_exposes_rg_aligned_options() {
+        let isolated = IsolatedTestContext::new().await;
+
+        let spec = build_runtime_tool_specs(&isolated.context)
+            .into_iter()
+            .find(|tool| tool.name == "coding__search_code")
+            .expect("coding search code tool");
+        let AgentToolInputSpec::JsonSchema { schema } = spec.input_spec else {
+            panic!("coding_search_code should use json schema");
+        };
+
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or_else(|| panic!("schema should have object properties: {schema:#}"));
+        for key in [
+            "query",
+            "mode",
+            "path",
+            "include",
+            "exclude",
+            "types",
+            "type_not",
+            "case",
+            "word",
+            "line",
+            "hidden",
+            "respect_ignore",
+            "follow",
+            "limit",
+        ] {
+            assert!(properties.contains_key(key), "missing {key}: {schema:#}");
+        }
+        assert!(
+            !properties.contains_key("case_mode"),
+            "schema should expose `case`, not internal field name: {schema:#}"
+        );
+        for key in ["include", "exclude", "types", "type_not"] {
+            assert_eq!(
+                properties
+                    .get(key)
+                    .and_then(|value| value.get("type"))
+                    .and_then(serde_json::Value::as_str),
+                Some("array"),
+                "{key} should be an array: {schema:#}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn structured_edit_tool_schemas_do_not_use_schema_composition() {
         let isolated = IsolatedTestContext::new().await;
         let specs = build_runtime_tool_specs(&isolated.context);

@@ -9,6 +9,37 @@ stable read handles from search results; the model copies those handles into
 
 `search_code` is the normal entry point for locating code. It accepts a content
 query plus optional narrowing fields such as `path`, `include`, and `limit`.
+The query defaults to literal matching with smart case, so code fragments such
+as `matching_commands(` do not need escaping. Use `mode: "regex"` only when a
+regular expression is intended.
+
+Common options mirror the useful parts of `rg`:
+
+```json
+{
+  "query": "matching_commands(",
+  "mode": "literal",
+  "path": "src/dashboard",
+  "include": ["*.rs"],
+  "exclude": ["target/**"],
+  "types": ["rust"],
+  "case": "smart",
+  "word": false,
+  "line": false,
+  "hidden": false,
+  "respect_ignore": true,
+  "follow": false,
+  "limit": 20
+}
+```
+
+- `mode: "literal" | "regex"` corresponds to `rg -F` versus regex search.
+- `case: "sensitive" | "insensitive" | "smart"` corresponds to `rg -s`, `rg -i`, and `rg -S`.
+- `word` and `line` correspond to `rg -w` and `rg -x`; `line` overrides `word`.
+- `path` restricts the searched subtree, like passing a path to `rg`.
+- `include` and `exclude` are glob arrays; exclusions are separate instead of `!glob`.
+- `types` and `type_not` filter by SCOPE language type or known extension.
+- `hidden`, `respect_ignore`, and `follow` correspond to `rg --hidden`, default ignore behavior, and `rg -L`.
 
 Search returns compact read targets:
 

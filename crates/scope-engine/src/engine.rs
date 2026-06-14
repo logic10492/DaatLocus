@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::analyzer::Analyzer;
 use crate::api::*;
+use crate::language::LanguageRegistry;
 use crate::lsp::TsJsConfig;
 use crate::lsp::{
     GoplsConfig, JdtlsConfig, LspAnalyzer, LspServerConfig, PyrightConfig, RustAnalyzerConfig,
@@ -13,7 +14,7 @@ use crate::state::{PropagationState, ReadHandleRegistry, ReadHandleTarget};
 use crate::treesitter::TreeSitterAnalyzer;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::{DirEntry, WalkBuilder};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use std::sync::Mutex;
 
 const DEFAULT_SEARCH_LIMIT: usize = 100;
@@ -214,14 +215,8 @@ pub fn search_code(
 
     let limit = normalize_search_limit(params.limit);
     let target = project_relative_arg(project_root, params.path.as_deref())?;
-    let targets = search_project_targets(
-        project_root,
-        &params.query,
-        target.as_deref(),
-        params.include.as_deref(),
-        limit,
-        read_handles,
-    )?;
+    let targets =
+        search_project_targets(project_root, params, target.as_deref(), limit, read_handles)?;
     Ok(SearchCodeResponse { targets })
 }
 
@@ -269,24 +264,21 @@ fn normalize_search_limit(limit: Option<usize>) -> usize {
 
 fn search_project_targets(
     project_root: &Path,
-    pattern: &str,
+    params: &SearchCodeRequest,
     target: Option<&str>,
-    include: Option<&str>,
     limit: usize,
     read_handles: &mut ReadHandleRegistry,
 ) -> Result<Vec<SearchTarget>, String> {
-    let regex = Regex::new(pattern).map_err(|e| format!("regex error: {e}"))?;
-    let include = build_optional_glob_set(include)?;
+    let regex = build_search_regex(params)?;
+    let filters = SearchFileFilters::from_request(params)?;
     let analyzer = TreeSitterAnalyzer::new();
     let mut targets = Vec::new();
     let mut seen_labels = std::collections::HashSet::new();
 
-    for entry in project_files(project_root, target)? {
+    for entry in project_files(project_root, target, &filters)? {
         let path = entry.path();
         let relative = relative_file_path(project_root, path);
-        if let Some(include) = include.as_ref()
-            && !include.is_match(&relative)
-        {
+        if !filters.matches(&relative, path) {
             continue;
         }
 
@@ -313,6 +305,34 @@ fn search_project_targets(
     Ok(targets)
 }
 
+fn build_search_regex(params: &SearchCodeRequest) -> Result<Regex, String> {
+    let mut pattern = match params.mode {
+        SearchMode::Literal => regex::escape(&params.query),
+        SearchMode::Regex => params.query.clone(),
+    };
+    if params.line {
+        pattern = format!("^(?:{pattern})$");
+    } else if params.word {
+        pattern = format!(r"\b(?:{pattern})\b");
+    }
+
+    let case_insensitive = match params.case_mode {
+        SearchCase::Sensitive => false,
+        SearchCase::Insensitive => true,
+        SearchCase::Smart => !params.query.chars().any(char::is_uppercase),
+    };
+
+    RegexBuilder::new(&pattern)
+        .case_insensitive(case_insensitive)
+        .build()
+        .map_err(|err| match params.mode {
+            SearchMode::Literal => format!("search pattern error: {err}"),
+            SearchMode::Regex => {
+                format!("search regex error: {err}; use mode=\"literal\" for code fragments")
+            }
+        })
+}
+
 fn search_target_for_match(
     analyzer: &TreeSitterAnalyzer,
     project_root: &Path,
@@ -336,7 +356,66 @@ fn search_target_for_match(
     )
 }
 
-fn project_files(project_root: &Path, target: Option<&str>) -> Result<Vec<DirEntry>, String> {
+struct SearchFileFilters {
+    include: Option<GlobSet>,
+    exclude: Option<GlobSet>,
+    type_include_exts: Option<HashSet<String>>,
+    type_exclude_exts: HashSet<String>,
+    hidden: bool,
+    respect_ignore: bool,
+    follow: bool,
+}
+
+impl SearchFileFilters {
+    fn from_request(params: &SearchCodeRequest) -> Result<Self, String> {
+        Ok(Self {
+            include: build_optional_glob_set(&params.include)?,
+            exclude: build_optional_glob_set(&params.exclude)?,
+            type_include_exts: build_optional_type_exts(&params.types)?,
+            type_exclude_exts: build_optional_type_exts(&params.type_not)?.unwrap_or_default(),
+            hidden: params.hidden,
+            respect_ignore: params.respect_ignore,
+            follow: params.follow,
+        })
+    }
+
+    fn matches(&self, relative: &str, path: &Path) -> bool {
+        if let Some(include) = self.include.as_ref()
+            && !include.is_match(relative)
+        {
+            return false;
+        }
+        if let Some(exclude) = self.exclude.as_ref()
+            && exclude.is_match(relative)
+        {
+            return false;
+        }
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase());
+        if let Some(type_include_exts) = self.type_include_exts.as_ref()
+            && !ext
+                .as_ref()
+                .is_some_and(|ext| type_include_exts.contains(ext))
+        {
+            return false;
+        }
+        if ext
+            .as_ref()
+            .is_some_and(|ext| self.type_exclude_exts.contains(ext))
+        {
+            return false;
+        }
+        true
+    }
+}
+
+fn project_files(
+    project_root: &Path,
+    target: Option<&str>,
+    filters: &SearchFileFilters,
+) -> Result<Vec<DirEntry>, String> {
     let root = project_root.to_path_buf();
     let walk_root = match target {
         Some(target) => root.join(target),
@@ -344,12 +423,21 @@ fn project_files(project_root: &Path, target: Option<&str>) -> Result<Vec<DirEnt
     };
 
     let mut entries = Vec::new();
-    for entry in WalkBuilder::new(walk_root)
-        .standard_filters(false)
-        .hidden(false)
-        .parents(false)
-        .build()
-    {
+    let mut builder = WalkBuilder::new(walk_root);
+    builder
+        .hidden(!filters.hidden)
+        .follow_links(filters.follow)
+        .require_git(true);
+    if !filters.respect_ignore {
+        builder
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .ignore(false)
+            .parents(false);
+    }
+
+    for entry in builder.build() {
         let entry = entry.map_err(|e| format!("failed to walk project files: {e}"))?;
         if !entry
             .file_type()
@@ -366,20 +454,70 @@ fn project_files(project_root: &Path, target: Option<&str>) -> Result<Vec<DirEnt
     Ok(entries)
 }
 
-fn build_optional_glob_set(pattern: Option<&str>) -> Result<Option<GlobSet>, String> {
-    let Some(pattern) = pattern.map(str::trim).filter(|pattern| !pattern.is_empty()) else {
+fn build_optional_glob_set(patterns: &[String]) -> Result<Option<GlobSet>, String> {
+    let patterns = patterns
+        .iter()
+        .map(|pattern| pattern.trim())
+        .filter(|pattern| !pattern.is_empty())
+        .collect::<Vec<_>>();
+    if patterns.is_empty() {
         return Ok(None);
-    };
-    build_glob_set(pattern).map(Some)
+    }
+    build_glob_set(&patterns).map(Some)
 }
 
-fn build_glob_set(pattern: &str) -> Result<GlobSet, String> {
+fn build_glob_set(patterns: &[&str]) -> Result<GlobSet, String> {
     let mut builder = GlobSetBuilder::new();
-    builder.add(Glob::new(pattern).map_err(|e| format!("glob error: {e}"))?);
-    if !pattern.contains('/') && !pattern.contains('\\') {
-        builder.add(Glob::new(&format!("**/{pattern}")).map_err(|e| format!("glob error: {e}"))?);
+    for pattern in patterns {
+        builder.add(Glob::new(pattern).map_err(|e| format!("glob error: {e}"))?);
+        if !pattern.contains('/') && !pattern.contains('\\') {
+            builder
+                .add(Glob::new(&format!("**/{pattern}")).map_err(|e| format!("glob error: {e}"))?);
+        }
     }
     builder.build().map_err(|e| format!("glob error: {e}"))
+}
+
+fn build_optional_type_exts(types: &[String]) -> Result<Option<HashSet<String>>, String> {
+    let requested = types
+        .iter()
+        .map(|type_name| {
+            type_name
+                .trim()
+                .trim_start_matches('.')
+                .to_ascii_lowercase()
+        })
+        .filter(|type_name| !type_name.is_empty())
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return Ok(None);
+    }
+
+    let registry = LanguageRegistry::new();
+    let languages = registry.list_languages();
+    let supported = languages
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut exts = HashSet::new();
+    for requested_type in requested {
+        if let Some((_, language_exts)) = languages
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&requested_type))
+        {
+            exts.extend(language_exts.iter().map(|ext| ext.to_ascii_lowercase()));
+            continue;
+        }
+        if registry.get(&requested_type).is_some() {
+            exts.insert(requested_type);
+            continue;
+        }
+        return Err(format!(
+            "unknown search type `{requested_type}`; supported SCOPE types: {supported}"
+        ));
+    }
+    Ok(Some(exts))
 }
 
 fn relative_file_path(project_root: &Path, path: &Path) -> String {
@@ -656,8 +794,8 @@ mod tests {
             &SearchCodeRequest {
                 query: "needle".to_string(),
                 path: Some("src".to_string()),
-                include: Some("*.rs".to_string()),
-                limit: None,
+                include: vec!["*.rs".to_string()],
+                ..SearchCodeRequest::default()
             },
             &mut handles,
         )
@@ -686,6 +824,241 @@ mod tests {
     }
 
     #[test]
+    fn search_code_defaults_to_literal_smart_case() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn matching_commands() {}\nlet Needle = true;\n",
+        )
+        .unwrap();
+
+        let mut handles = ReadHandleRegistry::new();
+        let response = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "matching_commands(".to_string(),
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert_eq!(response.targets.len(), 1);
+        assert_eq!(
+            response.targets[0].label,
+            "lib.rs::fn matching_commands #L1-L1"
+        );
+
+        let response = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert_eq!(response.targets.len(), 1);
+    }
+
+    #[test]
+    fn search_code_supports_regex_mode_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "let needle = true;\n").unwrap();
+
+        let mut handles = ReadHandleRegistry::new();
+        let literal_response = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: r"needle\s+=\s+true".to_string(),
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert!(literal_response.targets.is_empty());
+
+        let regex_response = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: r"needle\s+=\s+true".to_string(),
+                mode: SearchMode::Regex,
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert_eq!(regex_response.targets.len(), 1);
+    }
+
+    #[test]
+    fn search_code_honors_case_word_and_line_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lower.rs"), "let needle = true;\n").unwrap();
+        std::fs::write(dir.path().join("upper.rs"), "let Needle = true;\n").unwrap();
+        std::fs::write(dir.path().join("plural.rs"), "let needles = true;\n").unwrap();
+        std::fs::write(dir.path().join("line.rs"), "needle extra\nneedle\n").unwrap();
+
+        let mut handles = ReadHandleRegistry::new();
+        let smart_lower = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert_eq!(smart_lower.targets.len(), 4);
+
+        let smart_upper = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "Needle".to_string(),
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert_eq!(
+            smart_upper
+                .targets
+                .iter()
+                .map(|target| target.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["upper.rs#L1-L1"]
+        );
+
+        let word = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                word: true,
+                case_mode: SearchCase::Sensitive,
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert!(
+            word.targets
+                .iter()
+                .all(|target| !target.label.starts_with("plural.rs")),
+            "word search should not match plural.rs: {:?}",
+            word.targets
+        );
+
+        let line = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                line: true,
+                case_mode: SearchCase::Sensitive,
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert_eq!(
+            line.targets
+                .iter()
+                .map(|target| target.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["line.rs#L1-L2"]
+        );
+    }
+
+    #[test]
+    fn search_code_honors_path_glob_type_hidden_and_ignore_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/generated")).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "ignored.rs\n").unwrap();
+        std::fs::write(dir.path().join("ignored.rs"), "let needle = true;\n").unwrap();
+        std::fs::write(dir.path().join(".hidden.rs"), "let needle = true;\n").unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "let needle = true;\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/generated/mod.rs"),
+            "let needle = true;\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/main.ts"), "let needle = true;\n").unwrap();
+
+        let mut handles = ReadHandleRegistry::new();
+        let filtered = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                path: Some("src".to_string()),
+                include: vec!["*.rs".to_string()],
+                exclude: vec!["src/generated/**".to_string()],
+                types: vec!["rust".to_string()],
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert_eq!(
+            filtered
+                .targets
+                .iter()
+                .map(|target| target.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/lib.rs#L1-L1"]
+        );
+
+        let default_visibility = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                path: None,
+                include: vec!["*.rs".to_string()],
+                exclude: vec!["src/**".to_string()],
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert!(default_visibility.targets.is_empty());
+
+        let unrestricted_visibility = search_code(
+            dir.path(),
+            &SearchCodeRequest {
+                query: "needle".to_string(),
+                path: None,
+                include: vec!["*.rs".to_string()],
+                exclude: vec!["src/**".to_string()],
+                hidden: true,
+                respect_ignore: false,
+                ..SearchCodeRequest::default()
+            },
+            &mut handles,
+        )
+        .unwrap();
+        assert_eq!(
+            unrestricted_visibility
+                .targets
+                .iter()
+                .map(|target| target.label.as_str())
+                .collect::<Vec<_>>(),
+            vec![".hidden.rs#L1-L1", "ignored.rs#L1-L1"]
+        );
+    }
+
+    #[test]
+    fn search_code_request_accepts_legacy_single_include_glob() {
+        let value = serde_json::json!({
+            "query": "needle",
+            "include": "*.rs"
+        });
+
+        let request: SearchCodeRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(request.include, vec!["*.rs".to_string()]);
+        assert_eq!(request.mode, SearchMode::Literal);
+        assert_eq!(request.case_mode, SearchCase::Smart);
+        assert!(request.respect_ignore);
+    }
+
+    #[test]
     fn search_code_honors_explicit_limit() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -699,9 +1072,8 @@ mod tests {
             dir.path(),
             &SearchCodeRequest {
                 query: "needle".to_string(),
-                path: None,
-                include: None,
                 limit: Some(2),
+                ..SearchCodeRequest::default()
             },
             &mut handles,
         )
@@ -723,9 +1095,8 @@ mod tests {
             dir.path(),
             &SearchCodeRequest {
                 query: "needle".to_string(),
-                path: None,
-                include: None,
                 limit: Some(0),
+                ..SearchCodeRequest::default()
             },
             &mut handles,
         )
@@ -744,9 +1115,7 @@ mod tests {
             dir.path(),
             &SearchCodeRequest {
                 query: "std::fmt".to_string(),
-                path: None,
-                include: None,
-                limit: None,
+                ..SearchCodeRequest::default()
             },
             &mut handles,
         )
@@ -771,9 +1140,7 @@ mod tests {
             dir.path(),
             &SearchCodeRequest {
                 query: "second".to_string(),
-                path: None,
-                include: None,
-                limit: None,
+                ..SearchCodeRequest::default()
             },
             &mut handles,
         )

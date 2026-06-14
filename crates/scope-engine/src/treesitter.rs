@@ -20,7 +20,8 @@ impl SymbolMatch {
             .strip_prefix(project_root)
             .ok()
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+            .unwrap_or_else(|| file_path.to_string_lossy().to_string())
+            .replace('\\', "/");
 
         format!(
             "{}::{}{} #L{}-L{}",

@@ -45,13 +45,7 @@ pub struct CodingReadCodeArgs {
     pub ref_handle: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct CodingSearchCodeArgs {
-    pub query: String,
-    pub path: Option<String>,
-    pub include: Option<String>,
-    pub limit: Option<usize>,
-}
+type CodingSearchCodeArgs = scope_engine::api::SearchCodeRequest;
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct CodingEditCodeArgs {
@@ -775,7 +769,7 @@ impl App for CodingApp {
             AppToolSpec {
                 name: "search_code".to_string(),
                 description: "Search source content and return stable read handles plus target labels.".to_string(),
-                input_schema: serde_json::to_value(schema_for!(CodingSearchCodeArgs)).unwrap(),
+                input_schema: serde_json::to_value(schema_for!(scope_engine::api::SearchCodeRequest)).unwrap(),
             },
             AppToolSpec {
                 name: "read_code".to_string(),
@@ -865,16 +859,26 @@ impl App for CodingApp {
             "search_code" => {
                 self.require_project()?;
                 let args: CodingSearchCodeArgs = parse_coding_tool_args(call)?;
-                let result = self.scope.search_code(
-                    &args.query,
-                    args.path.as_deref(),
-                    args.include.as_deref(),
-                    args.limit,
-                )?;
+                let result = self.scope.search_code(args.clone())?;
                 self.last_action = Some(format!("searched {}", args.query));
                 let mut detail_lines = Vec::new();
-                if let Some(include) = args.include.as_deref() {
-                    detail_lines.push(format!("include {}", summarize_coding_inline_text(include)));
+                if !args.include.is_empty() {
+                    detail_lines.push(format!(
+                        "include {}",
+                        summarize_coding_inline_text(&args.include.join(", "))
+                    ));
+                }
+                if !args.exclude.is_empty() {
+                    detail_lines.push(format!(
+                        "exclude {}",
+                        summarize_coding_inline_text(&args.exclude.join(", "))
+                    ));
+                }
+                if !args.types.is_empty() {
+                    detail_lines.push(format!(
+                        "types {}",
+                        summarize_coding_inline_text(&args.types.join(", "))
+                    ));
                 }
                 let model_content = format_search_targets_for_model(&result.targets);
                 let mut output = AppToolExecutionResult {

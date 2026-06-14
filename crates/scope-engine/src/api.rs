@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 // ── Domain types ────────────────────────────────────────────
 
@@ -45,12 +45,105 @@ pub struct SearchTarget {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    Literal,
+    Regex,
+}
+
+impl Default for SearchMode {
+    fn default() -> Self {
+        Self::Literal
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchCase {
+    Sensitive,
+    Insensitive,
+    Smart,
+}
+
+impl Default for SearchCase {
+    fn default() -> Self {
+        Self::Smart
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct SearchCodeRequest {
     pub query: String,
+    #[serde(default)]
+    pub mode: SearchMode,
     pub path: Option<String>,
-    pub include: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
+    pub include: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
+    pub exclude: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
+    pub types: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_list")]
+    pub type_not: Vec<String>,
+    #[serde(default, rename = "case")]
+    pub case_mode: SearchCase,
+    #[serde(default)]
+    pub word: bool,
+    #[serde(default)]
+    pub line: bool,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default = "default_respect_ignore")]
+    pub respect_ignore: bool,
+    #[serde(default)]
+    pub follow: bool,
     pub limit: Option<usize>,
+}
+
+impl Default for SearchCodeRequest {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            mode: SearchMode::default(),
+            path: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            types: Vec::new(),
+            type_not: Vec::new(),
+            case_mode: SearchCase::default(),
+            word: false,
+            line: false,
+            hidden: false,
+            respect_ignore: true,
+            follow: false,
+            limit: None,
+        }
+    }
+}
+
+fn default_respect_ignore() -> bool {
+    true
+}
+
+fn deserialize_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringList {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    let Some(value) = Option::<StringList>::deserialize(deserializer)? else {
+        return Ok(Vec::new());
+    };
+    Ok(match value {
+        StringList::One(value) => vec![value],
+        StringList::Many(values) => values,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]

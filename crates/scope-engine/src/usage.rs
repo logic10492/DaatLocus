@@ -12,9 +12,9 @@ pub fn protocol_schema() -> Vec<ScopeProtocolItemSchema> {
     vec![
         ScopeProtocolItemSchema {
             item: "search_code".to_string(),
-            syntax: r#"{"query":"content","path":"src","include":"*.rs","limit":20}"#
+            syntax: r#"{"query":"matching_commands(","mode":"literal","path":"src/dashboard","include":["*.rs"],"exclude":["target/**"],"types":["rust"],"case":"smart","word":false,"line":false,"hidden":false,"respect_ignore":true,"follow":false,"limit":20}"#
                 .to_string(),
-            notes: "Searches source content and returns stable read handles plus canonical target labels."
+            notes: "Searches source content and returns stable read handles plus canonical target labels. Query defaults to literal matching with smart case; use mode:\"regex\" only for regular expressions."
                 .to_string(),
         },
         ScopeProtocolItemSchema {

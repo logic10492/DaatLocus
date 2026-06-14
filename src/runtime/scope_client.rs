@@ -122,29 +122,14 @@ impl ScopeClient {
 
     /// Search code and return stable read handles.
     #[allow(dead_code)]
-    pub fn search_code(
-        &self,
-        query: &str,
-        path: Option<&str>,
-        include: Option<&str>,
-        limit: Option<usize>,
-    ) -> Result<api::SearchCodeResponse> {
+    pub fn search_code(&self, request: api::SearchCodeRequest) -> Result<api::SearchCodeResponse> {
         let root = self.require_project_root()?;
         let mut handles = self
             .read_handles
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        engine::search_code(
-            root,
-            &api::SearchCodeRequest {
-                query: query.to_string(),
-                path: path.map(str::to_string),
-                include: include.map(str::to_string),
-                limit,
-            },
-            &mut handles,
-        )
-        .map_err(|err| miette!("scope-engine search_code failed: {err}"))
+        engine::search_code(root, &request, &mut handles)
+            .map_err(|err| miette!("scope-engine search_code failed: {err}"))
     }
 
     /// Apply structured edits via scope-engine.
