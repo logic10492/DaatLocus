@@ -9,38 +9,55 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
+  type ReactNode,
   type RefObject,
   type UIEvent,
 } from "react";
 
-import { AgentStatusAnimation } from "@/components/agent-status-animation";
 import {
   ArrowDownIcon,
   AlertTriangleIcon,
   CheckIcon,
+  ChevronRightIcon,
   ClipboardIcon,
   CommandIcon,
   ImagePlusIcon,
   InfoIcon,
-  Loader2Icon,
   SendHorizontalIcon,
   XIcon,
 } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   CollapsibleTrigger,
   useCollapsibleState,
 } from "@/components/ui/collapsible";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupTextarea,
+} from "@/components/ui/input-group";
+import { Separator } from "@/components/ui/separator";
+import { Spinner } from "@/components/ui/spinner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   fetchDashboardActivityHistory,
   fetchSettingsSummary,
   getDashboardAttachmentUrl,
+  runDashboardAction,
   runDashboardCommand,
+  type DashboardAction,
+  type DashboardActionResult,
   type DashboardActivityHistoryPage,
   type DashboardCommandAttachment,
-  type DashboardPendingAccessRequest,
   type DashboardSnapshot,
   type ActivityCellVariant,
   type WebActivityBlock,
@@ -54,15 +71,14 @@ import { useDashboardSnapshot } from "@/hooks/use-dashboard-snapshot";
 import { cn } from "@/lib/utils";
 export { StatusPage } from "@/components/status-dashboard-page";
 
-const SUMMARY_TYPE_INTERVAL_MS = 28;
 const AGENT_CHAT_HISTORY_PAGE_LIMIT = 80;
-const AGENT_CHAT_PREVIEW_MAX_VISIBLE_BUBBLES = 24;
 const AGENT_CHAT_MESSAGE_LINE_LIMIT = 5;
 const AGENT_CHAT_ACTIVITY_BLOCK_LINE_LIMIT = 12;
 const AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT = Number.MAX_SAFE_INTEGER;
 const AGENT_CHAT_PLAN_STEP_LIMIT = 8;
 const AGENT_CHAT_TERMINAL_OUTPUT_HEAD_LINES = 4;
 const AGENT_CHAT_TERMINAL_OUTPUT_TAIL_LINES = 4;
+const AGENT_CHAT_EXPLORED_CALL_LIMIT = 12;
 const AGENT_CHAT_PATCH_FILE_LIMIT = 4;
 const AGENT_CHAT_PATCH_DIFF_LINE_LIMIT = 18;
 const AGENT_CHAT_TELEGRAM_DETAIL_LIMIT = 6;
@@ -77,28 +93,29 @@ const AGENT_CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const AGENT_CHAT_INLINE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 const AGENT_CHAT_COMPOSER_DEFAULT_HEIGHT_PX = 60;
 const AGENT_CHAT_COMPOSER_BOTTOM_GAP_PX = 16;
-const AGENT_CHAT_PREVIEW_NOTICE_VISIBLE_MS = 3000;
-const AGENT_CHAT_PREVIEW_NOTICE_FADE_MS = 300;
-export function AgentPage({ sessionId }: { sessionId: string }) {
-  const { isLoading, loadError, snapshot } = useDashboardSnapshot(sessionId);
+export function AgentPage({
+  sessionId,
+  mockSnapshot,
+}: {
+  sessionId: string;
+  mockSnapshot?: DashboardSnapshot;
+}) {
+  const { isLoading, loadError, snapshot } = useDashboardSnapshot(sessionId, {
+    disabled: Boolean(mockSnapshot),
+    initialSnapshot: mockSnapshot ?? null,
+  });
   const chatPanelRef = useRef<HTMLDivElement>(null);
   const [chatComposerHeight, setChatComposerHeight] = useState(
     AGENT_CHAT_COMPOSER_DEFAULT_HEIGHT_PX,
   );
-  const [isChatFocused, setIsChatFocused] = useState(false);
-  const [chatPreviewNotice, setChatPreviewNotice] = useState<string | null>(
-    null,
-  );
-  const [isChatPreviewNoticeVisible, setIsChatPreviewNoticeVisible] =
-    useState(false);
-  const chatPreviewNoticeFrameRef = useRef<number | undefined>(undefined);
-  const chatPreviewNoticeHideTimeoutRef = useRef<number | undefined>(undefined);
-  const chatPreviewNoticeClearTimeoutRef = useRef<number | undefined>(
-    undefined,
-  );
   const [supportsVision, setSupportsVision] = useState(true);
 
   useEffect(() => {
+    if (mockSnapshot) {
+      setSupportsVision(true);
+      return;
+    }
+
     const controller = new AbortController();
     void (async () => {
       try {
@@ -114,7 +131,7 @@ export function AgentPage({ sessionId }: { sessionId: string }) {
       }
     })();
     return () => controller.abort();
-  }, []);
+  }, [mockSnapshot]);
 
   const agentStatus = deriveAgentStatus({
     loadError,
@@ -122,123 +139,28 @@ export function AgentPage({ sessionId }: { sessionId: string }) {
     snapshot,
   });
   const summaryText = derivePlanSummaryText(snapshot);
-  const { isTyping, text: typedSummaryText } = useTypewriterText(summaryText);
-  const clearChatPreviewNoticeSchedule = useCallback(() => {
-    if (chatPreviewNoticeFrameRef.current !== undefined) {
-      window.cancelAnimationFrame(chatPreviewNoticeFrameRef.current);
-      chatPreviewNoticeFrameRef.current = undefined;
-    }
-
-    if (chatPreviewNoticeHideTimeoutRef.current !== undefined) {
-      window.clearTimeout(chatPreviewNoticeHideTimeoutRef.current);
-      chatPreviewNoticeHideTimeoutRef.current = undefined;
-    }
-
-    if (chatPreviewNoticeClearTimeoutRef.current !== undefined) {
-      window.clearTimeout(chatPreviewNoticeClearTimeoutRef.current);
-      chatPreviewNoticeClearTimeoutRef.current = undefined;
-    }
-  }, []);
-
-  useEffect(() => {
-    return clearChatPreviewNoticeSchedule;
-  }, [clearChatPreviewNoticeSchedule]);
-
-  const handleAgentChatSendResult = useCallback(
-    (resultText: string) => {
-      clearChatPreviewNoticeSchedule();
-      setChatPreviewNotice(resultText);
-      setIsChatPreviewNoticeVisible(false);
-
-      chatPreviewNoticeFrameRef.current = window.requestAnimationFrame(() => {
-        setIsChatPreviewNoticeVisible(true);
-        chatPreviewNoticeFrameRef.current = undefined;
-      });
-
-      chatPreviewNoticeHideTimeoutRef.current = window.setTimeout(() => {
-        setIsChatPreviewNoticeVisible(false);
-        chatPreviewNoticeHideTimeoutRef.current = undefined;
-        chatPreviewNoticeClearTimeoutRef.current = window.setTimeout(() => {
-          setChatPreviewNotice(null);
-          chatPreviewNoticeClearTimeoutRef.current = undefined;
-        }, AGENT_CHAT_PREVIEW_NOTICE_FADE_MS);
-      }, AGENT_CHAT_PREVIEW_NOTICE_VISIBLE_MS);
-    },
-    [clearChatPreviewNoticeSchedule],
-  );
 
   return (
     <section
       id="agent"
       aria-label="Agent"
-      className="relative flex min-h-screen w-full items-center justify-center overflow-hidden px-6 py-10"
+      className="relative flex h-screen min-h-screen w-full max-w-full flex-col overflow-hidden bg-background"
     >
       <AgentChatBubbles
         sessionId={sessionId}
         snapshot={snapshot}
-        isFocused={isChatFocused}
         panelRef={chatPanelRef}
         composerHeight={chatComposerHeight}
       />
-      <div className="relative z-10 flex flex-col items-center justify-center gap-5 text-center">
-        <AgentStatusAnimation
-          status={agentStatus.animationStatus}
-          className={cn(
-            "relative z-20 w-64 transition-[filter,opacity,transform] duration-300 md:w-80",
-            isChatFocused && "scale-95 opacity-35 blur-[2px]",
-          )}
-        />
-        <p
-          aria-live="polite"
-          className={cn(
-            "relative z-20 grid min-h-6 max-w-[min(32rem,calc(100vw-3rem))] text-balance text-sm font-medium leading-6 text-muted-foreground transition-opacity duration-300 md:text-base",
-            isChatFocused && "opacity-40",
-          )}
-        >
-          <span
-            aria-hidden={Boolean(chatPreviewNotice)}
-            className={cn(
-              "col-start-1 row-start-1 transition-opacity duration-300",
-              chatPreviewNotice ? "opacity-0" : "opacity-100",
-            )}
-          >
-            {typedSummaryText ? (
-              <>
-                <span>{typedSummaryText}</span>
-                {isTyping ? (
-                  <span
-                    aria-hidden="true"
-                    className="ml-0.5 inline-block h-4 w-px translate-y-0.5 bg-muted-foreground/70 motion-reduce:hidden"
-                  />
-                ) : null}
-              </>
-            ) : null}
-          </span>
-          {chatPreviewNotice ? (
-            <span
-              className={cn(
-                "col-start-1 row-start-1 transition-opacity duration-300",
-                isChatPreviewNoticeVisible ? "opacity-100" : "opacity-0",
-              )}
-            >
-              {chatPreviewNotice}
-            </span>
-          ) : null}
-        </p>
-        <span aria-live="polite" className="sr-only">
-          {agentStatus.label}
-        </span>
-      </div>
       <AgentChatComposer
         sessionId={sessionId}
         snapshot={snapshot}
         agentName={snapshot?.agent_name}
+        agentStatusLabel={agentStatus.label}
+        summaryText={summaryText}
         supportsVision={supportsVision}
-        isFocused={isChatFocused}
-        onFocusChange={setIsChatFocused}
         chatPanelRef={chatPanelRef}
         onHeightChange={setChatComposerHeight}
-        onSendResult={handleAgentChatSendResult}
       />
     </section>
   );
@@ -256,6 +178,7 @@ type AgentChatBubble = {
   role: AgentChatBubbleRole;
   kind: string;
   status: string;
+  uiHint?: string | null;
   title: string;
   createdAt: number;
   updatedAt: number;
@@ -285,6 +208,11 @@ type AgentChatImageAttachmentData = {
   mimeType: string;
 };
 
+type AgentChatActivityMarkerKind =
+  | "activity"
+  | "error"
+  | "user";
+
 type AgentChatPendingImageAttachment = {
   id: string;
   file: File;
@@ -305,169 +233,99 @@ type WebSlashCommandFeedback = {
   detail?: string;
   level: WebSlashCommandLevel;
   blocksSubmit?: boolean;
+  dismissible?: boolean;
 };
 
-type WebSlashCommandResult = {
-  command: string;
-  title: string;
-  output: string;
-  message: string;
-  detail?: string;
-  level: WebSlashCommandLevel;
-  presentation: "panel" | "compact";
+type WebSlashPanel =
+  | {
+      kind: "selection";
+      panel: "debug" | "sleep" | "telegram" | "skills" | "app-status";
+    }
+  | {
+      kind: "detail";
+      title: string;
+      text: string;
+    }
+  | {
+      kind: "status";
+    }
+  | {
+      kind: "sleep-status";
+    }
+  | {
+      kind: "telegram-status";
+    }
+  | {
+      kind: "skills-list";
+      search: string;
+    }
+  | {
+      kind: "skills-toggle";
+      search: string;
+      feedback?: WebSlashCommandFeedback | null;
+    }
+  | {
+      kind: "telegram-access";
+      action: "approve" | "reject";
+    };
+
+type WebSlashSelectionItem = {
+  id: string;
+  name: string;
+  description: string;
+  disabled?: boolean;
 };
 
-type WebSlashTelegramPicker = {
-  action: "approve" | "reject";
-  requests: DashboardPendingAccessRequest[];
+type WebSlashActionFeedback = WebSlashCommandFeedback & {
+  command?: string;
 };
 
 type WebSlashCommandDefinition = {
   name: string;
-  usage: string;
   description: string;
   aliases?: string[];
-  argumentKind?: "app";
-  subcommands?: WebSlashSubcommandDefinition[];
-};
-
-type WebSlashSubcommandDefinition = {
-  name: string;
-  usage: string;
-  description: string;
-  aliases?: string[];
-  argumentKind?: "telegram-request" | "skill";
 };
 
 const WEB_SLASH_COMMANDS: WebSlashCommandDefinition[] = [
   {
     name: "status",
-    usage: "status",
     description: "show overall status",
   },
   {
     name: "clear",
-    usage: "clear",
     description: "clear runtime conversation, plan, events, and activity",
   },
   {
     name: "debug",
-    usage: "debug",
     description: "debug outputs and internal runtime views",
-    subcommands: [
-      {
-        name: "persona",
-        usage: "persona",
-        description: "show current prompt persona config",
-      },
-      {
-        name: "system-prompt",
-        usage: "system-prompt",
-        description: "show current runtime system prompt",
-        aliases: ["system_prompt"],
-      },
-      {
-        name: "context",
-        usage: "context",
-        description: "show latest pre-turn runtime context",
-        aliases: ["preturn-context", "preturn_context"],
-      },
-    ],
   },
   {
     name: "app-status",
-    usage: "app-status <app>",
     description: "show current structured app state and llm-facing note",
     aliases: ["app_status"],
-    argumentKind: "app",
   },
   {
     name: "restart",
-    usage: "restart",
     description: "restart the daemon",
   },
   {
     name: "sleep",
-    usage: "sleep",
     description: "sleep controls and status",
-    subcommands: [
-      {
-        name: "status",
-        usage: "status",
-        description: "show sleep status",
-      },
-      {
-        name: "run",
-        usage: "run",
-        description: "start a background sleep run",
-      },
-    ],
   },
   {
     name: "skills",
-    usage: "skills",
     description: "list and manage OpenSkills automatic use",
-    subcommands: [
-      {
-        name: "list",
-        usage: "list",
-        description: "list loaded skills",
-      },
-      {
-        name: "show",
-        usage: "show <skill>",
-        description: "show loaded skill details",
-        argumentKind: "skill",
-      },
-      {
-        name: "enable",
-        usage: "enable <skill>",
-        description: "allow a skill to be used automatically",
-        argumentKind: "skill",
-      },
-      {
-        name: "disable",
-        usage: "disable <skill>",
-        description: "keep a skill available only for explicit use",
-        argumentKind: "skill",
-      },
-      {
-        name: "reload",
-        usage: "reload",
-        description: "reload skills from disk",
-      },
-    ],
   },
   {
     name: "telegram",
-    usage: "telegram",
     description: "telegram status and access controls",
-    subcommands: [
-      {
-        name: "status",
-        usage: "status",
-        description: "show telegram details",
-      },
-      {
-        name: "approve",
-        usage: "approve [chat_id]",
-        description: "approve a telegram access request",
-        argumentKind: "telegram-request",
-      },
-      {
-        name: "reject",
-        usage: "reject [chat_id]",
-        description: "reject a telegram access request",
-        argumentKind: "telegram-request",
-      },
-    ],
   },
 ];
 
 type AgentChatActivityCellRender =
   | {
       kind: "text";
-      marker: string;
+      icon: AgentChatActivityMarkerKind;
       title: string;
       bodyLines: string[];
       fullBody?: string | null;
@@ -477,40 +335,46 @@ type AgentChatActivityCellRender =
     }
   | {
       kind: "browser";
-      marker: string;
+      icon: AgentChatActivityMarkerKind;
       title: string;
       detailLines: string[];
       detailLimit?: number;
     }
   | {
       kind: "plan";
-      marker: string;
+      icon: AgentChatActivityMarkerKind;
       title: string;
       steps: AgentChatPlanStep[];
     }
   | {
       kind: "primitive";
-      marker: string;
+      icon: AgentChatActivityMarkerKind;
       title: string;
       primitiveId: string;
     }
   | {
       kind: "exec";
-      marker: string;
+      icon: AgentChatActivityMarkerKind;
       title: string;
       outputLines: string[];
       running?: boolean;
       exitCode?: number | null;
     }
   | {
+      kind: "explored";
+      icon: AgentChatActivityMarkerKind;
+      title: string;
+      calls: AgentChatExploredCall[];
+    }
+  | {
       kind: "patch";
-      marker: string;
+      icon: AgentChatActivityMarkerKind;
       title: string;
       files: AgentChatDiffFile[];
     }
   | {
       kind: "messageActivity";
-      marker: string;
+      icon: AgentChatActivityMarkerKind;
       title: string;
       detailLines: string[];
       messageLines: string[];
@@ -519,10 +383,11 @@ type AgentChatActivityCellRender =
     }
   | {
       kind: "reply";
-      marker: string;
+      icon: AgentChatActivityMarkerKind;
       title: string;
       messageLines: string[];
       disposition: string;
+      subject: string;
     }
   | {
       kind: "thinking";
@@ -531,6 +396,18 @@ type AgentChatActivityCellRender =
       fullBody?: string | null;
       bodyLimit: number;
     };
+
+type AgentChatExploredCallAction = "read" | "list" | "search" | "run" | "unknown";
+
+type AgentChatExploredCall = {
+  toolName: string;
+  action: AgentChatExploredCallAction;
+  target: string | null;
+  secondaryTarget: string | null;
+  summary: string;
+  detailLines: string[];
+  detailTitle: string | null;
+};
 
 type AgentChatActivityCellViewProps = {
   bubbleId: string;
@@ -553,22 +430,20 @@ function AgentChatComposer({
   sessionId,
   snapshot,
   agentName,
+  agentStatusLabel,
+  summaryText,
   supportsVision = true,
-  isFocused,
-  onFocusChange,
   chatPanelRef,
   onHeightChange,
-  onSendResult,
 }: {
   sessionId: string;
   snapshot: DashboardSnapshot | null;
   agentName?: string;
+  agentStatusLabel: string;
+  summaryText: string;
   supportsVision?: boolean;
-  isFocused: boolean;
-  onFocusChange: (isFocused: boolean) => void;
   chatPanelRef: RefObject<HTMLDivElement | null>;
   onHeightChange: (height: number) => void;
-  onSendResult: (resultText: string) => void;
 }) {
   const chatPlaceholder = `Chat with ${agentName?.trim() || "Agent"}`;
   const formRef = useRef<HTMLFormElement>(null);
@@ -584,8 +459,9 @@ function AgentChatComposer({
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [slashCommandSelection, setSlashCommandSelection] = useState(0);
-  const [slashCommandResult, setSlashCommandResult] =
-    useState<WebSlashCommandResult | null>(null);
+  const [slashPanel, setSlashPanel] = useState<WebSlashPanel | null>(null);
+  const [slashActionFeedback, setSlashActionFeedback] =
+    useState<WebSlashActionFeedback | null>(null);
 
   const slashCommandSuggestions = useMemo(
     () => webSlashCommandSuggestions(message, snapshot),
@@ -594,10 +470,6 @@ function AgentChatComposer({
   const slashCommandFeedback = useMemo(
     () => webSlashCommandFeedback(message, snapshot, imageAttachments.length),
     [imageAttachments.length, message, snapshot],
-  );
-  const slashTelegramPicker = useMemo(
-    () => webSlashTelegramPicker(message, snapshot),
-    [message, snapshot],
   );
   const selectedSlashSuggestion =
     slashCommandSuggestions[
@@ -665,21 +537,13 @@ function AgentChatComposer({
 
   useEffect(() => {
     updateMessageTextareaHeight();
-  }, [isFocused, message, updateMessageTextareaHeight]);
+  }, [message, updateMessageTextareaHeight]);
 
   useEffect(() => {
     window.addEventListener("resize", updateMessageTextareaHeight);
     return () =>
       window.removeEventListener("resize", updateMessageTextareaHeight);
   }, [updateMessageTextareaHeight]);
-
-  function handleFocus() {
-    onFocusChange(true);
-  }
-
-  function handleCloseFocus() {
-    onFocusChange(false);
-  }
 
   function createPendingImageAttachment(
     file: File,
@@ -763,15 +627,36 @@ function AgentChatComposer({
     const isSlashCommand = isWebSlashCommandInput(trimmed);
     const slashBodyMissing =
       isSlashCommand && !parseWebSlashCommand(trimmed)?.trimmed;
+    const slashFeedback = isSlashCommand
+      ? webSlashCommandFeedback(trimmed, snapshot, imageAttachments.length)
+      : null;
     if (
       (!trimmed && imageAttachments.length === 0) ||
       isSending ||
       slashBodyMissing ||
-      (isSlashCommand &&
-        webSlashCommandFeedback(trimmed, snapshot, imageAttachments.length)
-          ?.blocksSubmit)
+      Boolean(slashFeedback?.blocksSubmit)
     ) {
       return;
+    }
+
+    if (isSlashCommand) {
+      const panel = webSlashPanelForInput(trimmed, snapshot);
+      if (panel) {
+        setSlashPanel(panel);
+        setSlashActionFeedback(null);
+        setMessage("");
+        setSlashCommandSelection(0);
+        window.requestAnimationFrame(() => {
+          updateMessageTextareaHeight();
+          textareaRef.current?.focus();
+        });
+        return;
+      }
+      const action = webSlashActionForInput(trimmed, snapshot);
+      if (action) {
+        await runSlashDashboardAction(action, trimmed);
+        return;
+      }
     }
 
     setIsSending(true);
@@ -795,14 +680,8 @@ function AgentChatComposer({
 
       if (isSlashCommand) {
         setSlashCommandSelection(0);
-        setSlashCommandResult(webSlashCommandResultForResponse(trimmed, output));
-      } else {
-        const sendResultText = agentChatSendResultText(output);
-        if (sendResultText) {
-          onSendResult(sendResultText);
-        }
+        setSlashActionFeedback(webSlashActionFeedbackForResponse(trimmed, output));
       }
-      onFocusChange(true);
       window.requestAnimationFrame(() => {
         if (chatPanelRef.current) {
           chatPanelRef.current.scrollTop = chatPanelRef.current.scrollHeight;
@@ -824,10 +703,64 @@ function AgentChatComposer({
     setMessage(suggestion.completion);
     setSendError(null);
     setSlashCommandSelection(0);
+    setSlashActionFeedback(null);
     window.requestAnimationFrame(() => {
       updateMessageTextareaHeight();
       textareaRef.current?.focus();
     });
+  }
+
+  async function runSlashAction(command: string, detailTitle?: string) {
+    if (!detailTitle) {
+      await submitComposerInput(command);
+      return;
+    }
+
+    setIsSending(true);
+    setSendError(null);
+    setSlashActionFeedback(null);
+    try {
+      const output = await runDashboardCommand(command, {
+        attachments: [],
+        sessionId,
+      });
+      setSlashPanel({
+        kind: "detail",
+        title: detailTitle,
+        text: fallbackOutput(output),
+      });
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  async function runSlashDashboardAction(
+    action: DashboardAction,
+    commandLabel?: string,
+  ) {
+    setIsSending(true);
+    setSendError(null);
+    setSlashActionFeedback(null);
+    try {
+      const result = await runDashboardAction(action, { sessionId });
+      setMessage("");
+      setImageAttachments((current) => {
+        for (const attachment of current) {
+          revokeImagePreviewUrl(attachment);
+        }
+        return [];
+      });
+      setSlashCommandSelection(0);
+      setSlashActionFeedback(
+        webSlashActionFeedbackForResult(commandLabel ?? action.kind, result),
+      );
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSending(false);
+    }
   }
 
   function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -862,7 +795,6 @@ function AgentChatComposer({
       ref={formRef}
       aria-label="Send message to agent"
       onSubmit={handleSubmit}
-      onFocus={handleFocus}
       onDragEnter={(event) => {
         if (!supportsVision) {
           return;
@@ -889,34 +821,35 @@ function AgentChatComposer({
       }}
       onDrop={handleDrop}
       className={cn(
-        "fixed bottom-5 left-1/2 z-30 w-[min(42rem,calc(100vw-2rem))] -translate-x-1/2 rounded-[16px] border bg-background/85 p-2 shadow-2xl shadow-background/40 backdrop-blur-xl transition-all duration-300 md:left-[calc(18rem+(100vw-18rem)/2)] md:w-[min(42rem,calc(100vw-18rem-2rem))]",
+        "fixed inset-x-4 bottom-4 z-30 rounded-xl border bg-background/92 p-2 shadow-xl shadow-background/30 backdrop-blur-xl transition-all duration-300 md:right-auto md:left-[calc(18rem+(100vw-18rem)/2)] md:w-[min(56rem,calc(100vw-18rem-2rem))] md:-translate-x-1/2",
         isDraggingImage && "border-primary/70 ring-4 ring-primary/15",
-        isFocused
-          ? "border-primary/45 ring-4 ring-primary/10"
-          : "border-border/70 hover:border-primary/30",
+        "border-border/70 focus-within:border-primary/45 focus-within:ring-4 focus-within:ring-primary/10 hover:border-primary/30",
       )}
     >
       <WebSlashCommandPanel
+        panel={slashPanel}
+        snapshot={snapshot}
         feedback={slashCommandFeedback}
+        actionFeedback={slashActionFeedback}
         suggestions={slashCommandSuggestions}
         selectedSuggestionIndex={slashCommandSelection}
-        result={slashCommandResult}
-        telegramPicker={slashTelegramPicker}
         isSending={isSending}
-        onCloseResult={() => setSlashCommandResult(null)}
+        onClosePanel={() => setSlashPanel(null)}
+        onSetPanel={setSlashPanel}
+        onCloseActionFeedback={() => setSlashActionFeedback(null)}
         onSelectSuggestion={applySlashSuggestion}
         onHoverSuggestion={setSlashCommandSelection}
-        onRunTelegramRequest={(request) => {
-          if (!slashTelegramPicker) {
-            return;
-          }
-          void submitComposerInput(
-            `/telegram ${slashTelegramPicker.action} ${request.chat_id}`,
-          );
-        }}
+        onRunAction={(command) => void runSlashAction(command)}
+        onRunDashboardAction={(action) => void runSlashDashboardAction(action)}
+      />
+      <AgentComposerStatusLine
+        statusLabel={agentStatusLabel}
+        runtimeActive={Boolean(snapshot?.runtime_activity?.active_runtime_turn)}
+        summaryText={summaryText}
+        footerContext={snapshot?.footer_context}
       />
       {supportsVision ? (
-        <input
+        <Input
           ref={fileInputRef}
           type="file"
           accept="image/*"
@@ -929,6 +862,7 @@ function AgentChatComposer({
           }}
         />
       ) : null}
+      <Separator className="mb-2" />
       {imageAttachments.length > 0 ? (
         <div className="flex gap-2 overflow-x-auto px-2 pb-2">
           {imageAttachments.map((attachment) => (
@@ -957,20 +891,22 @@ function AgentChatComposer({
                   <span className="max-w-full truncate">Image selected</span>
                 </div>
               )}
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="icon-xs"
                 aria-label={`Remove ${attachment.file.name || "image"}`}
                 onClick={() => removeImageAttachment(attachment.id)}
-                className="absolute right-1 top-1 rounded-full bg-background/90 p-1 text-muted-foreground opacity-90 shadow-sm transition hover:text-foreground group-hover:opacity-100"
+                className="absolute right-1 top-1 rounded-full bg-background/90 text-muted-foreground opacity-90 shadow-sm hover:text-foreground group-hover:opacity-100"
               >
-                <XIcon className="size-3" />
-              </button>
+                <XIcon data-icon="inline-start" aria-hidden="true" />
+              </Button>
             </div>
           ))}
         </div>
       ) : null}
-      <div className="flex items-center gap-2">
-        <textarea
+      <InputGroup className="h-auto min-h-11 items-end border-0 bg-transparent shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-transparent has-[[data-slot=input-group-control]:focus-visible]:ring-0 dark:bg-transparent">
+        <InputGroupTextarea
           ref={textareaRef}
           value={message}
           rows={1}
@@ -980,9 +916,7 @@ function AgentChatComposer({
             setMessage(event.target.value);
             setSendError(null);
             setSlashCommandSelection(0);
-            setSlashCommandResult((current) =>
-              current?.presentation === "compact" ? null : current,
-            );
+            setSlashActionFeedback(null);
             updateMessageTextareaHeight();
           }}
           onPaste={handlePaste}
@@ -1031,187 +965,171 @@ function AgentChatComposer({
               event.currentTarget.form?.requestSubmit();
             }
           }}
-          className="max-h-[30vh] min-h-11 flex-1 resize-none overflow-y-hidden bg-transparent px-4 py-3 text-sm leading-5 outline-none placeholder:text-muted-foreground/70"
+          className="max-h-[30vh] min-h-11 overflow-y-hidden px-3 py-2.5 text-sm leading-5 placeholder:text-muted-foreground/70"
         />
-        {isFocused ? (
+        <InputGroupAddon
+          align="inline-end"
+          className="self-end gap-1 pb-1.5 pr-1.5 has-[>button]:mr-0"
+        >
           <Button
             type="button"
             variant="ghost"
-            size="icon-lg"
-            aria-label="Collapse agent chat"
-            onClick={handleCloseFocus}
+            size="icon-sm"
+            aria-label="Attach image"
+            onClick={() => fileInputRef.current?.click()}
             className="rounded-full text-muted-foreground hover:text-foreground"
+            disabled={
+              !supportsVision ||
+              isSending ||
+              isWebSlashCommandInput(message) ||
+              imageAttachments.length >= AGENT_CHAT_MAX_IMAGE_ATTACHMENTS
+            }
           >
-            <XIcon className="size-4" />
+            <ImagePlusIcon data-icon="inline-start" aria-hidden="true" />
           </Button>
-        ) : null}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-lg"
-          aria-label="Attach image"
-          onClick={() => fileInputRef.current?.click()}
-          className="rounded-full text-muted-foreground hover:text-foreground"
-          disabled={
-            !supportsVision ||
-            isSending ||
-            isWebSlashCommandInput(message) ||
-            imageAttachments.length >= AGENT_CHAT_MAX_IMAGE_ATTACHMENTS
-          }
-        >
-          <ImagePlusIcon className="size-4" />
-        </Button>
-        <Button
-          type="submit"
-          size="icon-lg"
-          disabled={
-            (!message.trim() && imageAttachments.length === 0) ||
-            isSending ||
-            slashCommandBlocksSubmit
-          }
-          aria-label="Send message"
-          className="rounded-full"
-        >
-          {isSending ? (
-            <Loader2Icon className="size-4 animate-spin" />
-          ) : (
-            <SendHorizontalIcon className="size-4" />
-          )}
-        </Button>
-      </div>
+          <Button
+            type="submit"
+            size="icon-sm"
+            disabled={
+              (!message.trim() && imageAttachments.length === 0) ||
+              isSending ||
+              slashCommandBlocksSubmit
+            }
+            aria-label="Send message"
+            className="rounded-full"
+          >
+            {isSending ? (
+              <Spinner data-icon="inline-start" />
+            ) : (
+              <SendHorizontalIcon data-icon="inline-start" aria-hidden="true" />
+            )}
+          </Button>
+        </InputGroupAddon>
+      </InputGroup>
       {sendError ? (
-        <p role="alert" className="px-4 pb-1 pt-0.5 text-xs text-destructive">
-          {sendError}
-        </p>
+        <Alert variant="destructive" className="mx-2 px-2 py-1">
+          <AlertDescription className="text-xs">{sendError}</AlertDescription>
+        </Alert>
       ) : null}
     </form>
   );
 }
 
+function AgentComposerStatusLine({
+  statusLabel,
+  runtimeActive,
+  summaryText,
+  footerContext,
+}: {
+  statusLabel: string;
+  runtimeActive: boolean;
+  summaryText: string;
+  footerContext?: string;
+}) {
+  const detail = summaryText || footerContext?.trim() || "Enter send";
+
+  return (
+    <div className="flex min-w-0 items-center gap-2 px-2 pb-2 text-xs text-muted-foreground">
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-1.5 rounded-full",
+          runtimeActive ? "bg-primary" : "bg-muted-foreground/45",
+        )}
+      />
+      <span className="shrink-0 font-medium text-foreground">
+        {runtimeActive ? "Working" : statusLabel}
+      </span>
+      <span className="min-w-0 truncate">{detail}</span>
+    </div>
+  );
+}
+
 function WebSlashCommandPanel({
+  panel,
+  snapshot,
   feedback,
+  actionFeedback,
   suggestions,
   selectedSuggestionIndex,
-  result,
-  telegramPicker,
   isSending,
-  onCloseResult,
+  onClosePanel,
+  onSetPanel,
+  onCloseActionFeedback,
   onSelectSuggestion,
   onHoverSuggestion,
-  onRunTelegramRequest,
+  onRunAction,
+  onRunDashboardAction,
 }: {
+  panel: WebSlashPanel | null;
+  snapshot: DashboardSnapshot | null;
   feedback: WebSlashCommandFeedback | null;
+  actionFeedback: WebSlashActionFeedback | null;
   suggestions: WebSlashCommandSuggestion[];
   selectedSuggestionIndex: number;
-  result: WebSlashCommandResult | null;
-  telegramPicker: WebSlashTelegramPicker | null;
   isSending: boolean;
-  onCloseResult: () => void;
+  onClosePanel: () => void;
+  onSetPanel: (panel: WebSlashPanel | null) => void;
+  onCloseActionFeedback: () => void;
   onSelectSuggestion: (suggestion: WebSlashCommandSuggestion) => void;
   onHoverSuggestion: (index: number) => void;
-  onRunTelegramRequest: (request: DashboardPendingAccessRequest) => void;
+  onRunAction: (command: string, detailTitle?: string) => void;
+  onRunDashboardAction: (action: DashboardAction) => void;
 }) {
   const hasContent =
-    Boolean(result) ||
+    Boolean(panel) ||
+    Boolean(actionFeedback) ||
     Boolean(feedback) ||
-    suggestions.length > 0 ||
-    Boolean(telegramPicker && telegramPicker.requests.length > 0);
+    suggestions.length > 0;
 
   if (!hasContent) {
     return null;
   }
 
   return (
-    <div className="mb-2 space-y-2 border-b border-border/70 px-2 pb-2">
-      {result ? (
+    <div className="mb-2 flex flex-col gap-2 border-b border-border/70 px-2 pb-2">
+      {panel ? (
+        <WebSlashPanelView
+          panel={panel}
+          snapshot={snapshot}
+          isSending={isSending}
+          onClose={onClosePanel}
+          onSetPanel={onSetPanel}
+          onRunAction={onRunAction}
+          onRunDashboardAction={onRunDashboardAction}
+        />
+      ) : null}
+
+      {actionFeedback ? (
+        <WebSlashCommandFeedbackView
+          feedback={actionFeedback}
+          onClose={actionFeedback.dismissible ? onCloseActionFeedback : undefined}
+        />
+      ) : null}
+
+      {!panel && feedback ? (
+        <WebSlashCommandFeedbackView feedback={feedback} />
+      ) : null}
+
+      {!panel && suggestions.length > 0 ? (
         <section
-          aria-label={`${result.title} result`}
-          className="space-y-2 text-sm"
+          aria-label="Command suggestions"
+          className="flex flex-col gap-1"
         >
-          <div className="flex min-w-0 items-center gap-2">
-            <WebSlashCommandLevelIcon level={result.level} />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-foreground">
-                {result.title}
-              </p>
-              <p className="truncate text-xs text-muted-foreground">
-                {result.command}
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Close command result"
-              onClick={onCloseResult}
-              className="size-7 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
-            >
-              <XIcon className="size-3.5" />
-            </Button>
-          </div>
-          {result.presentation === "panel" ? (
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/45 p-3 font-mono text-xs leading-5 text-foreground/90">
-              {result.output.trim() || result.message}
-            </pre>
-          ) : (
-            <p className="break-words text-sm leading-5 text-muted-foreground">
-              {result.message}
-              {result.detail ? (
-                <span className="ml-1 text-muted-foreground/70">
-                  {result.detail}
-                </span>
-              ) : null}
-            </p>
-          )}
-        </section>
-      ) : null}
-
-      {feedback ? <WebSlashCommandFeedbackView feedback={feedback} /> : null}
-
-      {telegramPicker && telegramPicker.requests.length > 0 ? (
-        <section aria-label="Telegram access requests" className="space-y-1">
-          {telegramPicker.requests.slice(0, 5).map((request) => (
-            <button
-              key={`${telegramPicker.action}-${request.chat_id}`}
-              type="button"
-              disabled={isSending}
-              onClick={() => onRunTelegramRequest(request)}
-              className="flex w-full min-w-0 items-center gap-3 rounded-md px-2 py-1.5 text-left text-sm transition hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                {request.chat_id}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-foreground">
-                  {request.title || request.sender}
-                </span>
-                <span className="block truncate text-xs text-muted-foreground">
-                  {request.sender} · {request.last_message_preview}
-                </span>
-              </span>
-              <span className="shrink-0 text-xs font-medium text-primary">
-                {telegramPicker.action}
-              </span>
-            </button>
-          ))}
-        </section>
-      ) : null}
-
-      {suggestions.length > 0 ? (
-        <section aria-label="Command suggestions" className="space-y-1">
           {suggestions.slice(0, 6).map((suggestion, index) => {
             const selected = index === selectedSuggestionIndex;
             return (
-              <button
+              <Button
                 key={`${suggestion.completion}-${index}`}
                 type="button"
+                variant="ghost"
                 onMouseEnter={() => onHoverSuggestion(index)}
                 onMouseDown={(event) => {
                   event.preventDefault();
                   onSelectSuggestion(suggestion);
                 }}
                 className={cn(
-                  "flex w-full min-w-0 items-baseline gap-3 rounded-md px-2 py-1.5 text-left text-sm transition",
+                  "h-auto w-full min-w-0 justify-start gap-3 px-2 py-1.5 text-left text-sm",
                   selected
                     ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
@@ -1223,7 +1141,7 @@ function WebSlashCommandPanel({
                 <span className="min-w-0 truncate text-xs text-muted-foreground/75">
                   {suggestion.description}
                 </span>
-              </button>
+              </Button>
             );
           })}
         </section>
@@ -1232,10 +1150,613 @@ function WebSlashCommandPanel({
   );
 }
 
+function WebSlashPanelView({
+  panel,
+  snapshot,
+  isSending,
+  onClose,
+  onSetPanel,
+  onRunAction,
+  onRunDashboardAction,
+}: {
+  panel: WebSlashPanel;
+  snapshot: DashboardSnapshot | null;
+  isSending: boolean;
+  onClose: () => void;
+  onSetPanel: (panel: WebSlashPanel | null) => void;
+  onRunAction: (command: string, detailTitle?: string) => void;
+  onRunDashboardAction: (action: DashboardAction) => void;
+}) {
+  switch (panel.kind) {
+    case "selection":
+      return (
+        <WebSlashSelectionPanel
+          panel={panel.panel}
+          snapshot={snapshot}
+          isSending={isSending}
+          onClose={onClose}
+          onSetPanel={onSetPanel}
+          onRunAction={onRunAction}
+          onRunDashboardAction={onRunDashboardAction}
+        />
+      );
+    case "status":
+      return <WebSlashStatusPanel snapshot={snapshot} onClose={onClose} />;
+    case "sleep-status":
+      return <WebSlashSleepStatusPanel snapshot={snapshot} onClose={onClose} />;
+    case "telegram-status":
+      return <WebSlashTelegramStatusPanel snapshot={snapshot} onClose={onClose} />;
+    case "detail":
+      return (
+        <WebSlashDetailPanel
+          title={panel.title}
+          text={panel.text}
+          onClose={onClose}
+        />
+      );
+    case "skills-list":
+      return (
+        <WebSlashSkillsListPanel
+          panel={panel}
+          snapshot={snapshot}
+          onClose={onClose}
+          onSetPanel={onSetPanel}
+        />
+      );
+    case "skills-toggle":
+      return (
+        <WebSlashSkillsTogglePanel
+          panel={panel}
+          snapshot={snapshot}
+          isSending={isSending}
+          onClose={onClose}
+          onSetPanel={onSetPanel}
+          onRunDashboardAction={onRunDashboardAction}
+        />
+      );
+    case "telegram-access":
+      return (
+        <WebSlashTelegramAccessPanel
+          panel={panel}
+          snapshot={snapshot}
+          isSending={isSending}
+          onClose={onClose}
+          onRunDashboardAction={onRunDashboardAction}
+        />
+      );
+  }
+}
+
+function WebSlashPanelShell({
+  title,
+  subtitle,
+  children,
+  onClose,
+}: {
+  title: string;
+  subtitle?: string;
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <section aria-label={title} className="flex flex-col gap-2 text-sm">
+      <div className="flex min-w-0 items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-foreground">{title}</p>
+          {subtitle ? (
+            <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
+          ) : null}
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label={`Close ${title}`}
+          onClick={onClose}
+          className="shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+        >
+          <XIcon data-icon="inline-start" aria-hidden="true" />
+        </Button>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function WebSlashSelectionPanel({
+  panel,
+  snapshot,
+  isSending,
+  onClose,
+  onSetPanel,
+  onRunAction,
+  onRunDashboardAction,
+}: {
+  panel: Extract<WebSlashPanel, { kind: "selection" }>["panel"];
+  snapshot: DashboardSnapshot | null;
+  isSending: boolean;
+  onClose: () => void;
+  onSetPanel: (panel: WebSlashPanel | null) => void;
+  onRunAction: (command: string, detailTitle?: string) => void;
+  onRunDashboardAction: (action: DashboardAction) => void;
+}) {
+  const meta = webSlashSelectionMeta(panel, snapshot);
+  const items = webSlashSelectionItems(panel, snapshot);
+
+  return (
+    <WebSlashPanelShell
+      title={meta.title}
+      subtitle={meta.subtitle}
+      onClose={onClose}
+    >
+      <div className="flex max-h-64 flex-col gap-1 overflow-auto">
+        {items.length > 0 ? (
+          items.map((item, index) => (
+            <Button
+              key={item.id}
+              type="button"
+              variant="ghost"
+              disabled={isSending || item.disabled}
+              onClick={() =>
+                webSlashRunSelectionItem(
+                  item.id,
+                  snapshot,
+                  onSetPanel,
+                  onRunAction,
+                  onRunDashboardAction,
+                )
+              }
+              className={cn(
+                "group h-auto w-full min-w-0 justify-start gap-2 px-2 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-45",
+                index === 0 && !item.disabled && "bg-muted text-foreground",
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "w-3 shrink-0 text-primary opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100",
+                  index === 0 && !item.disabled && "opacity-100",
+                )}
+              >
+                ›
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-foreground">
+                  {item.name}
+                </span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {item.description}
+                </span>
+              </span>
+            </Button>
+          ))
+        ) : (
+          <p className="px-2 py-3 text-sm text-muted-foreground">No items.</p>
+        )}
+      </div>
+    </WebSlashPanelShell>
+  );
+}
+
+function WebSlashStatusPanel({
+  snapshot,
+  onClose,
+}: {
+  snapshot: DashboardSnapshot | null;
+  onClose: () => void;
+}) {
+  const rows = webSlashStatusRows(snapshot);
+
+  return (
+    <WebSlashPanelShell
+      title="STATUS"
+      subtitle="Current session runtime facts."
+      onClose={onClose}
+    >
+      <WebSlashKeyValueRows rows={rows} />
+    </WebSlashPanelShell>
+  );
+}
+
+function WebSlashSleepStatusPanel({
+  snapshot,
+  onClose,
+}: {
+  snapshot: DashboardSnapshot | null;
+  onClose: () => void;
+}) {
+  return (
+    <WebSlashPanelShell
+      title="SLEEP STATUS"
+      subtitle="Background optimization state."
+      onClose={onClose}
+    >
+      <div className="flex max-h-72 flex-col gap-3 overflow-auto">
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium text-foreground">
+            Runtime optimization
+          </p>
+          <WebSlashKeyValueRows rows={webSlashRuntimeOptimizationRows(snapshot)} />
+        </div>
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium text-foreground">
+            Primitive optimization
+          </p>
+          <WebSlashKeyValueRows rows={webSlashPrimitiveOptimizationRows(snapshot)} />
+        </div>
+      </div>
+    </WebSlashPanelShell>
+  );
+}
+
+function WebSlashTelegramStatusPanel({
+  snapshot,
+  onClose,
+}: {
+  snapshot: DashboardSnapshot | null;
+  onClose: () => void;
+}) {
+  const requests = snapshot?.pending_access_requests ?? [];
+
+  return (
+    <WebSlashPanelShell
+      title="TELEGRAM STATUS"
+      subtitle="Transport access request state."
+      onClose={onClose}
+    >
+      <div className="flex max-h-72 flex-col gap-2 overflow-auto">
+        <WebSlashKeyValueRows rows={[["Pending requests", requests.length]]} />
+        {requests.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            {requests.map((request) => (
+              <div
+                key={request.chat_id}
+                className="flex min-w-0 gap-2 px-2 py-1 text-sm"
+              >
+                <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                  {request.chat_id}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium text-foreground">
+                    {request.title || request.sender}
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {request.sender}  {request.last_message_preview}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="px-2 py-3 text-sm text-muted-foreground">
+            No pending Telegram access requests.
+          </p>
+        )}
+      </div>
+    </WebSlashPanelShell>
+  );
+}
+
+function WebSlashDetailPanel({
+  title,
+  text,
+  onClose,
+}: {
+  title: string;
+  text: string;
+  onClose: () => void;
+}) {
+  return (
+    <WebSlashPanelShell title={title} onClose={onClose}>
+      <div className="max-h-72 overflow-auto rounded-md bg-muted/35 p-2 font-mono text-xs leading-5 text-foreground/90">
+        {renderWebSlashDetailLines(text).map((line, index) => (
+          <div
+            key={`${index}-${line.text}`}
+            className={cn(
+              "min-h-5 whitespace-pre-wrap break-words",
+              line.kind === "header" && "font-semibold text-foreground",
+              line.kind === "bullet" && "pl-2 text-muted-foreground",
+              line.kind === "label" && "text-muted-foreground",
+            )}
+          >
+            {line.text}
+          </div>
+        ))}
+      </div>
+    </WebSlashPanelShell>
+  );
+}
+
+function WebSlashSkillsListPanel({
+  panel,
+  snapshot,
+  onClose,
+  onSetPanel,
+}: {
+  panel: Extract<WebSlashPanel, { kind: "skills-list" }>;
+  snapshot: DashboardSnapshot | null;
+  onClose: () => void;
+  onSetPanel: (panel: WebSlashPanel | null) => void;
+}) {
+  const skills = webSlashFilteredSkills(snapshot, panel.search);
+  const errors = snapshot?.skill_errors ?? [];
+
+  return (
+    <WebSlashPanelShell
+      title="Skills"
+      subtitle={
+        (snapshot?.skills ?? []).length > 0
+          ? `${snapshot?.skills?.length ?? 0} loaded. Choose a skill to inspect.`
+          : "No skills loaded."
+      }
+      onClose={onClose}
+    >
+      <Input
+        value={panel.search}
+        onChange={(event) =>
+          onSetPanel({ kind: "skills-list", search: event.target.value })
+        }
+        placeholder="Type to search skills"
+        className="h-8"
+      />
+      {errors.length > 0 ? (
+        <div className="flex flex-col gap-1 text-xs">
+          {errors.slice(0, 2).map((error) => (
+            <div
+              key={`${error.path}-${error.message}`}
+              className="flex min-w-0 gap-2 text-muted-foreground"
+            >
+              <span className="shrink-0 text-primary">!</span>
+              <span className="min-w-0 truncate">{error.path}</span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground/75">
+                {error.message}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex max-h-64 flex-col gap-1 overflow-auto">
+        {skills.length > 0 ? (
+          skills.map((skill, index) => (
+            <Button
+              key={skill.path}
+              type="button"
+              variant="ghost"
+              onClick={() =>
+                onSetPanel({
+                  kind: "detail",
+                  title: `SKILL ${skill.name}`,
+                  text: webSlashSkillDetailText(skill),
+                })
+              }
+              className={cn(
+                "group h-auto w-full min-w-0 justify-start gap-2 px-2 py-1.5 text-left text-sm",
+                index === 0 && "bg-muted text-foreground",
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "w-3 shrink-0 text-primary opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100",
+                  index === 0 && "opacity-100",
+                )}
+              >
+                ›
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-foreground">
+                  {skill.name}
+                </span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {webSlashSkillStatusDescription(skill)}  {skill.description}
+                </span>
+              </span>
+            </Button>
+          ))
+        ) : (
+          <p className="px-2 py-3 text-sm text-muted-foreground">
+            {panel.search.trim() ? "No matches." : "No skills loaded."}
+          </p>
+        )}
+      </div>
+    </WebSlashPanelShell>
+  );
+}
+
+function WebSlashSkillsTogglePanel({
+  panel,
+  snapshot,
+  isSending,
+  onClose,
+  onSetPanel,
+  onRunDashboardAction,
+}: {
+  panel: Extract<WebSlashPanel, { kind: "skills-toggle" }>;
+  snapshot: DashboardSnapshot | null;
+  isSending: boolean;
+  onClose: () => void;
+  onSetPanel: (panel: WebSlashPanel | null) => void;
+  onRunDashboardAction: (action: DashboardAction) => void;
+}) {
+  const skills = webSlashFilteredSkills(snapshot, panel.search);
+
+  return (
+    <WebSlashPanelShell
+      title="Skills"
+      subtitle={
+        (snapshot?.skills ?? []).length > 0
+          ? "Toggle automatic use for loaded skills."
+          : "No skills loaded."
+      }
+      onClose={onClose}
+    >
+      <Input
+        value={panel.search}
+        onChange={(event) =>
+          onSetPanel({
+            kind: "skills-toggle",
+            search: event.target.value,
+            feedback: panel.feedback ?? null,
+          })
+        }
+        placeholder="Type to search skills"
+        className="h-8"
+      />
+      {panel.feedback ? (
+        <WebSlashCommandFeedbackView feedback={panel.feedback} />
+      ) : null}
+      <div className="flex max-h-64 flex-col gap-1 overflow-auto">
+        {skills.length > 0 ? (
+          skills.map((skill, index) => (
+            <Button
+              key={skill.path}
+                type="button"
+                variant="ghost"
+                disabled={isSending}
+                onClick={() =>
+                  onRunDashboardAction({
+                    kind: "set_skill_auto_use",
+                    path: skill.path,
+                    enabled: !skill.auto_use_enabled,
+                  })
+                }
+                className={cn(
+                  "group h-auto w-full min-w-0 justify-start gap-2 px-2 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-60",
+                  index === 0 && "bg-muted text-foreground",
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "w-3 shrink-0 text-primary opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100",
+                    index === 0 && "opacity-100",
+                  )}
+                >
+                  ›
+                </span>
+                <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                  {skill.auto_use_enabled ? "[x]" : "[ ]"}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium text-foreground">
+                    {skill.name}
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {skill.scope} - {webSlashSkillStatusDescription(skill)}
+                  </span>
+                </span>
+            </Button>
+          ))
+        ) : (
+          <p className="px-2 py-3 text-sm text-muted-foreground">
+            {panel.search.trim() ? "No matches." : "No skills loaded."}
+          </p>
+        )}
+      </div>
+    </WebSlashPanelShell>
+  );
+}
+
+function WebSlashTelegramAccessPanel({
+  panel,
+  snapshot,
+  isSending,
+  onClose,
+  onRunDashboardAction,
+}: {
+  panel: Extract<WebSlashPanel, { kind: "telegram-access" }>;
+  snapshot: DashboardSnapshot | null;
+  isSending: boolean;
+  onClose: () => void;
+  onRunDashboardAction: (action: DashboardAction) => void;
+}) {
+  const requests = snapshot?.pending_access_requests ?? [];
+
+  return (
+    <WebSlashPanelShell
+      title={panel.action === "approve" ? "TELEGRAM APPROVE" : "TELEGRAM REJECT"}
+      subtitle={`Select a pending request to ${panel.action}.`}
+      onClose={onClose}
+    >
+      <div className="flex max-h-64 flex-col gap-1 overflow-auto">
+        {requests.length > 0 ? (
+          requests.map((request, index) => (
+            <Button
+              key={`${panel.action}-${request.chat_id}`}
+              type="button"
+              variant="ghost"
+              disabled={isSending}
+              onClick={() =>
+                onRunDashboardAction({
+                  kind:
+                    panel.action === "approve"
+                      ? "approve_telegram_access"
+                      : "reject_telegram_access",
+                  chat_id: request.chat_id,
+                })
+              }
+              className={cn(
+                "group h-auto w-full min-w-0 justify-start gap-2 px-2 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-60",
+                index === 0 && "bg-muted text-foreground",
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "w-3 shrink-0 text-primary opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100",
+                  index === 0 && "opacity-100",
+                )}
+              >
+                ›
+              </span>
+              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                {request.chat_id}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-foreground">
+                  {request.title || request.sender}
+                </span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {request.sender}  {request.last_message_preview}
+                </span>
+              </span>
+            </Button>
+          ))
+        ) : (
+          <p className="px-2 py-3 text-sm text-muted-foreground">
+            No pending Telegram access requests.
+          </p>
+        )}
+      </div>
+    </WebSlashPanelShell>
+  );
+}
+
+function WebSlashKeyValueRows({
+  rows,
+}: {
+  rows: Array<[string, string | number | null | undefined]>;
+}) {
+  return (
+    <div className="grid max-h-72 grid-cols-[minmax(7rem,auto)_1fr] gap-x-4 gap-y-1 overflow-auto text-sm">
+      {rows.map(([label, value]) => (
+        <Fragment key={label}>
+          <span className="truncate font-medium text-foreground">{label}</span>
+          <span className="min-w-0 truncate text-muted-foreground">
+            {formatWebSlashValue(value)}
+          </span>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
 function WebSlashCommandFeedbackView({
   feedback,
+  onClose,
 }: {
   feedback: WebSlashCommandFeedback;
+  onClose?: () => void;
 }) {
   return (
     <div className="flex min-w-0 items-start gap-2 text-sm">
@@ -1250,6 +1771,18 @@ function WebSlashCommandFeedbackView({
           </p>
         ) : null}
       </div>
+      {onClose ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Dismiss command feedback"
+          onClick={onClose}
+          className="shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+        >
+          <XIcon data-icon="inline-start" aria-hidden="true" />
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -1266,7 +1799,7 @@ function WebSlashCommandLevelIcon({ level }: { level: WebSlashCommandLevel }) {
   if (level === "warning") {
     return (
       <InfoIcon
-        className="mt-0.5 size-4 shrink-0 text-amber-500"
+        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
         aria-hidden="true"
       />
     );
@@ -1350,7 +1883,7 @@ function parseWebSlashCommand(input: string) {
 
 function webSlashCommandSuggestions(
   input: string,
-  snapshot: DashboardSnapshot | null,
+  _snapshot: DashboardSnapshot | null,
 ): WebSlashCommandSuggestion[] {
   const parsed = parseWebSlashCommand(input);
   if (!parsed) {
@@ -1361,117 +1894,12 @@ function webSlashCommandSuggestions(
   }
 
   const [verb] = parsed.parts;
-  const command = webSlashFindCommand(verb);
-  if (!command) {
-    return WEB_SLASH_COMMANDS.filter((candidate) =>
-      candidate.name.startsWith(verb),
-    ).map(webSlashRootSuggestion);
-  }
-
-  if (command.subcommands) {
-    return webSlashSubcommandSuggestions(command, parsed, snapshot);
-  }
-
-  if (command.argumentKind === "app") {
-    return webSlashAppSuggestions(command, parsed, snapshot);
-  }
-
-  return [];
-}
-
-function webSlashSubcommandSuggestions(
-  command: WebSlashCommandDefinition,
-  parsed: NonNullable<ReturnType<typeof parseWebSlashCommand>>,
-  snapshot: DashboardSnapshot | null,
-) {
-  const subcommands = command.subcommands ?? [];
-  if (parsed.parts.length === 1) {
-    return subcommands.map((subcommand) =>
-      webSlashSubcommandSuggestion(command, subcommand),
-    );
-  }
-
-  const subcommandName = parsed.parts[1] ?? "";
-  const subcommand = webSlashFindSubcommand(command, subcommandName);
-  const inSubcommandWord =
-    (parsed.trailingSpace && parsed.parts.length === 1) ||
-    (!parsed.trailingSpace && parsed.parts.length === 2);
-
-  if (inSubcommandWord) {
-    if (subcommand && !parsed.trailingSpace) {
-      return [];
-    }
-    return subcommands
-      .filter((candidate) => webSlashSubcommandStartsWith(candidate, subcommandName))
-      .map((candidate) => webSlashSubcommandSuggestion(command, candidate));
-  }
-
-  if (subcommand?.argumentKind === "telegram-request") {
-    const prefix = parsed.parts[2] ?? "";
-    return webSlashTelegramRequestSuggestions(
-      subcommand,
-      prefix,
-      snapshot?.pending_access_requests ?? [],
-    );
-  }
-
-  if (subcommand?.argumentKind === "skill") {
-    const prefix = parsed.parts[2] ?? "";
-    return webSlashSkillSuggestions(command, subcommand, prefix, snapshot);
-  }
-
-  return [];
-}
-
-function webSlashAppSuggestions(
-  command: WebSlashCommandDefinition,
-  parsed: NonNullable<ReturnType<typeof parseWebSlashCommand>>,
-  snapshot: DashboardSnapshot | null,
-) {
-  const apps = webSlashAppNames(snapshot);
-  const prefix = parsed.parts[1] ?? "";
-  if (parsed.parts.length > 2) {
+  if (parsed.parts.length > 1 || parsed.body.endsWith(" ")) {
     return [];
   }
-  if (parsed.parts.length === 2 && apps.includes(prefix) && !parsed.trailingSpace) {
-    return [];
-  }
-  return apps
-    .filter((candidate) => candidate.startsWith(prefix))
-    .map((candidate) => ({
-      display: candidate,
-      completion: `/${command.name} ${candidate}`,
-      description: command.description,
-    }));
-}
-
-function webSlashTelegramRequestSuggestions(
-  subcommand: WebSlashSubcommandDefinition,
-  prefix: string,
-  requests: DashboardPendingAccessRequest[],
-) {
-  return requests
-    .filter((request) => request.chat_id.toString().startsWith(prefix))
-    .map((request) => ({
-      display: `${request.chat_id} (${request.sender})`,
-      completion: `/telegram ${subcommand.name} ${request.chat_id}`,
-      description: request.title || request.last_message_preview,
-    }));
-}
-
-function webSlashSkillSuggestions(
-  command: WebSlashCommandDefinition,
-  subcommand: WebSlashSubcommandDefinition,
-  prefix: string,
-  snapshot: DashboardSnapshot | null,
-) {
-  return (snapshot?.skills ?? [])
-    .filter((skill) => skill.name.startsWith(prefix))
-    .map((skill) => ({
-      display: skill.name,
-      completion: `/${command.name} ${subcommand.name} ${skill.name}`,
-      description: webSlashSkillStatusDescription(skill),
-    }));
+  return WEB_SLASH_COMMANDS.filter((candidate) =>
+    candidate.name.startsWith(verb),
+  ).map(webSlashRootSuggestion);
 }
 
 function webSlashCommandFeedback(
@@ -1508,168 +1936,100 @@ function webSlashCommandFeedback(
     };
   }
 
-  if (command.subcommands) {
-    const feedback = webSlashSubcommandFeedback(command, parsed, snapshot);
-    if (feedback) {
-      return feedback;
-    }
-  }
-
   const extraArgumentFeedback = webSlashExtraArgumentFeedback(parsed.parts);
   if (extraArgumentFeedback) {
     return extraArgumentFeedback;
   }
 
-  if (command.argumentKind === "app") {
-    return webSlashAppFeedback(command, parsed, snapshot);
-  }
-
-  return null;
-}
-
-function webSlashSubcommandFeedback(
-  command: WebSlashCommandDefinition,
-  parsed: NonNullable<ReturnType<typeof parseWebSlashCommand>>,
-  snapshot: DashboardSnapshot | null,
-): WebSlashCommandFeedback | null {
-  if (parsed.parts.length === 1) {
-    if (command.name === "skills") {
-      return null;
-    }
-    return {
-      title: command.name.toUpperCase(),
-      message: `Choose a subcommand for /${command.name}.`,
-      detail: webSlashSubcommandChoiceText(command),
-      level: "warning",
-      blocksSubmit: true,
-    };
-  }
-
-  const subcommandName = parsed.parts[1];
-  const subcommand = webSlashFindSubcommand(command, subcommandName);
-  if (!subcommand) {
-    const possible = (command.subcommands ?? []).some((candidate) =>
-      webSlashSubcommandStartsWith(candidate, subcommandName),
-    );
-    if (possible) {
-      return null;
-    }
-    return {
-      title: command.name.toUpperCase(),
-      message: `Unknown ${command.name} subcommand '${subcommandName}'.`,
-      detail: webSlashSubcommandChoiceText(command),
-      level: "error",
-      blocksSubmit: true,
-    };
-  }
-
-  if (
-    command.name === "telegram" &&
-    subcommand.argumentKind === "telegram-request" &&
-    parsed.parts.length === 2
-  ) {
-    const requests = snapshot?.pending_access_requests ?? [];
-    if (requests.length === 0) {
+  if (verb === "debug" && parsed.parts.length > 1) {
+    const view = parsed.parts[1];
+    if (!["persona", "system-prompt", "system_prompt", "context", "preturn-context", "preturn_context"].includes(view)) {
       return {
-        title: "TELEGRAM",
-        message: `No pending Telegram requests to ${subcommand.name}.`,
-        detail: "Use /telegram status to inspect Telegram state.",
-        level: "info",
+        title: "DEBUG",
+        message: `Unknown debug view '${view}'.`,
+        detail: "Use /debug to choose a view.",
+        level: "error",
         blocksSubmit: true,
       };
     }
-    return {
-      title: "TELEGRAM",
-      message: `Choose a request to ${subcommand.name}.`,
-      detail: requests
-        .slice(0, 4)
-        .map((request) => `${request.chat_id} ${request.sender}`)
-        .join(" · "),
-      level: "info",
-      blocksSubmit: true,
-    };
   }
 
   if (
-    command.name === "telegram" &&
-    subcommand.argumentKind === "telegram-request" &&
-    parsed.parts.length === 3 &&
-    !/^-?\d+$/.test(parsed.parts[2]) &&
-    webSlashTelegramRequestSuggestions(
-      subcommand,
-      parsed.parts[2],
-      snapshot?.pending_access_requests ?? [],
-    ).length === 0
-  ) {
-    return {
-      title: "TELEGRAM",
-      message: `Invalid chat_id '${parsed.parts[2]}'.`,
-      detail: `Use /telegram ${subcommand.name} [chat_id].`,
-      level: "error",
-      blocksSubmit: true,
-    };
-  }
-
-  if (
-    command.name === "skills" &&
-    subcommand.argumentKind === "skill" &&
-    parsed.parts.length === 2
-  ) {
-    const skills = snapshot?.skills ?? [];
-    return {
-      title: "SKILLS",
-      message: `Choose a skill to ${subcommand.name}.`,
-      detail:
-        skills.length > 0
-          ? skills
-              .slice(0, 4)
-              .map((skill) => `${skill.name} (${webSlashSkillStatusDescription(skill)})`)
-              .join(" · ")
-          : "No skills are currently loaded.",
-      level: "warning",
-      blocksSubmit: true,
-    };
-  }
-
-  return null;
-}
-
-function webSlashAppFeedback(
-  command: WebSlashCommandDefinition,
-  parsed: NonNullable<ReturnType<typeof parseWebSlashCommand>>,
-  snapshot: DashboardSnapshot | null,
-): WebSlashCommandFeedback | null {
-  const apps = webSlashAppNames(snapshot);
-  if (parsed.parts.length === 1) {
-    return {
-      title: "APP STATUS",
-      message: "Choose an app for /app-status.",
-      detail:
-        apps.length > 0
-          ? `available: ${apps.join(", ")}`
-          : "No app state is currently available.",
-      level: "warning",
-      blocksSubmit: true,
-    };
-  }
-  const target = parsed.parts[1];
-  if (
+    webSlashCommandAccepts("app-status", verb) &&
     parsed.parts.length === 2 &&
-    !apps.includes(target) &&
-    !apps.some((candidate) => candidate.startsWith(target)) &&
-    webSlashAppSuggestions(command, parsed, snapshot).length === 0
+    !webSlashAppNames(snapshot).includes(parsed.parts[1].toLowerCase())
   ) {
     return {
       title: "APP STATUS",
-      message: `Unknown app '${target}'.`,
-      detail:
-        apps.length > 0
-          ? `available: ${apps.join(", ")}`
-          : "No app state is currently available.",
+      message: `Unknown app '${parsed.parts[1]}'.`,
+      detail: webSlashAvailableAppsText(snapshot),
       level: "error",
       blocksSubmit: true,
     };
   }
+
+  if (verb === "skills") {
+    const action = parsed.parts[1];
+    if (["show", "enable", "disable"].includes(action) && parsed.parts.length === 3) {
+      const target = parsed.parts[2];
+      if (!webSlashResolveSkillTarget(snapshot, target)) {
+        return {
+          title: "SKILLS",
+          message: `Unknown skill '${target}'.`,
+          detail: "Use /skills to browse loaded skills.",
+          level: "error",
+          blocksSubmit: true,
+        };
+      }
+    } else if (action && !["list", "show", "enable", "disable", "reload"].includes(action)) {
+      return {
+        title: "SKILLS",
+        message: `Unknown skills action '${action}'.`,
+        detail: "Use /skills to choose an action.",
+        level: "error",
+        blocksSubmit: true,
+      };
+    }
+  }
+
+  if (verb === "sleep") {
+    const action = parsed.parts[1];
+    if (action && !["run", "status"].includes(action)) {
+      return {
+        title: "SLEEP",
+        message: `Unknown sleep action '${action}'.`,
+        detail: "Use /sleep to choose an action.",
+        level: "error",
+        blocksSubmit: true,
+      };
+    }
+  }
+
+  if (verb === "telegram") {
+    const action = parsed.parts[1];
+    if (action && !["status", "approve", "reject"].includes(action)) {
+      return {
+        title: "TELEGRAM",
+        message: `Unknown Telegram action '${action}'.`,
+        detail: "Use /telegram to choose an action.",
+        level: "error",
+        blocksSubmit: true,
+      };
+    }
+    if (
+      ["approve", "reject"].includes(action) &&
+      parsed.parts.length === 3 &&
+      !/^-?\d+$/.test(parsed.parts[2])
+    ) {
+      return {
+        title: "TELEGRAM",
+        message: `Invalid chat_id '${parsed.parts[2]}'.`,
+        level: "error",
+        blocksSubmit: true,
+      };
+    }
+  }
+
   return null;
 }
 
@@ -1691,7 +2051,7 @@ function webSlashExtraArgumentFeedback(
   if (parts[0] === "debug" && parts.length > 2) {
     return {
       title: "DEBUG",
-      message: `/debug ${parts[1]} does not take extra arguments.`,
+      message: `debug ${parts[1]} does not take extra arguments.`,
       detail: `usage: /debug ${parts[1]}`,
       level: "error",
       blocksSubmit: true,
@@ -1700,7 +2060,7 @@ function webSlashExtraArgumentFeedback(
   if (parts[0] === "sleep" && parts.length > 2) {
     return {
       title: "SLEEP",
-      message: `/sleep ${parts[1]} does not take extra arguments.`,
+      message: `sleep ${parts[1]} does not take extra arguments.`,
       detail: `usage: /sleep ${parts[1]}`,
       level: "error",
       blocksSubmit: true,
@@ -1722,9 +2082,22 @@ function webSlashExtraArgumentFeedback(
   ) {
     return {
       title: "SKILLS",
-      message: `/skills ${parts[1]} does not take extra arguments.`,
+      message: `skills ${parts[1]} does not take extra arguments.`,
       detail: `usage: /skills ${parts[1]}`,
       level: "error",
+      blocksSubmit: true,
+    };
+  }
+  if (
+    parts[0] === "skills" &&
+    (parts[1] === "show" || parts[1] === "enable" || parts[1] === "disable") &&
+    parts.length === 2
+  ) {
+    return {
+      title: "SKILLS",
+      message: `skills ${parts[1]} needs a skill name.`,
+      detail: `usage: /skills ${parts[1]} <skill>`,
+      level: "warning",
       blocksSubmit: true,
     };
   }
@@ -1735,7 +2108,7 @@ function webSlashExtraArgumentFeedback(
   ) {
     return {
       title: "SKILLS",
-      message: `/skills ${parts[1]} accepts exactly one skill name.`,
+      message: `skills ${parts[1]} accepts exactly one skill name.`,
       detail: `usage: /skills ${parts[1]} <skill>`,
       level: "error",
       blocksSubmit: true,
@@ -1748,16 +2121,16 @@ function webSlashExtraArgumentFeedback(
   ) {
     return {
       title: "TELEGRAM",
-      message: `/telegram ${parts[1]} accepts at most one chat_id.`,
+      message: `telegram ${parts[1]} accepts at most one chat_id.`,
       detail: `usage: /telegram ${parts[1]} [chat_id]`,
       level: "error",
       blocksSubmit: true,
     };
   }
-  if (webSlashFindCommand(parts[0])?.argumentKind === "app" && parts.length > 2) {
+  if (webSlashCommandAccepts("app-status", parts[0]) && parts.length > 2) {
     return {
       title: "APP STATUS",
-      message: "/app-status accepts exactly one app name.",
+      message: "app-status accepts exactly one app name.",
       detail: "usage: /app-status <app>",
       level: "error",
       blocksSubmit: true,
@@ -1767,72 +2140,228 @@ function webSlashExtraArgumentFeedback(
   return null;
 }
 
-function webSlashTelegramPicker(
+function webSlashPanelForInput(
   input: string,
   snapshot: DashboardSnapshot | null,
-): WebSlashTelegramPicker | null {
+): WebSlashPanel | null {
   const parsed = parseWebSlashCommand(input);
-  if (!parsed || parsed.parts.length !== 2 || parsed.parts[0] !== "telegram") {
+  if (!parsed) {
     return null;
   }
-  const action = parsed.parts[1];
-  if (action !== "approve" && action !== "reject") {
+  const parts = parsed.parts;
+  const [verb] = parts;
+  if (parts.length === 1) {
+    if (verb === "status") {
+      return { kind: "status" };
+    }
+    if (["debug", "sleep", "telegram", "skills"].includes(verb)) {
+      return { kind: "selection", panel: verb as Extract<WebSlashPanel, { kind: "selection" }>["panel"] };
+    }
+    if (webSlashCommandAccepts("app-status", verb)) {
+      const apps = webSlashAppNames(snapshot);
+      if (apps.length === 0) {
+        return {
+          kind: "detail",
+          title: "APP STATUS",
+          text: "No app state is currently available.",
+        };
+      }
+      return { kind: "selection", panel: "app-status" };
+    }
     return null;
   }
-  const requests = snapshot?.pending_access_requests ?? [];
-  return requests.length > 0 ? { action, requests } : null;
+  if (verb === "debug") {
+    if (parts[1] === "system-prompt" || parts[1] === "system_prompt") {
+      return {
+        kind: "detail",
+        title: "DEBUG SYSTEM PROMPT",
+        text: fallbackOutput(snapshot?.system_prompt_output),
+      };
+    }
+    if (
+      parts[1] === "context" ||
+      parts[1] === "preturn-context" ||
+      parts[1] === "preturn_context"
+    ) {
+      return {
+        kind: "detail",
+        title: "DEBUG CONTEXT",
+        text: fallbackOutput(snapshot?.preturn_context_output),
+      };
+    }
+  }
+  if (verb === "sleep" && parts[1] === "status") {
+    return { kind: "sleep-status" };
+  }
+  if (verb === "telegram") {
+    if (parts[1] === "status") {
+      return { kind: "telegram-status" };
+    }
+    if (parts[1] === "approve" || parts[1] === "reject") {
+      return { kind: "telegram-access", action: parts[1] };
+    }
+  }
+  if (webSlashCommandAccepts("app-status", verb) && parts.length === 2) {
+    const target = parts[1].toLowerCase();
+    const app = (snapshot?.app_status_outputs ?? []).find(([name]) => name === target);
+    if (app) {
+      return {
+        kind: "detail",
+        title: `APP STATUS ${target.toUpperCase()}`,
+        text: fallbackOutput(app[1]),
+      };
+    }
+  }
+  if (verb === "skills") {
+    if (parts[1] === "list" || (parts[1] === "show" && parts.length === 2)) {
+      return { kind: "skills-list", search: "" };
+    }
+    if (parts[1] === "show" && parts.length === 3) {
+      const skill = webSlashResolveSkillTarget(snapshot, parts[2]);
+      if (skill) {
+        return {
+          kind: "detail",
+          title: `SKILL ${skill.name}`,
+          text: webSlashSkillDetailText(skill),
+        };
+      }
+    }
+  }
+  return null;
 }
 
-function webSlashCommandResultForResponse(
+function webSlashActionForInput(
+  input: string,
+  snapshot: DashboardSnapshot | null,
+): DashboardAction | null {
+  const parsed = parseWebSlashCommand(input);
+  if (!parsed) {
+    return null;
+  }
+  const parts = parsed.parts;
+  if (parts.length === 1) {
+    if (parts[0] === "clear") {
+      return { kind: "clear_conversation" };
+    }
+    if (parts[0] === "restart") {
+      return { kind: "restart_daemon" };
+    }
+    return null;
+  }
+  if (parts[0] === "sleep" && parts[1] === "run") {
+    return { kind: "run_sleep" };
+  }
+  if (parts[0] === "skills" && parts[1] === "reload") {
+    return { kind: "reload_skills" };
+  }
+  if (
+    parts[0] === "skills" &&
+    (parts[1] === "enable" || parts[1] === "disable") &&
+    parts.length === 3
+  ) {
+    const skill = webSlashResolveSkillTarget(snapshot, parts[2]);
+    if (!skill) {
+      return null;
+    }
+    return {
+      kind: "set_skill_auto_use",
+      path: skill.path,
+      enabled: parts[1] === "enable",
+    };
+  }
+  if (
+    parts[0] === "telegram" &&
+    (parts[1] === "approve" || parts[1] === "reject") &&
+    parts.length === 3
+  ) {
+    const chatId = Number(parts[2]);
+    if (!Number.isSafeInteger(chatId)) {
+      return null;
+    }
+    return {
+      kind:
+        parts[1] === "approve"
+          ? "approve_telegram_access"
+          : "reject_telegram_access",
+      chat_id: chatId,
+    };
+  }
+  return null;
+}
+
+function webSlashActionFeedbackForResponse(
   input: string,
   output: string,
-): WebSlashCommandResult | null {
-  const level = webSlashCommandLevelForResponse(output);
-  if (webSlashIsClearCommand(input) && level !== "error") {
+): WebSlashActionFeedback | null {
+  if (webSlashIsClearCommand(input)) {
     return null;
   }
   const message = webSlashCompactMessage(output);
   if (!message && !output.trim()) {
     return null;
   }
-  const presentation =
-    webSlashCommandUsesPanel(input) && level !== "error" ? "panel" : "compact";
   return {
     command: input.trim(),
     title: webSlashCommandTitle(input),
-    output,
     message,
     detail: webSlashCommandDetail(output),
-    level,
-    presentation,
+    level: "info",
+    dismissible: true,
   };
 }
 
-function webSlashCommandUsesPanel(input: string) {
-  const parsed = parseWebSlashCommand(input);
-  if (!parsed) {
-    return false;
+function webSlashActionFeedbackForResult(
+  commandLabel: string,
+  result: DashboardActionResult,
+): WebSlashActionFeedback | null {
+  if (commandLabel.trim() === "/clear" && result.success) {
+    return null;
   }
-  const parts = parsed.parts;
-  if (parts[0] === "status") {
-    return true;
+  return {
+    command: commandLabel,
+    title: webSlashCommandTitle(commandLabel),
+    message: result.message,
+    detail: result.detail ?? undefined,
+    level: result.success ? "info" : "error",
+    dismissible: true,
+  };
+}
+
+function webSlashSelectionMeta(
+  panel: Extract<WebSlashPanel, { kind: "selection" }>["panel"],
+  snapshot: DashboardSnapshot | null,
+) {
+  if (panel === "skills") {
+    const skills = snapshot?.skills ?? [];
+    const autoCount = skills.filter((skill) => skill.auto_use_enabled).length;
+    const manualCount = skills.length - autoCount;
+    return {
+      title: "Skills",
+      subtitle: `${skills.length} loaded, ${autoCount} auto-use, ${manualCount} manual-only`,
+    };
   }
-  if (parts[0] === "debug" && parts.length >= 2) {
-    return true;
+  if (panel === "debug") {
+    return {
+      title: "Debug",
+      subtitle: "Inspect internal runtime views.",
+    };
   }
-  if (parts[0] === "sleep" && parts[1] === "status") {
-    return true;
+  if (panel === "sleep") {
+    return {
+      title: "Sleep",
+      subtitle: "Inspect sleep state or start a background sleep run.",
+    };
   }
-  if (
-    parts[0] === "skills" &&
-    (parts.length === 1 || parts[1] === "list" || parts[1] === "show")
-  ) {
-    return true;
+  if (panel === "telegram") {
+    return {
+      title: "Telegram",
+      subtitle: "Inspect transport state or handle access requests.",
+    };
   }
-  if (parts[0] === "telegram" && parts[1] === "status") {
-    return true;
-  }
-  return Boolean(webSlashFindCommand(parts[0])?.argumentKind === "app" && parts[1]);
+  return {
+    title: "App Status",
+    subtitle: "Choose an app to inspect.",
+  };
 }
 
 function webSlashIsClearCommand(input: string) {
@@ -1844,19 +2373,6 @@ function webSlashCommandTitle(input: string) {
   return (
     parseWebSlashCommand(input)?.parts.join(" ").toUpperCase() || "COMMAND"
   );
-}
-
-function webSlashCommandLevelForResponse(output: string): WebSlashCommandLevel {
-  const lower = output.toLowerCase();
-  return lower.includes("failed") ||
-    lower.includes("unknown") ||
-    lower.includes("invalid") ||
-    lower.includes("unavailable") ||
-    lower.includes("required") ||
-    lower.includes("cannot") ||
-    lower.includes("error")
-    ? "error"
-    : "info";
 }
 
 function webSlashCompactMessage(output: string) {
@@ -1881,51 +2397,153 @@ function webSlashFindCommand(verb: string) {
   );
 }
 
-function webSlashFindSubcommand(
-  command: WebSlashCommandDefinition,
-  name: string,
-) {
-  return command.subcommands?.find(
-    (subcommand) =>
-      subcommand.name === name || subcommand.aliases?.includes(name),
-  );
-}
-
-function webSlashSubcommandStartsWith(
-  subcommand: WebSlashSubcommandDefinition,
-  prefix: string,
-) {
-  return (
-    subcommand.name.startsWith(prefix) ||
-    Boolean(subcommand.aliases?.some((alias) => alias.startsWith(prefix)))
-  );
+function webSlashCommandAccepts(primaryVerb: string, verb: string) {
+  const command = WEB_SLASH_COMMANDS.find((candidate) => candidate.name === primaryVerb);
+  return command?.name === verb || Boolean(command?.aliases?.includes(verb));
 }
 
 function webSlashRootSuggestion(
   command: WebSlashCommandDefinition,
 ): WebSlashCommandSuggestion {
   return {
-    display: command.usage,
+    display: command.name,
     completion: `/${command.name}`,
     description: command.description,
   };
 }
 
-function webSlashSubcommandSuggestion(
-  command: WebSlashCommandDefinition,
-  subcommand: WebSlashSubcommandDefinition,
-): WebSlashCommandSuggestion {
-  return {
-    display: subcommand.usage,
-    completion: `/${command.name} ${subcommand.name}`,
-    description: subcommand.description,
-  };
+function webSlashSelectionItems(
+  panel: Extract<WebSlashPanel, { kind: "selection" }>["panel"],
+  snapshot: DashboardSnapshot | null,
+): WebSlashSelectionItem[] {
+  if (panel === "debug") {
+    return [
+      {
+        id: "debug-persona",
+        name: "Prompt persona",
+        description: "show current prompt persona config",
+      },
+      {
+        id: "debug-system-prompt",
+        name: "System prompt",
+        description: "show current runtime system prompt",
+      },
+      {
+        id: "debug-context",
+        name: "Runtime context",
+        description: "show latest pre-turn runtime context",
+      },
+    ];
+  }
+  if (panel === "sleep") {
+    return [
+      {
+        id: "sleep-status",
+        name: "Status",
+        description: "show sleep status",
+      },
+      {
+        id: "sleep-run",
+        name: "Start sleep run",
+        description: "start a background sleep run",
+      },
+    ];
+  }
+  if (panel === "telegram") {
+    const pending = snapshot?.pending_access_requests.length ?? 0;
+    return [
+      {
+        id: "telegram-status",
+        name: "Status",
+        description: "show Telegram transport details",
+      },
+      {
+        id: "telegram-approve",
+        name: "Approve access request",
+        description: `approve one of ${pending} pending requests`,
+        disabled: pending === 0,
+      },
+      {
+        id: "telegram-reject",
+        name: "Reject access request",
+        description: `reject one of ${pending} pending requests`,
+        disabled: pending === 0,
+      },
+    ];
+  }
+  if (panel === "skills") {
+    const skills = snapshot?.skills ?? [];
+    return [
+      {
+        id: "skills-list",
+        name: "List skills",
+        description: "show loaded skills and load errors",
+      },
+      {
+        id: "skills-toggle",
+        name: "Enable/Disable Skills",
+        description: "toggle whether skills may be selected automatically",
+        disabled: skills.length === 0,
+      },
+    ];
+  }
+  return (snapshot?.app_status_outputs ?? []).map(([name, output]) => ({
+    id: `app-status:${name}`,
+    name,
+    description: truncateText(
+      output
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean) ?? "app state",
+      120,
+    ),
+  }));
 }
 
-function webSlashSubcommandChoiceText(command: WebSlashCommandDefinition) {
-  return `available: ${(command.subcommands ?? [])
-    .map((subcommand) => subcommand.usage)
-    .join(" | ")}`;
+function webSlashRunSelectionItem(
+  itemId: string,
+  snapshot: DashboardSnapshot | null,
+  onSetPanel: (panel: WebSlashPanel | null) => void,
+  onRunAction: (command: string, detailTitle?: string) => void,
+  onRunDashboardAction: (action: DashboardAction) => void,
+) {
+  if (itemId === "debug-persona") {
+    onRunAction("/debug persona", "DEBUG PERSONA");
+  } else if (itemId === "debug-system-prompt") {
+    onSetPanel({
+      kind: "detail",
+      title: "DEBUG SYSTEM PROMPT",
+      text: fallbackOutput(snapshot?.system_prompt_output),
+    });
+  } else if (itemId === "debug-context") {
+    onSetPanel({
+      kind: "detail",
+      title: "DEBUG CONTEXT",
+      text: fallbackOutput(snapshot?.preturn_context_output),
+    });
+  } else if (itemId === "sleep-status") {
+    onSetPanel({ kind: "sleep-status" });
+  } else if (itemId === "sleep-run") {
+    onRunDashboardAction({ kind: "run_sleep" });
+  } else if (itemId === "telegram-status") {
+    onSetPanel({ kind: "telegram-status" });
+  } else if (itemId === "telegram-approve") {
+    onSetPanel({ kind: "telegram-access", action: "approve" });
+  } else if (itemId === "telegram-reject") {
+    onSetPanel({ kind: "telegram-access", action: "reject" });
+  } else if (itemId === "skills-list") {
+    onSetPanel({ kind: "skills-list", search: "" });
+  } else if (itemId === "skills-toggle") {
+    onSetPanel({ kind: "skills-toggle", search: "", feedback: null });
+  } else if (itemId.startsWith("app-status:")) {
+    const appName = itemId.slice("app-status:".length);
+    const app = (snapshot?.app_status_outputs ?? []).find(([name]) => name === appName);
+    onSetPanel({
+      kind: "detail",
+      title: `APP STATUS ${appName.toUpperCase()}`,
+      text: fallbackOutput(app?.[1]),
+    });
+  }
 }
 
 function webSlashAppNames(snapshot: DashboardSnapshot | null) {
@@ -1933,6 +2551,123 @@ function webSlashAppNames(snapshot: DashboardSnapshot | null) {
     .map(([name]) => name)
     .filter(Boolean)
     .sort();
+}
+
+function webSlashAvailableAppsText(snapshot: DashboardSnapshot | null) {
+  const apps = webSlashAppNames(snapshot);
+  return apps.length > 0
+    ? `available: ${apps.join(", ")}`
+    : "No app state is currently available.";
+}
+
+function webSlashStatusRows(
+  snapshot: DashboardSnapshot | null,
+): Array<[string, string | number | null | undefined]> {
+  const runtimeActivity = snapshot?.runtime_activity;
+  const tokenUsage = snapshot?.token_usage;
+  const context = snapshot?.context_composition;
+  const skills = snapshot?.skills ?? [];
+  return [
+    ["Runtime", snapshot?.runtime_status || runtimeActivity?.label || "Idle"],
+    ["Focused app", snapshot?.focused_app || "none"],
+    ["Active turn", runtimeActivity?.active_runtime_turn ? "yes" : "no"],
+    ["Phase", runtimeActivity?.active_runtime_phase],
+    ["Current plan", snapshot?.current_plan_step?.step],
+    ["Last cycle", formatWebSlashDuration(snapshot?.last_cycle_elapsed_ms)],
+    ["Input tokens", snapshot?.footer_estimated_input_tokens],
+    ["Main model", tokenUsage?.main_model],
+    ["Efficient model", tokenUsage?.efficient_model],
+    ["Context model", context?.model],
+    ["Context tokens", context?.total_estimated_tokens],
+    ["Skills", `${skills.length} loaded`],
+    ["Telegram pending", snapshot?.pending_access_requests.length ?? 0],
+  ];
+}
+
+function webSlashRuntimeOptimizationRows(
+  snapshot: DashboardSnapshot | null,
+): Array<[string, string | number | null | undefined]> {
+  const runtime = snapshot?.runtime_optimization;
+  return [
+    ["Running", runtime?.running ? "yes" : "no"],
+    ["Trigger", runtime?.current_trigger],
+    ["Last result", runtime?.last_result],
+    ["Last completed", formatWebSlashTimestamp(runtime?.last_completed_at_ms)],
+    ["Unread error backlog", runtime?.unread_runtime_error_backlog],
+    ["Error cases consumed", runtime?.total_runtime_error_cases_consumed],
+    ["Runtime cases", runtime?.total_runtime_error_cases],
+    ["Reflections", runtime?.total_runtime_error_reflections],
+    ["Contract candidates", runtime?.total_runtime_contract_candidates],
+    ["Candidate evaluations", runtime?.total_runtime_contract_candidate_evaluations],
+    ["System additions", runtime?.total_runtime_contract_system_additions],
+    ["Contract updates", runtime?.total_runtime_contract_updates],
+  ];
+}
+
+function webSlashPrimitiveOptimizationRows(
+  snapshot: DashboardSnapshot | null,
+): Array<[string, string | number | null | undefined]> {
+  const primitive = snapshot?.primitive_optimization;
+  return [
+    ["Running", primitive?.running ? "yes" : "no"],
+    ["Trigger", primitive?.current_trigger],
+    ["Last result", primitive?.last_result],
+    ["Last completed", formatWebSlashTimestamp(primitive?.last_completed_at_ms)],
+    ["Evidence records", primitive?.primitive_evidence_records],
+    ["Evidence run records", primitive?.total_primitive_evidence_run_records],
+    ["Reflections", primitive?.total_primitive_reflections],
+    ["Patch candidates", primitive?.total_primitive_patch_candidates],
+    ["Merge candidates", primitive?.total_primitive_merge_candidates],
+    ["Candidate evaluations", primitive?.total_primitive_candidate_evaluations],
+    ["Frontier entries", primitive?.total_primitive_frontier_entries],
+    ["Frontier root entries", primitive?.latest_primitive_frontier_root_entries],
+    ["Frontier branched entries", primitive?.latest_primitive_frontier_branched_entries],
+    ["Frontier max generation", primitive?.latest_primitive_frontier_max_generation],
+    ["Patch applied", primitive?.total_primitive_patch_applied],
+    ["Merge applied", primitive?.total_primitive_merge_applied],
+    ["Rollbacks", primitive?.total_primitive_update_rollbacks],
+    ["Optimization rounds", primitive?.total_primitive_optimization_rounds],
+  ];
+}
+
+function webSlashFilteredSkills(
+  snapshot: DashboardSnapshot | null,
+  query: string,
+) {
+  const normalized = query.trim().toLowerCase();
+  const skills = snapshot?.skills ?? [];
+  if (!normalized) {
+    return skills;
+  }
+  return skills.filter((skill) =>
+    [skill.name, skill.description, skill.path, skill.scope].some((value) =>
+      value.toLowerCase().includes(normalized),
+    ),
+  );
+}
+
+function webSlashResolveSkillTarget(
+  snapshot: DashboardSnapshot | null,
+  target: string,
+) {
+  const skills = snapshot?.skills ?? [];
+  return (
+    skills.find((skill) => skill.path === target) ??
+    skills.find((skill) => skill.name === target) ??
+    null
+  );
+}
+
+function webSlashSkillDetailText(
+  skill: NonNullable<DashboardSnapshot["skills"]>[number],
+) {
+  return [
+    `Name: ${skill.name}`,
+    `Status: ${webSlashSkillStatusDescription(skill)}`,
+    `Scope: ${skill.scope}`,
+    `Path: ${skill.path}`,
+    `Description: ${skill.description}`,
+  ].join("\n");
 }
 
 function webSlashSkillStatusDescription(
@@ -1948,6 +2683,63 @@ function webSlashSkillStatusDescription(
     return "manual-only: policy disallows implicit invocation";
   }
   return "manual-only";
+}
+
+function fallbackOutput(output: string | null | undefined) {
+  return output?.trim() ? output : "no data";
+}
+
+function renderWebSlashDetailLines(text: string) {
+  const lines = fallbackOutput(text).split(/\r?\n/);
+  let previousBlank = true;
+  return lines.map((rawLine) => {
+    const line = rawLine.trimEnd();
+    let kind: "blank" | "header" | "bullet" | "label" | "text" = "text";
+    if (!line.trim()) {
+      previousBlank = true;
+      return { kind: "blank", text: "" };
+    }
+    if (previousBlank && line.length < 72 && !line.includes(":")) {
+      kind = "header";
+    } else if (line.startsWith("• ")) {
+      kind = "bullet";
+    } else if (line.includes(":")) {
+      kind = "label";
+    }
+    previousBlank = false;
+    return { kind, text: line };
+  });
+}
+
+function formatWebSlashValue(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") {
+    return "none";
+  }
+  return String(value);
+}
+
+function formatWebSlashDuration(durationMs: number | null | undefined) {
+  if (durationMs === null || durationMs === undefined) {
+    return null;
+  }
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+  const totalSeconds = Math.floor(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function formatWebSlashTimestamp(timestampMs: number | null | undefined) {
+  if (timestampMs === null || timestampMs === undefined) {
+    return null;
+  }
+  try {
+    return new Date(timestampMs).toLocaleString();
+  } catch {
+    return String(timestampMs);
+  }
 }
 
 function truncateText(text: string, maxLength: number) {
@@ -1989,13 +2781,11 @@ function formatFileSize(bytes: number) {
 function AgentChatBubbles({
   sessionId,
   snapshot,
-  isFocused,
   panelRef,
   composerHeight,
 }: {
   sessionId: string;
   snapshot: DashboardSnapshot | null;
-  isFocused: boolean;
   panelRef: RefObject<HTMLDivElement | null>;
   composerHeight: number;
 }) {
@@ -2021,12 +2811,10 @@ function AgentChatBubbles({
     () => mergeAgentChatBubbles(historyBubbles, snapshotBubbles),
     [historyBubbles, snapshotBubbles],
   );
-  const displayItems = useMemo(() => {
-    const items = foldCompletedAgentChatActivity(bubbles);
-    return isFocused
-      ? items
-      : items.slice(-AGENT_CHAT_PREVIEW_MAX_VISIBLE_BUBBLES);
-  }, [bubbles, isFocused]);
+  const displayItems = useMemo(
+    () => foldCompletedAgentChatActivity(bubbles),
+    [bubbles],
+  );
 
   function scrollToChatBottom(behavior: ScrollBehavior = "auto") {
     const panel = panelRef.current;
@@ -2043,9 +2831,7 @@ function AgentChatBubbles({
   function updateScrollButtonVisibility(panel: HTMLDivElement) {
     const distanceFromBottom =
       panel.scrollHeight - panel.clientHeight - panel.scrollTop;
-    setShowScrollToBottom(
-      isFocused && distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX,
-    );
+    setShowScrollToBottom(distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX);
   }
 
   function handleScroll(event: UIEvent<HTMLDivElement>) {
@@ -2053,18 +2839,13 @@ function AgentChatBubbles({
     const distanceFromBottom =
       panel.scrollHeight - panel.clientHeight - panel.scrollTop;
 
-    if (isFocused) {
-      lastFocusedScrollTopRef.current = panel.scrollTop;
-      hasFocusedScrollPositionRef.current = true;
-      isFocusedNearBottomRef.current =
-        distanceFromBottom <= AGENT_CHAT_STICKY_BOTTOM_THRESHOLD_PX;
-    }
+    lastFocusedScrollTopRef.current = panel.scrollTop;
+    hasFocusedScrollPositionRef.current = true;
+    isFocusedNearBottomRef.current =
+      distanceFromBottom <= AGENT_CHAT_STICKY_BOTTOM_THRESHOLD_PX;
 
-    setShowScrollToBottom(
-      isFocused && distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX,
-    );
+    setShowScrollToBottom(distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX);
     if (
-      isFocused &&
       panel.scrollTop <= AGENT_CHAT_STICKY_BOTTOM_THRESHOLD_PX &&
       hasMoreBefore &&
       !isLoadingHistory
@@ -2081,7 +2862,6 @@ function AgentChatBubbles({
 
   const loadOlderHistory = useCallback(async () => {
     if (
-      !isFocused ||
       isLoadingHistory ||
       !hasMoreBefore ||
       oldestCursor === null
@@ -2118,7 +2898,6 @@ function AgentChatBubbles({
     }
   }, [
     hasMoreBefore,
-    isFocused,
     isLoadingHistory,
     oldestCursor,
     panelRef,
@@ -2131,22 +2910,13 @@ function AgentChatBubbles({
       return;
     }
 
-    if (isFocused) {
-      if (!hasFocusedScrollPositionRef.current) {
-        lastFocusedScrollTopRef.current = panel.scrollHeight;
-        hasFocusedScrollPositionRef.current = true;
-        isFocusedNearBottomRef.current = true;
-      }
-      shouldRestoreFocusScrollRef.current = true;
-      return;
+    if (!hasFocusedScrollPositionRef.current) {
+      lastFocusedScrollTopRef.current = panel.scrollHeight;
+      hasFocusedScrollPositionRef.current = true;
+      isFocusedNearBottomRef.current = true;
     }
-
-    shouldRestoreFocusScrollRef.current = false;
-    setShowScrollToBottom(false);
-    window.requestAnimationFrame(() => {
-      scrollToChatBottom();
-    });
-  }, [isFocused, panelRef]);
+    shouldRestoreFocusScrollRef.current = true;
+  }, [panelRef]);
 
   useEffect(() => {
     const historyWindow = snapshot?.activity_history;
@@ -2158,10 +2928,6 @@ function AgentChatBubbles({
   }, [sessionId, snapshot?.activity_history?.newest_cursor]);
 
   useEffect(() => {
-    if (!isFocused) {
-      return;
-    }
-
     const restore = restoreAfterPrependRef.current;
     if (!restore) {
       return;
@@ -2179,18 +2945,11 @@ function AgentChatBubbles({
       updateScrollButtonVisibility(panel);
       restoreAfterPrependRef.current = null;
     });
-  }, [historyBubbles.length, isFocused, panelRef]);
+  }, [historyBubbles.length, panelRef]);
 
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel) {
-      return;
-    }
-
-    if (!isFocused) {
-      window.requestAnimationFrame(() => {
-        scrollToChatBottom();
-      });
       return;
     }
 
@@ -2230,13 +2989,12 @@ function AgentChatBubbles({
         distanceFromBottom > AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX,
       );
     }
-  }, [bubbles.length, isFocused, panelRef]);
+  }, [bubbles.length, panelRef]);
 
   useEffect(() => {
     const panel = panelRef.current;
     if (
       !panel ||
-      !isFocused ||
       !hasMoreBefore ||
       isLoadingHistory ||
       restoreAfterPrependRef.current
@@ -2247,35 +3005,29 @@ function AgentChatBubbles({
     if (panel.scrollTop <= AGENT_CHAT_STICKY_BOTTOM_THRESHOLD_PX) {
       void loadOlderHistory();
     }
-  }, [hasMoreBefore, isFocused, isLoadingHistory, loadOlderHistory, panelRef]);
+  }, [hasMoreBefore, isLoadingHistory, loadOlderHistory, panelRef]);
 
   return (
     <>
       <div
         ref={panelRef}
-        aria-label="Agent chat preview"
-        aria-hidden={!isFocused}
+        aria-label="Agent activity"
         onScroll={handleScroll}
         style={{
           paddingBottom: composerHeight + AGENT_CHAT_COMPOSER_BOTTOM_GAP_PX,
         }}
         className={cn(
-          "absolute inset-0 w-full overflow-y-auto pt-6 text-left [scrollbar-gutter:stable] transition-[filter,opacity] duration-300 ease-out",
-          isFocused
-            ? "pointer-events-auto z-20 opacity-100"
-            : "pointer-events-none z-0 opacity-35 blur-[1px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+          "relative z-10 min-h-0 w-full max-w-full flex-1 overflow-x-hidden overflow-y-auto text-left [scrollbar-gutter:stable] [scrollbar-width:thin]",
         )}
       >
-        <div className="relative z-10 flex min-h-full w-full flex-col justify-end">
+        <div className="relative z-10 flex min-h-full w-full min-w-0 max-w-full flex-col justify-end">
           {displayItems.length > 0 ? (
             <div
               className={cn(
-                "w-full space-y-3 px-6 py-1.5",
-                !isFocused && "space-y-2",
+                "mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-3 overflow-x-hidden px-2 py-4 sm:px-4 md:px-6",
               )}
             >
-              {isFocused &&
-              (hasMoreBefore || isLoadingHistory || historyError) ? (
+              {hasMoreBefore || isLoadingHistory || historyError ? (
                 <div className="flex justify-center py-1">
                   {hasMoreBefore ? (
                     <Button
@@ -2292,9 +3044,11 @@ function AgentChatBubbles({
                     </Button>
                   ) : null}
                   {historyError ? (
-                    <p role="alert" className="px-3 text-xs text-destructive">
-                      {historyError}
-                    </p>
+                    <Alert variant="destructive" className="max-w-xl px-2 py-1">
+                      <AlertDescription className="text-xs">
+                        {historyError}
+                      </AlertDescription>
+                    </Alert>
                   ) : null}
                 </div>
               ) : null}
@@ -2303,23 +3057,28 @@ function AgentChatBubbles({
                   <AgentChatBubbleItem
                     key={item.id}
                     bubble={item.bubble}
-                    isFocused={isFocused}
                   />
                 ) : (
                   <AgentChatFoldedActivityGroup
                     key={item.id}
                     id={item.id}
                     bubbles={item.bubbles}
-                    isFocused={isFocused}
                   />
                 ),
               )}
             </div>
           ) : (
-            <p className="mx-auto max-w-[min(32rem,calc(100vw-3rem))] px-4 py-3 text-center text-xs text-muted-foreground/70">
-              Focus the bottom composer to float the message stream around the
-              agent across the screen.
-            </p>
+            <div className="mx-auto flex min-h-[40vh] w-full min-w-0 max-w-3xl items-center justify-center px-6 text-center">
+              <Empty className="border border-dashed bg-card/60">
+                <EmptyHeader>
+                  <EmptyTitle>No activity yet</EmptyTitle>
+                  <EmptyDescription>
+                    Messages and tool activity will appear here as the session
+                    starts working.
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            </div>
           )}
         </div>
       </div>
@@ -2345,7 +3104,7 @@ function AgentChatBubbles({
             : "pointer-events-none translate-y-2 opacity-0",
         )}
       >
-        <ArrowDownIcon className="size-4" aria-hidden="true" />
+        <ArrowDownIcon data-icon="inline-start" aria-hidden="true" />
       </Button>
     </>
   );
@@ -2354,11 +3113,11 @@ function AgentChatBubbles({
 function AgentChatFoldedActivityGroup({
   id,
   bubbles,
-  isFocused,
+  isFocused = true,
 }: {
   id: string;
   bubbles: AgentChatBubble[];
-  isFocused: boolean;
+  isFocused?: boolean;
 }) {
   const { open, toggle } = useCollapsibleState(false);
   const activityCount = bubbles.length;
@@ -2371,32 +3130,24 @@ function AgentChatFoldedActivityGroup({
   return (
     <article
       className={cn(
-        "w-full py-1 text-sm leading-6 text-muted-foreground",
+        "w-full min-w-0 max-w-full text-sm leading-6 text-muted-foreground",
         !isFocused && "select-none",
       )}
     >
-      <div className="rounded-2xl border border-border/45 bg-background/50 p-4 shadow-sm backdrop-blur-xl">
-        <div className="flex min-w-0 items-center justify-between gap-4">
-          <p className="min-w-0 truncate font-semibold text-foreground/90">
-            Worked For {workedDurationLabel}
-          </p>
-          {isFocused ? (
-            <CollapsibleTrigger
-              open={open}
-              onToggle={toggle}
-              className="ml-3 w-auto shrink-0 text-xs"
-            >
-              {open ? "Hide" : "Show"}
-            </CollapsibleTrigger>
-          ) : null}
-        </div>
+      <div className="min-w-0 max-w-full">
+        <AgentChatWorkedDivider
+          label={`Worked for ${workedDurationLabel}`}
+          open={open}
+          onToggle={isFocused ? toggle : undefined}
+        />
         {isFocused && open ? (
-          <div className="mt-4 border-l border-border/60 pl-3">
+          <div className="min-w-0 pt-2">
             {bubbles.map((bubble) => (
               <AgentChatBubbleItem
                 key={`${id}-${bubble.id}`}
                 bubble={bubble}
                 isFocused={isFocused}
+                compact
               />
             ))}
           </div>
@@ -2408,11 +3159,17 @@ function AgentChatFoldedActivityGroup({
 
 function AgentChatBubbleItem({
   bubble,
-  isFocused,
+  isFocused = true,
+  compact = false,
 }: {
   bubble: AgentChatBubble;
-  isFocused: boolean;
+  isFocused?: boolean;
+  compact?: boolean;
 }) {
+  if (bubble.uiHint === "final-message-separator") {
+    return <AgentWorkedSeparator bubble={bubble} compact={compact} />;
+  }
+
   const isConversationMessage = agentChatBubbleIsConversationMessage(bubble);
   const activityCellRender = agentChatActivityCellRenderForBubble(bubble);
   const useCanonicalActivityCell = Boolean(activityCellRender);
@@ -2434,17 +3191,17 @@ function AgentChatBubbleItem({
         : 3;
   const visibleBlocks = primaryBlocks.slice(0, visibleBlockLimit);
 
-  return (
-    <article
+  const content = (
+    <div
       className={cn(
-        "w-full py-1.5",
+        "w-full min-w-0 max-w-full overflow-hidden [overflow-wrap:anywhere]",
         bubble.live || bubble.status === "running"
           ? "text-foreground"
           : "text-foreground/95",
         !isFocused && "select-none",
       )}
     >
-      <div className="space-y-2 text-sm leading-6 text-foreground">
+      <div className="flex min-w-0 max-w-full flex-col gap-2 text-sm leading-6 text-foreground">
         {!isConversationMessage && !useCanonicalActivityCell ? (
           <AgentChatActivityHeader bubble={bubble} isFocused={isFocused} />
         ) : null}
@@ -2454,7 +3211,7 @@ function AgentChatBubbleItem({
             render={activityCellRender}
           />
         ) : (
-          <div className="space-y-2 text-foreground/90">
+          <div className="flex min-w-0 max-w-full flex-col gap-2 text-foreground/90">
             {visibleBlocks.map((block, index) => (
               <AgentChatBlock
                 key={`${bubble.id}-block-${index}`}
@@ -2467,8 +3224,92 @@ function AgentChatBubbleItem({
           </div>
         )}
       </div>
+    </div>
+  );
+
+  if (compact) {
+    return <div className="min-w-0 max-w-full py-1.5">{content}</div>;
+  }
+
+  return (
+    <article
+      aria-label={bubble.title || "Activity"}
+      className={cn(
+        "w-full min-w-0 max-w-full overflow-x-clip border-l border-transparent px-1 py-1.5 [overflow-wrap:anywhere]",
+        bubble.status === "failed" || bubble.kind === "error"
+          ? "border-destructive/45"
+          : "",
+      )}
+    >
+      {content}
     </article>
   );
+}
+
+function AgentWorkedSeparator({
+  bubble,
+  compact,
+}: {
+  bubble: AgentChatBubble;
+  compact: boolean;
+}) {
+  const label = normalizeAgentChatWorkedLabel(bubble.title.trim() || "Worked");
+
+  return (
+    <AgentChatWorkedDivider label={label} compact={compact} />
+  );
+}
+
+function AgentChatWorkedDivider({
+  label,
+  compact = false,
+  open,
+  onToggle,
+}: {
+  label: string;
+  compact?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
+}) {
+  const interactive = Boolean(onToggle);
+  const className = cn(
+    "group flex w-full min-w-0 items-center gap-1 border-b border-border/70 px-2 text-left text-sm text-muted-foreground transition-colors",
+    compact ? "h-8" : "h-10",
+    interactive && "cursor-pointer hover:text-foreground",
+  );
+  const content = (
+    <>
+      <span className="min-w-0 shrink-0 truncate">{label}</span>
+      {interactive ? (
+        <ChevronRightIcon
+          aria-hidden="true"
+          className={cn(
+            "size-4 shrink-0 transition-transform duration-150",
+            open && "rotate-90",
+          )}
+        />
+      ) : null}
+    </>
+  );
+
+  if (interactive) {
+    return (
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className={className}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return <div className={className}>{content}</div>;
+}
+
+function normalizeAgentChatWorkedLabel(label: string) {
+  return label.replace(/^Worked For\b/, "Worked for");
 }
 
 function AgentChatActivityHeader({
@@ -2481,6 +3322,7 @@ function AgentChatActivityHeader({
   const isRunning = bubble.live || bubble.status === "running";
   const statusText = agentChatActivityStatusText(bubble.status, bubble.live);
   const subtitle = agentChatActivitySubtitle(bubble);
+  const icon = agentChatActivityIconForBubble(bubble);
 
   return (
     <div
@@ -2492,18 +3334,31 @@ function AgentChatActivityHeader({
       <span
         aria-hidden="true"
         className={cn(
-          "mt-0.5 inline-flex size-5 shrink-0 items-center justify-center font-mono text-[0.65rem] font-semibold leading-none",
+          "mt-0.5 inline-flex size-5 shrink-0 items-center justify-center",
           agentChatActivityIconClass(bubble),
-          !isFocused && "size-4 text-[0.58rem]",
+          !isFocused && "size-4",
         )}
       >
-        {agentChatActivityGlyph(bubble)}
+        {isRunning ? (
+          <span className="font-mono text-sm font-semibold leading-none motion-safe:animate-pulse">
+            •
+          </span>
+        ) : (
+          <span
+            className={cn(
+              "font-mono text-sm font-semibold leading-none",
+              !isFocused && "text-xs",
+            )}
+          >
+            {icon === "error" ? "■" : "•"}
+          </span>
+        )}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <p
             className={cn(
-              "min-w-0 break-words text-sm font-semibold leading-6 text-foreground",
+              "min-w-0 break-words text-sm font-semibold leading-6 text-foreground [overflow-wrap:anywhere]",
               !isFocused && "text-xs leading-5",
             )}
           >
@@ -2517,7 +3372,7 @@ function AgentChatActivityHeader({
               )}
             >
               {isRunning ? (
-                <Loader2Icon className="size-2.5 animate-spin" />
+                <Spinner className="size-2.5" />
               ) : null}
               {statusText}
             </span>
@@ -2538,10 +3393,23 @@ function AgentChatActivityCellView({
   render,
 }: AgentChatActivityCellViewProps) {
   if (render.kind === "text") {
+    if (render.icon === "user") {
+      return (
+        <AgentChatPromptCell
+          id={bubbleId}
+          title={render.title}
+          bodyLines={render.bodyLines}
+          fullBody={render.fullBody}
+          imageAttachments={render.imageAttachments}
+          markdown={false}
+        />
+      );
+    }
+
     return (
       <AgentChatActivityTextCell
         id={bubbleId}
-        marker={render.marker}
+        icon={render.icon}
         title={render.title}
         bodyLines={render.bodyLines}
         fullBody={render.fullBody}
@@ -2568,7 +3436,7 @@ function AgentChatActivityCellView({
     return (
       <AgentChatActivityTextCell
         id={bubbleId}
-        marker={render.marker}
+        icon={render.icon}
         title={render.title}
         bodyLines={render.detailLines}
         bodyLimit={render.detailLimit}
@@ -2580,7 +3448,7 @@ function AgentChatActivityCellView({
   if (render.kind === "plan") {
     return render.steps.length > 0 ? (
       <AgentChatPlanActivityPanel
-        marker={render.marker}
+        icon={render.icon}
         title={render.title}
         steps={render.steps}
       />
@@ -2590,7 +3458,7 @@ function AgentChatActivityCellView({
   if (render.kind === "primitive") {
     return (
       <AgentChatStatusLineCell
-        marker={render.marker}
+        icon={render.icon}
         label={render.title}
         value={render.primitiveId}
         valueClassName="font-mono break-all"
@@ -2602,7 +3470,7 @@ function AgentChatActivityCellView({
     return (
       <AgentChatCommandExecutionPanel
         mode={render.running ? "running" : "completed"}
-        marker={render.marker}
+        icon={render.icon}
         title={render.title}
         outputLines={render.outputLines}
         exitCode={render.exitCode}
@@ -2610,10 +3478,20 @@ function AgentChatActivityCellView({
     );
   }
 
+  if (render.kind === "explored") {
+    return (
+      <AgentChatExploredActivityPanel
+        icon={render.icon}
+        title={render.title}
+        calls={render.calls}
+      />
+    );
+  }
+
   if (render.kind === "patch") {
     return (
       <AgentChatPatchActivityPanel
-        marker={render.marker}
+        icon={render.icon}
         title={render.title}
         files={render.files}
       />
@@ -2624,7 +3502,7 @@ function AgentChatActivityCellView({
     return (
       <AgentChatMessageActivityLine
         id={bubbleId}
-        marker={render.marker}
+        icon={render.icon}
         title={render.title}
         detailLines={render.detailLines}
         messageLines={render.messageLines}
@@ -2636,23 +3514,27 @@ function AgentChatActivityCellView({
 
   return (
     <AgentChatReplyActivityLine
-      marker={render.marker}
+      id={bubbleId}
+      icon={render.icon}
       title={render.title}
       messageLines={render.messageLines}
       disposition={render.disposition}
+      subject={render.subject}
     />
   );
 }
 
 function AgentChatActivityMarker({
-  marker,
+  icon,
   tone = "default",
   className,
 }: {
-  marker: string;
+  icon: AgentChatActivityMarkerKind;
   tone?: "default" | "error";
   className?: string;
 }) {
+  const marker = icon === "error" || tone === "error" ? "■" : "•";
+
   return (
     <span
       aria-hidden="true"
@@ -2667,9 +3549,104 @@ function AgentChatActivityMarker({
   );
 }
 
+function AgentChatPromptCell({
+  id,
+  title,
+  bodyLines,
+  fullBody,
+  imageAttachments = [],
+  markdown,
+}: {
+  id: string;
+  title: string;
+  bodyLines: string[];
+  fullBody?: string | null;
+  imageAttachments?: AgentChatImageAttachmentData[];
+  markdown: boolean;
+}) {
+  const text = fullBody?.trimEnd() || [title, ...bodyLines].join("\n").trimEnd();
+  const lines = text ? text.split("\n") : [];
+
+  return (
+    <div className="flex min-w-0 max-w-full flex-col gap-1 py-1 text-sm leading-6 text-foreground [overflow-wrap:anywhere]">
+      {lines.length > 0 ? (
+        <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-2 px-2 sm:px-3">
+          <span
+            aria-hidden="true"
+            className="inline-flex h-6 w-3 shrink-0 items-center justify-start font-mono text-sm font-semibold leading-none text-muted-foreground"
+          >
+            ›
+          </span>
+          <div className="min-w-0">
+            {markdown ? (
+              <AgentChatMarkdownText
+                text={text}
+                limit={AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT}
+              />
+            ) : (
+              lines.map((line, index) => (
+                <p
+                  key={`${id}-prompt-line-${index}`}
+                  className="min-w-0 whitespace-pre-wrap break-words"
+                >
+                  {line || "\u00a0"}
+                </p>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
+      {imageAttachments.length > 0 ? (
+        <div className="flex min-w-0 max-w-full flex-col gap-2 pl-7 pr-2 sm:pl-8 sm:pr-3">
+          {imageAttachments.map((attachment, index) => (
+            <AgentChatImageAttachment
+              key={`${id}-prompt-image-${index}`}
+              label={attachment.label}
+              uri={attachment.uri}
+              mimeType={attachment.mimeType}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AgentChatDetailRows({
+  rows,
+  className,
+}: {
+  rows: ReactNode[];
+  className?: string;
+}) {
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        "grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)] px-2 text-sm leading-6 sm:px-3",
+        className,
+      )}
+    >
+      {rows.map((row, index) => (
+        <Fragment key={`detail-row-${index}`}>
+          <span className="select-none font-mono text-muted-foreground">
+            {index === 0 ? "└" : ""}
+          </span>
+          <div className="min-w-0 break-words text-muted-foreground">
+            {row}
+          </div>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
 function AgentChatActivityTextCell({
   id,
-  marker,
+  icon,
   title,
   bodyLines,
   fullBody,
@@ -2678,7 +3655,7 @@ function AgentChatActivityTextCell({
   tone = "default",
 }: {
   id: string;
-  marker: string;
+  icon: AgentChatActivityMarkerKind;
   title: string;
   bodyLines: string[];
   fullBody?: string | null;
@@ -2694,14 +3671,14 @@ function AgentChatActivityTextCell({
   return (
     <div
       className={cn(
-        "space-y-1 text-sm leading-6 text-foreground/90",
+        "flex min-w-0 max-w-full flex-col gap-1 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]",
         tone === "error" && "text-destructive",
         tone === "muted" && "text-muted-foreground",
       )}
     >
-      <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-[16px] px-3">
+      <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-3 px-2 sm:gap-x-[16px] sm:px-3">
         <AgentChatActivityMarker
-          marker={marker}
+          icon={icon}
           tone={tone === "error" ? "error" : "default"}
         />
         <p
@@ -2717,7 +3694,7 @@ function AgentChatActivityTextCell({
       {renderedLineCount > 0 ? (
         <div
           className={cn(
-            "space-y-0.5 px-3 text-muted-foreground",
+            "flex min-w-0 max-w-full flex-col gap-0.5 pl-7 pr-2 text-muted-foreground sm:pl-8 sm:pr-3",
             tone === "error" && "text-destructive/90",
             tone === "muted" && "text-muted-foreground",
           )}
@@ -2730,7 +3707,7 @@ function AgentChatActivityTextCell({
         </div>
       ) : null}
       {imageAttachments.length > 0 ? (
-        <div className="space-y-2 px-3">
+        <div className="flex min-w-0 max-w-full flex-col gap-2 px-2 sm:px-3">
           {imageAttachments.map((attachment, index) => (
             <AgentChatImageAttachment
               key={`${id}-activity-image-${index}`}
@@ -2746,21 +3723,21 @@ function AgentChatActivityTextCell({
 }
 
 function AgentChatStatusLineCell({
-  marker,
+  icon,
   label,
   value,
   suffix = "",
   valueClassName,
 }: {
-  marker: string;
+  icon: AgentChatActivityMarkerKind;
   label: string;
   value?: string;
   suffix?: string;
   valueClassName?: string;
 }) {
   return (
-    <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-[16px] px-3 text-sm leading-6 text-foreground/90">
-      <AgentChatActivityMarker marker={marker} />
+    <div className="grid min-w-0 max-w-full grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-3 px-2 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere] sm:gap-x-[16px] sm:px-3">
+      <AgentChatActivityMarker icon={icon} />
       <p className="min-w-0 break-words font-semibold text-foreground">
         {label}
         {value ? (
@@ -2795,7 +3772,7 @@ function AgentChatThinkingCollapsibleCell({
   const isTruncatable = Boolean(fullBody) || bodyLines.length > bodyLimit;
 
   return (
-    <div className="space-y-0.5 text-sm leading-6 text-foreground/90 border-l-2 border-muted pl-3 ml-3">
+    <div className="ml-3 flex min-w-0 max-w-full flex-col gap-0.5 border-l-2 border-muted pl-3 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]">
       <div className="flex items-center gap-1.5 min-w-0">
         <p className="min-w-0 break-words font-semibold text-foreground">
           <AgentChatMarkdownInline text={title} />
@@ -2812,9 +3789,10 @@ function AgentChatThinkingCollapsibleCell({
       </div>
       {contentLines.length > 0 ? (
         <div
-          className={`relative text-muted-foreground ${
-            !open && isTruncatable ? "max-h-[4.5rem] overflow-hidden" : ""
-          }`}
+          className={cn(
+            "relative min-w-0 max-w-full text-muted-foreground",
+            !open && isTruncatable && "max-h-[4.5rem] overflow-hidden",
+          )}
         >
           {contentLines.map((line, index) => (
             <p
@@ -2834,99 +3812,65 @@ function AgentChatThinkingCollapsibleCell({
 }
 
 function AgentChatPlanActivityPanel({
-  marker,
+  icon,
   title,
   steps,
 }: {
-  marker: string;
+  icon: AgentChatActivityMarkerKind;
   title: string;
   steps: AgentChatPlanStep[];
 }) {
   const visibleSteps = steps.slice(0, AGENT_CHAT_PLAN_STEP_LIMIT);
+  const rows =
+    visibleSteps.length > 0
+      ? visibleSteps.map((step) => (
+          <AgentChatPlanStepLine key={`${step.status}-${step.text}`} step={step} />
+        ))
+      : [<span className="text-muted-foreground/75">No active plan.</span>];
 
   return (
-    <div className="space-y-1.5 text-sm">
-      <div className="flex min-w-0 items-start gap-x-[16px] px-3 leading-6">
-        <AgentChatActivityMarker marker={marker} />
-        <p className="min-w-0 break-words font-semibold text-foreground">
+    <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm [overflow-wrap:anywhere]">
+      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
+        <AgentChatActivityMarker icon={icon} />
+        <p className="min-w-0 break-words font-semibold text-foreground [overflow-wrap:anywhere]">
           {title}
         </p>
       </div>
-      {visibleSteps.length > 0 ? (
-        <div role="table" aria-label="Plan" className="space-y-1">
-          <div
-            role="row"
-            className="grid grid-cols-[8.5rem_1fr] gap-3 px-3 py-0.5 text-[0.68rem] font-semibold uppercase tracking-wide text-muted-foreground"
-          >
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Step</span>
-          </div>
-          {visibleSteps.map((step, index) => {
-            const isCurrent = step.status === "in_progress";
-            return (
-              <div
-                key={`plan-step-${index}`}
-                role="row"
-                aria-current={isCurrent ? "step" : undefined}
-                className={cn(
-                  "grid grid-cols-[8.5rem_1fr] gap-3 px-3 py-0.5 text-sm",
-                  isCurrent && "font-medium",
-                )}
-              >
-                <span role="cell">
-                  <AgentChatPlanStatusBadge status={step.status} />
-                </span>
-                <span
-                  role="cell"
-                  className={cn(
-                    "min-w-0 break-words text-foreground/90",
-                    isCurrent && "font-medium text-foreground",
-                    step.status === "pending" && "text-muted-foreground",
-                  )}
-                >
-                  {step.text}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
+      <AgentChatDetailRows rows={rows} />
     </div>
   );
 }
 
-function AgentChatPlanStatusBadge({
-  status,
+function AgentChatPlanStepLine({
+  step,
 }: {
-  status: AgentChatPlanStepStatus;
+  step: AgentChatPlanStep;
 }) {
-  const label = agentChatPlanStatusLabel(status);
-  const marker = status === "pending" ? "○" : "●";
+  const marker = step.status === "completed" ? "✔" : "□";
+  const isCurrent = step.status === "in_progress";
 
   return (
-    <span
+    <p
       className={cn(
-        "inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground",
-        status === "in_progress" && "text-foreground",
+        "min-w-0 break-words text-muted-foreground",
+        isCurrent && "font-semibold text-primary",
+        step.status === "completed" && "text-muted-foreground/65 line-through",
       )}
     >
-      <span aria-hidden="true" className="font-mono text-[0.65rem]">
-        {marker}
-      </span>
-      {label}
-    </span>
+      <span className="mr-1 font-mono">{marker}</span>
+      {step.text}
+    </p>
   );
 }
 
 function AgentChatCommandExecutionPanel({
   mode,
-  marker,
+  icon,
   title,
   outputLines,
-  exitCode,
 }: {
   mode: "running" | "completed";
-  marker: string;
+  icon: AgentChatActivityMarkerKind;
   title: string;
   outputLines: string[];
   exitCode?: number | null;
@@ -2942,14 +3886,15 @@ function AgentChatCommandExecutionPanel({
   const verb = mode === "running" ? "Running" : "Ran";
 
   return (
-    <div className="space-y-1 text-sm">
-      <div className="flex min-w-0 items-start gap-x-[16px] px-3 leading-6">
+    <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm [overflow-wrap:anywhere]">
+      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
         {mode === "running" ? (
-          <span className="inline-flex h-6 w-3 shrink-0 items-center justify-start text-muted-foreground">
-            <Loader2Icon className="size-3 animate-spin" />
-          </span>
+          <AgentChatActivityMarker
+            icon={icon}
+            className="motion-safe:animate-pulse"
+          />
         ) : (
-          <AgentChatActivityMarker marker={marker} />
+          <AgentChatActivityMarker icon={icon} />
         )}
         <p
           className="min-w-0 flex-1 truncate font-semibold text-foreground"
@@ -2960,11 +3905,6 @@ function AgentChatCommandExecutionPanel({
             {title}
           </span>
         </p>
-        {typeof exitCode === "number" ? (
-          <span className="shrink-0 text-[0.68rem] font-medium leading-none text-muted-foreground">
-            exit {exitCode}
-          </span>
-        ) : null}
       </div>
       <AgentChatTerminalOutputBlock lines={renderedOutput} />
     </div>
@@ -2972,72 +3912,120 @@ function AgentChatCommandExecutionPanel({
 }
 
 function AgentChatTerminalOutputBlock({ lines }: { lines: string[] }) {
-  return (
-    <pre className="overflow-x-auto whitespace-pre px-3 font-mono text-xs leading-5 text-muted-foreground [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]">
-      {lines.map((line, index) => (
-        <Fragment key={`terminal-output-${index}`}>
-          <span
-            className={cn(line.startsWith("… +") && "text-muted-foreground/70")}
-          >
-            {line}
-          </span>
-          {index + 1 < lines.length ? "\n" : null}
-        </Fragment>
-      ))}
+  const rows = lines.map((line, index) => (
+    <pre
+      key={`terminal-output-${index}`}
+      className={cn(
+        "min-w-0 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-muted-foreground",
+        line.startsWith("… +") && "text-muted-foreground/70",
+      )}
+    >
+      {line}
     </pre>
+  ));
+
+  return (
+    <AgentChatDetailRows rows={rows} />
   );
 }
 
-function AgentChatPatchActivityPanel({
-  marker,
+function AgentChatExploredActivityPanel({
+  icon,
   title,
-  files,
+  calls,
 }: {
-  marker: string;
+  icon: AgentChatActivityMarkerKind;
   title: string;
-  files: AgentChatDiffFile[];
+  calls: AgentChatExploredCall[];
 }) {
-  const visibleFiles = files.slice(0, AGENT_CHAT_PATCH_FILE_LIMIT);
-  const hiddenFileCount = files.length - visibleFiles.length;
+  const rows = agentChatExploredDetailRows(calls);
+  const hiddenCallCount = Math.max(0, calls.length - AGENT_CHAT_EXPLORED_CALL_LIMIT);
+  if (hiddenCallCount > 0) {
+    rows.push(
+      <span className="text-muted-foreground/75">
+        … +{hiddenCallCount} more calls
+      </span>,
+    );
+  }
 
   return (
-    <div className="space-y-1.5 text-sm">
-      <div className="flex min-w-0 items-start gap-x-[16px] px-3 leading-6">
-        <AgentChatActivityMarker marker={marker} />
+    <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm [overflow-wrap:anywhere]">
+      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
+        <AgentChatActivityMarker icon={icon} />
         <p className="min-w-0 break-words font-semibold text-foreground">
           {title}
         </p>
       </div>
-      {visibleFiles.length > 0 ? (
-        <div className="space-y-2 px-3">
-          {visibleFiles.map((file, index) => (
-            <AgentChatPatchFileBlock
-              key={`${file.path}-${index}`}
-              file={file}
-            />
-          ))}
-          {hiddenFileCount > 0 ? (
-            <p className="text-xs text-muted-foreground">
-              … {hiddenFileCount} more file(s)
-            </p>
-          ) : null}
-        </div>
+      {rows.length > 0 ? (
+        <AgentChatDetailRows rows={rows} />
       ) : (
-        <p className="px-3 text-xs text-muted-foreground">No file changes</p>
+        <p className="px-2 text-xs text-muted-foreground sm:px-3">
+          No explored tool calls
+        </p>
       )}
     </div>
   );
 }
 
-function AgentChatPatchFileBlock({ file }: { file: AgentChatDiffFile }) {
+function AgentChatPatchActivityPanel({
+  icon,
+  title,
+  files,
+}: {
+  icon: AgentChatActivityMarkerKind;
+  title: string;
+  files: AgentChatDiffFile[];
+}) {
+  const visibleFiles = files.slice(0, AGENT_CHAT_PATCH_FILE_LIMIT);
+  const hiddenFileCount = files.length - visibleFiles.length;
+  const rows = visibleFiles.map((file, index) => (
+    <AgentChatPatchFileBlock
+      key={`${file.path}-${index}`}
+      file={file}
+      hideHeader={files.length === 1}
+    />
+  ));
+  if (hiddenFileCount > 0) {
+    rows.push(
+      <p className="text-xs text-muted-foreground">
+        … {hiddenFileCount} more files
+      </p>,
+    );
+  }
+
+  return (
+    <div className="flex min-w-0 max-w-full flex-col gap-1.5 text-sm [overflow-wrap:anywhere]">
+      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
+        <AgentChatActivityMarker icon={icon} />
+        <p className="min-w-0 break-words font-semibold text-foreground">
+          {title}
+        </p>
+      </div>
+      {visibleFiles.length > 0 ? (
+        <AgentChatDetailRows rows={rows} />
+      ) : (
+        <p className="px-2 text-xs text-muted-foreground sm:px-3">No file changes</p>
+      )}
+    </div>
+  );
+}
+
+function AgentChatPatchFileBlock({
+  file,
+  hideHeader = false,
+}: {
+  file: AgentChatDiffFile;
+  hideHeader?: boolean;
+}) {
   const visibleLines = file.lines.slice(0, AGENT_CHAT_PATCH_DIFF_LINE_LIMIT);
   const hiddenLineCount = file.lines.length - visibleLines.length;
   const oldWidth = agentChatDiffLineNumberWidth(visibleLines, "old_lineno");
   const newWidth = agentChatDiffLineNumberWidth(visibleLines, "new_lineno");
 
   return (
-    <div className="space-y-1">
-      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+    <div className="flex min-w-0 max-w-full flex-col gap-1">
+      {!hideHeader ? (
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
         <p className="min-w-0 break-all font-mono text-xs font-semibold text-foreground/90">
           {file.path}
         </p>
@@ -3047,9 +4035,10 @@ function AgentChatPatchFileBlock({ file }: { file: AgentChatDiffFile }) {
         <span className="font-mono text-[0.7rem] text-muted-foreground">
           +{file.added_lines} -{file.removed_lines}
         </span>
-      </div>
+        </div>
+      ) : null}
       {visibleLines.length > 0 ? (
-        <div className="overflow-x-auto font-mono text-xs leading-5 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]">
+        <div className="min-w-0 max-w-full overflow-x-auto font-mono text-xs leading-5 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]">
           {visibleLines.map((line, index) => (
             <AgentChatPatchDiffRow
               key={`patch-line-${index}`}
@@ -3080,7 +4069,7 @@ function AgentChatPatchDiffRow({
 }) {
   if (line.kind === "hunk_break") {
     return (
-      <div className="grid min-w-max grid-cols-[var(--old-width)_var(--new-width)_1rem_minmax(0,1fr)] gap-2 px-3 py-0.5 text-muted-foreground/70 [--new-width:2.5rem] [--old-width:2.5rem]">
+      <div className="grid min-w-0 grid-cols-[var(--old-width)_var(--new-width)_1rem_minmax(0,1fr)] gap-1 px-2 py-0.5 text-muted-foreground/70 [--new-width:2.5rem] [--old-width:2.5rem] sm:min-w-max sm:gap-2 sm:px-3">
         <span>{"".padStart(oldWidth, " ")}</span>
         <span>{"".padStart(newWidth, " ")}</span>
         <span>⋮</span>
@@ -3102,7 +4091,7 @@ function AgentChatPatchDiffRow({
   return (
     <div
       className={cn(
-        "grid min-w-max grid-cols-[var(--old-width)_var(--new-width)_1rem_minmax(0,1fr)] gap-2 px-3 py-0.5",
+        "grid min-w-0 grid-cols-[var(--old-width)_var(--new-width)_1rem_minmax(0,1fr)] gap-1 px-2 py-0.5 sm:min-w-max sm:gap-2 sm:px-3",
         "[--new-width:2.5rem] [--old-width:2.5rem]",
         line.kind === "add" && "bg-muted/30",
         line.kind === "delete" && "bg-muted/20",
@@ -3117,14 +4106,16 @@ function AgentChatPatchDiffRow({
       <span className="select-none font-semibold text-muted-foreground">
         {gutter}
       </span>
-      <span className="whitespace-pre text-foreground/85">{line.text}</span>
+      <span className="whitespace-pre-wrap break-words text-foreground/85 sm:whitespace-pre">
+        {line.text}
+      </span>
     </div>
   );
 }
 
 function AgentChatMessageActivityLine({
   id,
-  marker,
+  icon,
   title,
   detailLines,
   messageLines,
@@ -3132,7 +4123,7 @@ function AgentChatMessageActivityLine({
   messageLimit,
 }: {
   id: string;
-  marker: string;
+  icon: AgentChatActivityMarkerKind;
   title: string;
   detailLines: string[];
   messageLines: string[];
@@ -3145,15 +4136,15 @@ function AgentChatMessageActivityLine({
   const hiddenMessageCount = messageLines.length - visibleMessageLines.length;
 
   return (
-    <div className="space-y-1 text-sm leading-6 text-foreground/90">
-      <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-[16px] px-3">
-        <AgentChatActivityMarker marker={marker} />
+    <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]">
+      <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-3 px-2 sm:gap-x-[16px] sm:px-3">
+        <AgentChatActivityMarker icon={icon} />
         <p className="min-w-0 break-words font-semibold text-foreground">
           {title}
         </p>
       </div>
       {visibleDetailLines.length > 0 || hiddenDetailCount > 0 ? (
-        <div className="space-y-0.5 pl-10 pr-3 text-xs leading-5 text-muted-foreground">
+        <div className="flex min-w-0 max-w-full flex-col gap-0.5 pl-7 pr-2 text-xs leading-5 text-muted-foreground sm:pl-10 sm:pr-3">
           {visibleDetailLines.map((line, index) => (
             <p key={`${id}-detail-${index}`} className="break-words">
               {line}
@@ -3165,7 +4156,7 @@ function AgentChatMessageActivityLine({
         </div>
       ) : null}
       {visibleMessageLines.length > 0 || hiddenMessageCount > 0 ? (
-        <div className="space-y-0.5 px-3 text-foreground/90">
+        <div className="flex min-w-0 max-w-full flex-col gap-0.5 px-2 text-foreground/90 sm:px-3">
           {visibleMessageLines.map((line, index) => (
             <p key={`${id}-message-${index}`} className="min-w-0 break-words">
               <AgentChatMarkdownInline text={line} />
@@ -3183,27 +4174,47 @@ function AgentChatMessageActivityLine({
 }
 
 function AgentChatReplyActivityLine({
-  marker,
+  id,
+  icon,
   title,
   messageLines,
   disposition,
+  subject,
 }: {
-  marker: string;
+  id: string;
+  icon: AgentChatActivityMarkerKind;
   title: string;
   messageLines: string[];
   disposition: string;
+  subject: string;
 }) {
+  if (disposition === "resolved" && subject === "message") {
+    const agentMessage = agentChatAgentMessageFromLines(messageLines);
+    if (!agentMessage) {
+      return null;
+    }
+    return (
+      <AgentChatActivityTextCell
+        id={id}
+        icon="activity"
+        title={agentMessage.title}
+        bodyLines={agentMessage.bodyLines}
+        fullBody={agentMessage.fullBody}
+      />
+    );
+  }
+
   return (
     <div
       className={cn(
-        "space-y-1 text-sm leading-6 text-foreground/90",
+        "flex min-w-0 max-w-full flex-col gap-1 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]",
         disposition === "failed" && "text-destructive",
         disposition === "dismissed" && "text-muted-foreground",
       )}
     >
-      <div className="flex min-w-0 items-start gap-x-[16px] px-3 leading-6">
+      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
         <AgentChatActivityMarker
-          marker={marker}
+          icon={icon}
           tone={disposition === "failed" ? "error" : "default"}
           className={
             disposition === "dismissed" ? "text-muted-foreground" : undefined
@@ -3220,7 +4231,7 @@ function AgentChatReplyActivityLine({
         </p>
       </div>
       {messageLines.length > 0 ? (
-        <div className="px-3 text-foreground/90">
+        <div className="px-2 text-foreground/90 sm:px-3">
           <AgentChatMarkdownText
             text={messageLines.join("\n")}
             limit={AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT}
@@ -3316,7 +4327,7 @@ function AgentChatBlock({
         href={url}
         target="_blank"
         rel="noreferrer"
-        className="break-all text-sky-300 underline-offset-4 hover:underline"
+        className="break-all text-primary underline-offset-4 hover:underline"
       >
         {label}
       </a>
@@ -3337,7 +4348,7 @@ function AgentChatBlock({
         href={uri}
         target="_blank"
         rel="noreferrer"
-        className="break-all text-sky-300 underline-offset-4 hover:underline"
+        className="break-all text-primary underline-offset-4 hover:underline"
       >
         {label}
       </a>
@@ -3387,7 +4398,7 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
   return (
     <div
       className={cn(
-        "space-y-2 text-sm leading-6 text-foreground/90",
+        "flex min-w-0 max-w-full flex-col gap-2 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]",
         tone === "error" && "text-destructive",
       )}
     >
@@ -3425,12 +4436,12 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
             </h5>
           ),
           ul: ({ children }: any) => (
-            <ul className="list-disc space-y-1 pl-5 text-foreground/90">
+            <ul className="flex list-disc flex-col gap-1 pl-5 text-foreground/90">
               {children}
             </ul>
           ),
           ol: ({ children }: any) => (
-            <ol className="list-decimal space-y-1 pl-5 text-foreground/90">
+            <ol className="flex list-decimal flex-col gap-1 pl-5 text-foreground/90">
               {children}
             </ol>
           ),
@@ -3442,15 +4453,15 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
               {children}
             </blockquote>
           ),
-          hr: () => <hr className="border-border/70" />,
+          hr: () => <Separator />,
           p: ({ children }: any) => <p className="break-words">{children}</p>,
           code: (props: any) => {
             const { inline, className, children } = props;
             if (!inline && className) {
               const language = String(className).replace(/^language-/, "");
               return (
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 px-3">
+                <div className="flex min-w-0 max-w-full flex-col gap-1">
+                  <div className="flex items-center gap-2 px-2 sm:px-3">
                     <span className="font-mono text-[0.7rem] leading-none text-muted-foreground">
                       &lt;/&gt;
                     </span>
@@ -3458,7 +4469,7 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
                       {language || "Code"}
                     </span>
                   </div>
-                  <pre className="max-h-72 overflow-auto whitespace-pre px-3 font-mono text-[0.82rem] leading-6 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]">
+                  <pre className="max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre-wrap px-2 font-mono text-[0.82rem] leading-6 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] sm:whitespace-pre sm:px-3">
                     <code className={className}>{children}</code>
                   </pre>
                 </div>
@@ -3478,7 +4489,7 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
                 href={href}
                 target="_blank"
                 rel="noreferrer"
-                className="break-all text-sky-300 underline-offset-4 hover:underline"
+                className="break-all text-primary underline-offset-4 hover:underline"
               >
                 {children}
               </a>
@@ -3540,7 +4551,7 @@ function AgentChatMarkdownInline({ text }: { text: string }) {
               href={href}
               target="_blank"
               rel="noreferrer"
-              className="break-all text-sky-300 underline-offset-4 hover:underline"
+              className="break-all text-primary underline-offset-4 hover:underline"
             >
               {children}
             </a>
@@ -3573,7 +4584,7 @@ function AgentChatListItems({
   return (
     <ul
       className={cn(
-        "space-y-1 text-foreground/90",
+        "flex flex-col gap-1 text-foreground/90",
         dense ? "text-xs" : "text-sm",
       )}
     >
@@ -3605,7 +4616,7 @@ function AgentChatImageAttachment({
   const title = [label, mimeType].filter(Boolean).join(" · ");
 
   return (
-    <figure className="max-w-[min(28rem,100%)] overflow-hidden rounded-2xl border border-border/60 bg-muted/20">
+    <figure className="min-w-0 max-w-[min(28rem,100%)] overflow-hidden rounded-lg border border-border/60 bg-muted/20">
       <a href={imageUrl} target="_blank" rel="noreferrer" className="block">
         <img
           src={imageUrl}
@@ -3661,7 +4672,7 @@ const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
   }
 
   return (
-    <div className="space-y-1">
+    <div className="flex min-w-0 max-w-full flex-col gap-1">
       <div className="flex items-center justify-between gap-3 px-3">
         <div className="flex min-w-0 items-center gap-2">
           <span
@@ -3686,16 +4697,16 @@ const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
             className="rounded-full text-muted-foreground hover:text-foreground"
           >
             {hasCopied ? (
-              <CheckIcon className="size-3.5" />
+              <CheckIcon data-icon="inline-start" aria-hidden="true" />
             ) : (
-              <ClipboardIcon className="size-3.5" />
+              <ClipboardIcon data-icon="inline-start" aria-hidden="true" />
             )}
           </Button>
         ) : null}
       </div>
       <div className="relative">
         <pre
-          className="max-h-72 overflow-auto whitespace-pre px-3 font-mono text-[0.82rem] leading-6 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]"
+          className="max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre px-3 font-mono text-[0.82rem] leading-6 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]"
           data-code-block-id={id}
         >
           {visibleLines.join("\n")}
@@ -3767,24 +4778,27 @@ function AgentChatDiffBlock({
   const hiddenFileCount = files.length - visibleFiles.length;
 
   return (
-    <div className="space-y-2 font-mono text-xs">
+    <div className="flex min-w-0 max-w-full flex-col gap-2 font-mono text-xs">
       {visibleFiles.map((file, fileIndex) => {
         const visibleLines = file.lines.slice(0, limit);
         const hiddenLines = file.lines.slice(limit);
         return (
-          <div key={`${id}-file-${fileIndex}`} className="space-y-1">
-            <div className="flex items-center justify-between gap-3 px-3">
+          <div
+            key={`${id}-file-${fileIndex}`}
+            className="flex min-w-0 max-w-full flex-col gap-1"
+          >
+            <div className="flex items-center justify-between gap-3 px-2 sm:px-3">
               <p className="min-w-0 truncate text-foreground/85">{file.path}</p>
               <span className="shrink-0 font-sans text-[0.68rem] text-muted-foreground">
-                <span className="text-emerald-300">+{file.added_lines}</span>{" "}
-                <span className="text-red-300">-{file.removed_lines}</span>
+                <span className="text-primary">+{file.added_lines}</span>{" "}
+                <span className="text-destructive">-{file.removed_lines}</span>
               </span>
             </div>
-            <pre className="max-h-72 overflow-auto whitespace-pre px-3 leading-5 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]">
+            <pre className="max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre-wrap px-2 leading-5 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] sm:whitespace-pre sm:px-3">
               {visibleLines.map((line) => renderDiffLine(line)).join("\n")}
             </pre>
             {hiddenLines.length > 0 ? (
-              <p className="px-3 font-sans text-xs text-muted-foreground">
+              <p className="px-2 font-sans text-xs text-muted-foreground sm:px-3">
                 … +{hiddenLines.length} more diff line(s)
               </p>
             ) : null}
@@ -4011,6 +5025,7 @@ function agentChatBubbleFromWebActivityItem(
     role: agentChatRoleFromWebActivity(actor, kind, source),
     kind,
     status,
+    uiHint: nullableStringValue(record.ui_hint),
     title,
     createdAt: numberValue(record.created_at, 0),
     updatedAt: numberValue(record.updated_at, 0),
@@ -4077,40 +5092,14 @@ function agentChatFallbackTitle(actor: string, kind: string) {
   return "Activity";
 }
 
-function agentChatActivityGlyph(bubble: AgentChatBubble) {
-  if (bubble.kind === "tool") {
-    if (bubble.toolName === "terminal") {
-      return "$";
-    }
-    if (bubble.toolName === "browser") {
-      return "↗";
-    }
-    if (
-      bubble.appName === "Coding" ||
-      bubble.toolName === "explored"
-    ) {
-      return "◎";
-    }
-    return "⌁";
-  }
-
-  if (bubble.kind === "patch") {
-    return "±";
-  }
-
-  if (bubble.kind === "primitive") {
-    return "◇";
-  }
-
-  if (bubble.kind === "memory") {
-    return "◌";
-  }
-
+function agentChatActivityIconForBubble(
+  bubble: AgentChatBubble,
+): AgentChatActivityMarkerKind {
   if (bubble.kind === "error" || bubble.status === "failed") {
-    return "!";
+    return "error";
   }
 
-  return "·";
+  return "activity";
 }
 
 function agentChatActivityIconClass(bubble: AgentChatBubble) {
@@ -4123,7 +5112,7 @@ function agentChatActivityIconClass(bubble: AgentChatBubble) {
   }
 
   if (bubble.kind === "patch") {
-    return "text-emerald-400";
+    return "text-primary";
   }
 
   return "text-muted-foreground";
@@ -4193,26 +5182,26 @@ function agentChatActivityCellRenderForBubble(
 
   const assistant = agentChatActivityCellPayload(cell, "Assistant");
   if (assistant) {
-    return agentChatTextActivityRender("›", assistant, "Activity");
+    return agentChatTextActivityRender("activity", assistant, "Activity");
   }
 
   const user = agentChatActivityCellPayload(cell, "User");
   if (user) {
-    const render = agentChatTextActivityRender("•", user, "user");
+    const render = agentChatTextActivityRender("user", user, "user");
     render.imageAttachments = imageAttachmentsValue(user.image_attachments);
     return render;
   }
 
   const appAttention = agentChatActivityCellPayload(cell, "AppAttention");
   if (appAttention) {
-    return agentChatTextActivityRender("◉", appAttention, "Focused App");
+    return agentChatTextActivityRender("activity", appAttention, "Focused App");
   }
 
   const browser = agentChatActivityCellPayload(cell, "Browser");
   if (browser) {
     return {
       kind: "browser",
-      marker: "↗",
+      icon: "activity",
       title: `Captured URL: ${compactAgentChatBrowserUrl(nullableStringValue(browser.url) ?? "unknown")}`,
       detailLines: agentChatBrowserStatsLines(browser),
     };
@@ -4223,7 +5212,7 @@ function agentChatActivityCellRenderForBubble(
     const url = nullableStringValue(liveBrowser.url);
     return {
       kind: "browser",
-      marker: "↗",
+      icon: "activity",
       title: url
         ? `Opening URL: ${compactAgentChatBrowserUrl(url)}`
         : stringValue(liveBrowser.title, "Browser action"),
@@ -4238,7 +5227,7 @@ function agentChatActivityCellRenderForBubble(
   if (genericApp) {
     return {
       kind: "text",
-      marker: "•",
+      icon: "activity",
       title: `App: ${stringValue(genericApp.title, "Tool")}`,
       bodyLines: [],
     };
@@ -4248,8 +5237,8 @@ function agentChatActivityCellRenderForBubble(
   if (plan) {
     return {
       kind: "plan",
-      marker: "∷",
-      title: "Plan",
+      icon: "activity",
+      title: agentChatPlanTitleFromActivityCell(plan),
       steps: agentChatPlanStepsFromActivityCell(cell),
     };
   }
@@ -4261,7 +5250,7 @@ function agentChatActivityCellRenderForBubble(
   if (createPrimitive) {
     return {
       kind: "primitive",
-      marker: "⌘",
+      icon: "activity",
       title: "Created Primitive Spec:",
       primitiveId: stringValue(createPrimitive.primitive_id, "unknown"),
     };
@@ -4274,9 +5263,19 @@ function agentChatActivityCellRenderForBubble(
   if (activatePrimitive) {
     return {
       kind: "primitive",
-      marker: "⌘",
+      icon: "activity",
       title: "Activated Primitive:",
       primitiveId: stringValue(activatePrimitive.primitive_id, "unknown"),
+    };
+  }
+
+  const explored = agentChatActivityCellPayload(cell, "Explored");
+  if (explored) {
+    return {
+      kind: "explored",
+      icon: "activity",
+      title: stringValue(explored.title, "Explored"),
+      calls: agentChatExploredCallsFromActivityCell(explored),
     };
   }
 
@@ -4284,7 +5283,7 @@ function agentChatActivityCellRenderForBubble(
   if (execResult) {
     return {
       kind: "exec",
-      marker: "•",
+      icon: "activity",
       title: stringValue(execResult.title, "Command"),
       outputLines: stringArrayValuePreserveWhitespace(execResult.output_lines),
       exitCode: parseAgentChatExitCode(nullableStringValue(execResult.meta)),
@@ -4295,7 +5294,7 @@ function agentChatActivityCellRenderForBubble(
   if (liveExec) {
     return {
       kind: "exec",
-      marker: "•",
+      icon: "activity",
       title: stringValue(liveExec.title, "Tool running"),
       outputLines: stringArrayValuePreserveWhitespace(liveExec.output_lines),
       running: true,
@@ -4308,7 +5307,7 @@ function agentChatActivityCellRenderForBubble(
     const files = agentChatPatchFilesFromActivityCell(patch);
     return {
       kind: "patch",
-      marker: "∂",
+      icon: "activity",
       title: agentChatPatchTitle(files),
       files,
     };
@@ -4318,7 +5317,7 @@ function agentChatActivityCellRenderForBubble(
   if (telegram) {
     return {
       kind: "messageActivity",
-      marker: "◦",
+      icon: "activity",
       title: stringValue(telegram.title, "Telegram"),
       detailLines: stringArrayValue(telegram.detail_lines),
       messageLines: stringArrayValue(telegram.message_lines),
@@ -4332,13 +5331,14 @@ function agentChatActivityCellRenderForBubble(
     const disposition = normalizeAgentChatReplyDisposition(reply.disposition);
     return {
       kind: "reply",
-      marker: "✣",
+      icon: "activity",
       title: agentChatReplyTitle(
         disposition,
         stringValue(reply.subject, "message"),
       ),
       messageLines: stringArrayValue(reply.message_lines),
       disposition,
+      subject: stringValue(reply.subject, "message").toLowerCase(),
     };
   }
 
@@ -4346,7 +5346,7 @@ function agentChatActivityCellRenderForBubble(
   if (terminalWait) {
     return {
       kind: "text",
-      marker: "•",
+      icon: "activity",
       title: stringValue(terminalWait.title, "Terminal wait"),
       bodyLines: stringArrayValue(terminalWait.body_lines),
       bodyLimit: AGENT_CHAT_TERMINAL_WAIT_LINE_LIMIT,
@@ -4357,7 +5357,7 @@ function agentChatActivityCellRenderForBubble(
   if (error) {
     return {
       kind: "text",
-      marker: "!",
+      icon: "error",
       title: stringValue(error.title, "Error"),
       bodyLines: stringArrayValue(error.body_lines),
       bodyLimit: AGENT_CHAT_ERROR_LINE_LIMIT,
@@ -4380,17 +5380,177 @@ function agentChatActivityCellRenderForBubble(
 }
 
 function agentChatTextActivityRender(
-  marker: string,
+  icon: AgentChatActivityMarkerKind,
   cell: Record<string, unknown>,
   fallbackTitle: string,
 ): Extract<AgentChatActivityCellRender, { kind: "text" }> {
   return {
     kind: "text",
-    marker,
+    icon,
     title: stringValue(cell.title, fallbackTitle),
     bodyLines: stringArrayValue(cell.body_lines),
     fullBody: nullableStringValue(cell.full_body),
   };
+}
+
+function agentChatAgentMessageFromLines(messageLines: string[]) {
+  if (messageLines.length === 0) {
+    return null;
+  }
+
+  const fullBody = messageLines.join("\n").replace(/[\r\n]+$/, "");
+  const lines = fullBody.split("\n");
+  const title = lines[0] ?? "";
+  return {
+    title,
+    bodyLines: lines.slice(1),
+    fullBody,
+  };
+}
+
+function agentChatExploredCallsFromActivityCell(
+  cell: Record<string, unknown>,
+): AgentChatExploredCall[] {
+  return arrayValue(cell.calls)
+    .map(asRecord)
+    .filter((call): call is Record<string, unknown> => Boolean(call))
+    .map((call) => ({
+      toolName: stringValue(call.tool_name, "tool"),
+      action: normalizeAgentChatExploredAction(call.action),
+      target: nullableStringValue(call.target),
+      secondaryTarget: nullableStringValue(call.secondary_target),
+      summary: stringValue(call.summary, ""),
+      detailLines: stringArrayValue(call.detail_lines),
+      detailTitle: nullableStringValue(call.detail_title),
+    }));
+}
+
+function normalizeAgentChatExploredAction(
+  value: unknown,
+): AgentChatExploredCallAction {
+  if (typeof value !== "string") {
+    return "unknown";
+  }
+
+  const normalized = value.toLowerCase();
+  if (
+    normalized === "read" ||
+    normalized === "list" ||
+    normalized === "search" ||
+    normalized === "run"
+  ) {
+    return normalized;
+  }
+
+  return "unknown";
+}
+
+function agentChatExploredActionLabel(action: AgentChatExploredCallAction) {
+  if (action === "read") {
+    return "Read";
+  }
+  if (action === "list") {
+    return "List";
+  }
+  if (action === "search") {
+    return "Search";
+  }
+  if (action === "run") {
+    return "Run";
+  }
+  return "Tool";
+}
+
+function agentChatExploredDetailRows(calls: AgentChatExploredCall[]) {
+  const rows: ReactNode[] = [];
+  const visibleCalls = calls.slice(0, AGENT_CHAT_EXPLORED_CALL_LIMIT);
+  let index = 0;
+
+  while (index < visibleCalls.length) {
+    const call = visibleCalls[index];
+    if (call.action === "read") {
+      const names = [agentChatExploredReadTarget(call)];
+      index += 1;
+      while (index < visibleCalls.length && visibleCalls[index].action === "read") {
+        names.push(agentChatExploredReadTarget(visibleCalls[index]));
+        index += 1;
+      }
+      rows.push(
+        <AgentChatExploredActionLine
+          action="Read"
+          detail={dedupeStrings(names).join(", ")}
+        />,
+      );
+      continue;
+    }
+
+    rows.push(
+      <AgentChatExploredActionLine
+        action={agentChatExploredActionLabel(call.action)}
+        detail={agentChatExploredCallDetail(call)}
+      />,
+    );
+    index += 1;
+  }
+
+  return rows;
+}
+
+function AgentChatExploredActionLine({
+  action,
+  detail,
+}: {
+  action: string;
+  detail: string;
+}) {
+  return (
+    <p className="min-w-0 break-words text-foreground/90">
+      <span className="font-medium text-primary">{action}</span>
+      {detail ? <span> {detail}</span> : null}
+    </p>
+  );
+}
+
+function agentChatExploredCallDetail(call: AgentChatExploredCall) {
+  if (call.action === "search") {
+    if (call.target) {
+      return call.secondaryTarget
+        ? `${call.target.trim()} in ${compactAgentChatCodingSummaryPath(call.secondaryTarget)}`
+        : call.target.trim();
+    }
+    return call.summary;
+  }
+
+  if (call.action === "list") {
+    return call.target
+      ? compactAgentChatCodingSummaryPath(call.target)
+      : call.summary;
+  }
+
+  if (call.action === "run") {
+    return call.target?.trim() || call.summary;
+  }
+
+  return call.summary;
+}
+
+function agentChatExploredReadTarget(call: AgentChatExploredCall) {
+  return compactAgentChatCodingSummaryPath(call.target || call.summary);
+}
+
+function compactAgentChatCodingSummaryPath(value: string) {
+  const target = value
+    .split(" -> ")[0]
+    .split(":L")[0]
+    .split("#")[0]
+    .trim();
+  const normalized = target.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.at(-1) ?? target;
+}
+
+function dedupeStrings(values: string[]) {
+  return values.filter((value, index) => value && values.indexOf(value) === index);
 }
 
 function agentChatBrowserStatsLines(cell: Record<string, unknown>): string[] {
@@ -4426,24 +5586,19 @@ function agentChatPatchFilesFromActivityCell(
 }
 
 function agentChatPatchTitle(files: AgentChatDiffFile[]) {
+  if (files.length === 1) {
+    const file = files[0];
+    return `Edited ${file.path} (+${file.added_lines} -${file.removed_lines})`;
+  }
+
   const fileNoun = files.length === 1 ? "File" : "Files";
   return `Edited ${files.length} ${fileNoun}`;
 }
 
-function agentChatPlanStatusLabel(status: AgentChatPlanStepStatus) {
-  if (status === "in_progress") {
-    return "In progress";
-  }
-
-  if (status === "completed") {
-    return "Completed";
-  }
-
-  if (status === "pending") {
-    return "Pending";
-  }
-
-  return "Unknown";
+function agentChatPlanTitleFromActivityCell(cell: Record<string, unknown>) {
+  return stringValue(cell.kind, "updated").toLowerCase() === "proposed"
+    ? "Proposed Plan"
+    : "Updated Plan";
 }
 
 function normalizeAgentChatReplyDisposition(value: unknown) {
@@ -4764,40 +5919,4 @@ function safeJsonPreview(value: unknown) {
   } catch {
     return "unknown";
   }
-}
-
-function agentChatSendResultText(output: string) {
-  return /^queued (terminal|session) message as event\b/.test(output)
-    ? "Sent to agent"
-    : output;
-}
-
-function useTypewriterText(text: string) {
-  const characters = useMemo(() => Array.from(text), [text]);
-  const [visibleCharacters, setVisibleCharacters] = useState(0);
-
-  useEffect(() => {
-    setVisibleCharacters(0);
-
-    if (characters.length === 0) {
-      return;
-    }
-
-    let nextLength = 0;
-    const intervalId = window.setInterval(() => {
-      nextLength += 1;
-      setVisibleCharacters(nextLength);
-
-      if (nextLength >= characters.length) {
-        window.clearInterval(intervalId);
-      }
-    }, SUMMARY_TYPE_INTERVAL_MS);
-
-    return () => window.clearInterval(intervalId);
-  }, [characters]);
-
-  return {
-    isTyping: visibleCharacters < characters.length,
-    text: characters.slice(0, visibleCharacters).join(""),
-  };
 }

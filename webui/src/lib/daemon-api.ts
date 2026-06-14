@@ -641,6 +641,26 @@ type DashboardCommandResponse = {
   output: string;
 };
 
+export type DashboardAction =
+  | { kind: "run_sleep" }
+  | { kind: "clear_conversation" }
+  | { kind: "interrupt_runtime" }
+  | { kind: "restart_daemon" }
+  | { kind: "reload_skills" }
+  | { kind: "set_skill_auto_use"; path: string; enabled: boolean }
+  | { kind: "approve_telegram_access"; chat_id: number }
+  | { kind: "reject_telegram_access"; chat_id: number };
+
+export type DashboardActionResult = {
+  success: boolean;
+  message: string;
+  detail?: string | null;
+};
+
+type DashboardActionResponse = {
+  result: DashboardActionResult;
+};
+
 export type DashboardCommandAttachment = {
   name: string;
   media_type: string;
@@ -841,6 +861,48 @@ export async function runDashboardCommand(
     "Dashboard command",
   );
   return result.output;
+}
+
+export async function runDashboardAction(
+  action: DashboardAction,
+  {
+    signal,
+    token = getStoredDaemonToken(),
+    sessionId,
+  }: FetchOptions & {
+    sessionId?: string;
+  } = {},
+): Promise<DashboardActionResult> {
+  const daemonToken = token.trim();
+
+  if (!daemonToken) {
+    throw new DaemonApiError("Missing daemon token for dashboard action.");
+  }
+
+  const body: {
+    action: DashboardAction;
+    session_id?: string;
+  } = { action };
+  if (sessionId) {
+    body.session_id = sessionId;
+  }
+
+  const response = await fetch("/dashboard/action", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${daemonToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  const result = await parseJsonResponse<DashboardActionResponse>(
+    response,
+    "Dashboard action",
+  );
+  return result.result;
 }
 
 export async function fetchLogSources({

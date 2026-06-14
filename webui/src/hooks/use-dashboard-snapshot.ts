@@ -7,12 +7,30 @@ import {
 
 const DASHBOARD_STREAM_RECONNECT_MS = 1500;
 
-export function useDashboardSnapshot(sessionId: string) {
-  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+type UseDashboardSnapshotOptions = {
+  disabled?: boolean;
+  initialSnapshot?: DashboardSnapshot | null;
+};
+
+export function useDashboardSnapshot(
+  sessionId: string,
+  options: UseDashboardSnapshotOptions = {},
+) {
+  const { disabled = false, initialSnapshot = null } = options;
+  const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(
+    initialSnapshot,
+  );
+  const [isLoading, setIsLoading] = useState(!disabled && !initialSnapshot);
   const [loadError, setLoadError] = useState<Error | null>(null);
 
   useEffect(() => {
+    if (disabled) {
+      setSnapshot(initialSnapshot);
+      setIsLoading(false);
+      setLoadError(null);
+      return;
+    }
+
     let isActive = true;
     let reconnectTimeout: number | undefined;
     let subscription: ReturnType<typeof subscribeDashboardSnapshots> | null =
@@ -82,7 +100,7 @@ export function useDashboardSnapshot(sessionId: string) {
       }
       subscription?.close();
     };
-  }, [sessionId]);
+  }, [disabled, initialSnapshot, sessionId]);
 
   return { isLoading, loadError, snapshot };
 }
