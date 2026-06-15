@@ -92,8 +92,7 @@ On first launch, Daat Locus opens an interactive setup flow.
 ### Source Builds
 
 `cargo install daat-locus` is available from crates.io. Source builds require
-Node.js with Corepack or Yarn available because `build.rs` builds and embeds
-the WebUI.
+Bun because `build.rs` builds and embeds the WebUI.
 
 ```bash
 git clone https://github.com/shadow3aaa/DaatLocus

@@ -51,10 +51,10 @@ pub(super) fn collect_terminal_hyperlink_overlays(
             }) {
                 continue;
             }
-            if let Some(target) = file_uri_for_display_path(text) {
-                if let Some(overlay) = row_overlay(&row, y, start, text, &target) {
-                    overlays.push(overlay);
-                }
+            if let Some(target) = file_uri_for_display_path(text)
+                && let Some(overlay) = row_overlay(&row, y, start, text, &target)
+            {
+                overlays.push(overlay);
             }
         }
     }

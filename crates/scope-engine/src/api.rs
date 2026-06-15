@@ -45,31 +45,21 @@ pub struct SearchTarget {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMode {
+    #[default]
     Literal,
     Regex,
 }
 
-impl Default for SearchMode {
-    fn default() -> Self {
-        Self::Literal
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchCase {
     Sensitive,
     Insensitive,
+    #[default]
     Smart,
-}
-
-impl Default for SearchCase {
-    fn default() -> Self {
-        Self::Smart
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]

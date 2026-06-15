@@ -202,6 +202,38 @@ fn parse_buffer_pair(value: &str, meta: &mut TerminalExecutionMeta) {
     meta.output_buffer_capacity = parse_byte_count(capacity);
 }
 
+impl From<TerminalUiData> for ExecResultActivityCell {
+    fn from(data: TerminalUiData) -> Self {
+        let mut body_lines = data.body_lines;
+        let meta = if body_lines.is_empty() {
+            None
+        } else {
+            Some(body_lines.remove(0))
+        };
+        ExecResultActivityCell {
+            title: data.title,
+            terminal_action: Some(data.action),
+            terminal_origin: data.origin,
+            meta,
+            output_lines: body_lines,
+        }
+    }
+}
+
+pub fn live_exec_cell(
+    title: String,
+    call_lines: Vec<String>,
+    started_at_ms: Option<i64>,
+) -> LiveExecActivityCell {
+    LiveExecActivityCell {
+        title,
+        call_lines,
+        meta: None,
+        output_lines: Vec::new(),
+        started_at_ms,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,37 +273,5 @@ mod tests {
         assert_eq!(meta.cwd.as_deref(), Some("C:/repo"));
         assert_eq!(meta.yield_time_ms, Some(500));
         assert_eq!(meta.wait_mode.as_deref(), Some("timeout"));
-    }
-}
-
-impl From<TerminalUiData> for ExecResultActivityCell {
-    fn from(data: TerminalUiData) -> Self {
-        let mut body_lines = data.body_lines;
-        let meta = if body_lines.is_empty() {
-            None
-        } else {
-            Some(body_lines.remove(0))
-        };
-        ExecResultActivityCell {
-            title: data.title,
-            terminal_action: Some(data.action),
-            terminal_origin: data.origin,
-            meta,
-            output_lines: body_lines,
-        }
-    }
-}
-
-pub fn live_exec_cell(
-    title: String,
-    call_lines: Vec<String>,
-    started_at_ms: Option<i64>,
-) -> LiveExecActivityCell {
-    LiveExecActivityCell {
-        title,
-        call_lines,
-        meta: None,
-        output_lines: Vec::new(),
-        started_at_ms,
     }
 }

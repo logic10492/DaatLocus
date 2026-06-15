@@ -565,10 +565,11 @@ mod tests {
     }
 
     fn state_with_active_runtime_turn() -> DashboardState {
-        let mut state = DashboardState::default();
-        state.runtime_activity = crate::dashboard::DashboardRuntimeActivity::default()
-            .with_runtime_turn(Some("model request".to_string()), Some(1_000));
-        state
+        DashboardState {
+            runtime_activity: crate::dashboard::DashboardRuntimeActivity::default()
+                .with_runtime_turn(Some("model request".to_string()), Some(1_000)),
+            ..DashboardState::default()
+        }
     }
 
     #[test]

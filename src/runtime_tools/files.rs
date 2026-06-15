@@ -319,10 +319,9 @@ fn structured_edit_preview_lines(
     content: Option<&scope_engine::api::EditContent>,
 ) -> Vec<PatchDiffLineUiData> {
     match content {
-        Some(scope_engine::api::EditContent::Lines(lines)) => lines
-            .iter()
-            .map(|line| patch_preview_add_line(line))
-            .collect(),
+        Some(scope_engine::api::EditContent::Lines(lines)) => {
+            lines.iter().map(patch_preview_add_line).collect()
+        }
         Some(scope_engine::api::EditContent::Text(text)) => {
             text.lines().map(patch_preview_add_line).collect()
         }

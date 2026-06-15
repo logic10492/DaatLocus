@@ -64,41 +64,38 @@ pub struct CodingNextReviewArgs {
     pub limit: Option<usize>,
 }
 
-#[allow(dead_code)]
 #[model_schema]
 #[derive(Serialize, Deserialize)]
-struct CodingSearchCodeArgsSchema {
-    query: String,
-    mode: CodingSearchModeSchema,
-    path: Option<String>,
-    include: Vec<String>,
-    exclude: Vec<String>,
-    types: Vec<String>,
-    type_not: Vec<String>,
+pub struct CodingSearchCodeArgsSchema {
+    pub query: String,
+    pub mode: CodingSearchModeSchema,
+    pub path: Option<String>,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    pub types: Vec<String>,
+    pub type_not: Vec<String>,
     #[serde(rename = "case")]
-    case_mode: CodingSearchCaseSchema,
-    word: bool,
-    line: bool,
-    hidden: bool,
-    respect_ignore: bool,
-    follow: bool,
-    limit: Option<usize>,
+    pub case_mode: CodingSearchCaseSchema,
+    pub word: bool,
+    pub line: bool,
+    pub hidden: bool,
+    pub respect_ignore: bool,
+    pub follow: bool,
+    pub limit: Option<usize>,
 }
 
-#[allow(dead_code)]
 #[model_schema]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum CodingSearchModeSchema {
+pub enum CodingSearchModeSchema {
     Literal,
     Regex,
 }
 
-#[allow(dead_code)]
 #[model_schema]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum CodingSearchCaseSchema {
+pub enum CodingSearchCaseSchema {
     Sensitive,
     Insensitive,
     Smart,

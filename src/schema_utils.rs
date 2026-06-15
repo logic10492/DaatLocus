@@ -72,27 +72,8 @@ pub fn validate_model_facing_schema(schema: &Value) -> Result<()> {
     }
 }
 
-pub fn object_schema<const N: usize>(properties: [(&'static str, Value); N]) -> Value {
-    let mut property_map = Map::new();
-    let mut required = Vec::new();
-    for (name, schema) in properties {
-        property_map.insert(name.to_string(), schema);
-        required.push(Value::String(name.to_string()));
-    }
-    model_schema(json!({
-        "type": "object",
-        "properties": property_map,
-        "required": required,
-        "additionalProperties": false,
-    }))
-}
-
 pub fn string_schema() -> Value {
     json!({ "type": "string" })
-}
-
-pub fn nullable_string_schema() -> Value {
-    nullable_schema(string_schema())
 }
 
 pub fn integer_schema() -> Value {
@@ -148,29 +129,26 @@ pub fn nullable_schema(mut schema: Value) -> Value {
     schema
 }
 
-#[allow(dead_code)]
 #[model_schema]
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StructuredEditArgsSchema {
-    edits: Vec<StructuredEditSchema>,
+pub struct StructuredEditArgsSchema {
+    pub edits: Vec<StructuredEditSchema>,
 }
 
-#[allow(dead_code)]
 #[model_schema]
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StructuredEditSchema {
-    path: String,
-    op: StructuredEditOpSchema,
-    start: String,
-    end: Option<String>,
-    content: Option<String>,
+pub struct StructuredEditSchema {
+    pub path: String,
+    pub op: StructuredEditOpSchema,
+    pub start: String,
+    pub end: Option<String>,
+    pub content: Option<String>,
 }
 
-#[allow(dead_code)]
 #[model_schema]
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum StructuredEditOpSchema {
+pub enum StructuredEditOpSchema {
     Replace,
     Append,
     Prepend,
@@ -377,8 +355,8 @@ fn validate_array_schema(object: &Map<String, Value>, path: &str, errors: &mut V
 #[cfg(test)]
 mod tests {
     use super::{
-        boolean_schema, model_schema, nullable_string_schema, object_schema,
-        structured_edit_args_schema, validate_model_facing_schema,
+        boolean_schema, model_schema, nullable_schema, string_schema, structured_edit_args_schema,
+        validate_model_facing_schema,
     };
     use serde_json::{Value, json};
 
@@ -395,10 +373,15 @@ mod tests {
 
     #[test]
     fn object_schema_requires_every_property_and_forbids_extra_properties() {
-        let schema = object_schema([
-            ("text", nullable_string_schema()),
-            ("enabled", boolean_schema()),
-        ]);
+        let schema = model_schema(json!({
+            "type": "object",
+            "properties": {
+                "text": nullable_schema(string_schema()),
+                "enabled": boolean_schema(),
+            },
+            "required": ["text", "enabled"],
+            "additionalProperties": false,
+        }));
 
         assert_eq!(schema["additionalProperties"], json!(false));
         assert_eq!(schema["required"], json!(["text", "enabled"]));
