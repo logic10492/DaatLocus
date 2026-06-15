@@ -85,7 +85,6 @@ const AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT = Number.MAX_SAFE_INTEGER;
 const AGENT_CHAT_PLAN_STEP_LIMIT = 8;
 const AGENT_CHAT_TERMINAL_OUTPUT_HEAD_LINES = 4;
 const AGENT_CHAT_TERMINAL_OUTPUT_TAIL_LINES = 4;
-const AGENT_CHAT_EXPLORED_CALL_LIMIT = 12;
 const AGENT_CHAT_PATCH_FILE_LIMIT = 4;
 const AGENT_CHAT_PATCH_DIFF_LINE_LIMIT = 18;
 const AGENT_CHAT_TELEGRAM_DETAIL_LIMIT = 6;
@@ -3994,14 +3993,6 @@ function AgentChatExploredActivityPanel({
   calls: AgentChatExploredCall[];
 }) {
   const rows = agentChatExploredDetailRows(calls);
-  const hiddenCallCount = Math.max(0, calls.length - AGENT_CHAT_EXPLORED_CALL_LIMIT);
-  if (hiddenCallCount > 0) {
-    rows.push(
-      <span className="text-muted-foreground/75">
-        … +{hiddenCallCount} more calls
-      </span>,
-    );
-  }
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm [overflow-wrap:anywhere]">
@@ -5701,16 +5692,15 @@ function agentChatExploredActionLabel(action: AgentChatExploredCallAction) {
 
 function agentChatExploredDetailRows(calls: AgentChatExploredCall[]) {
   const rows: ReactNode[] = [];
-  const visibleCalls = calls.slice(0, AGENT_CHAT_EXPLORED_CALL_LIMIT);
   let index = 0;
 
-  while (index < visibleCalls.length) {
-    const call = visibleCalls[index];
+  while (index < calls.length) {
+    const call = calls[index];
     if (call.action === "read") {
       const names = [agentChatExploredReadTarget(call)];
       index += 1;
-      while (index < visibleCalls.length && visibleCalls[index].action === "read") {
-        names.push(agentChatExploredReadTarget(visibleCalls[index]));
+      while (index < calls.length && calls[index].action === "read") {
+        names.push(agentChatExploredReadTarget(calls[index]));
         index += 1;
       }
       rows.push(
