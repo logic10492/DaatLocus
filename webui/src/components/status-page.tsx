@@ -1,5 +1,6 @@
 import {
   Fragment,
+  isValidElement,
   memo,
   useCallback,
   useEffect,
@@ -66,10 +67,6 @@ import {
   type WebActivityItem,
 } from "@/lib/daemon-api";
 import {
-  deriveAgentStatus,
-  derivePlanSummaryText,
-} from "@/lib/dashboard-view-model";
-import {
   highlightCodeWithShiki,
   type ShikiHighlightedCode,
   type ShikiHighlightToken,
@@ -106,7 +103,7 @@ export function AgentPage({
   sessionId: string;
   mockSnapshot?: DashboardSnapshot;
 }) {
-  const { isLoading, loadError, snapshot } = useDashboardSnapshot(sessionId, {
+  const { snapshot } = useDashboardSnapshot(sessionId, {
     disabled: Boolean(mockSnapshot),
     initialSnapshot: mockSnapshot ?? null,
   });
@@ -139,13 +136,6 @@ export function AgentPage({
     return () => controller.abort();
   }, [mockSnapshot]);
 
-  const agentStatus = deriveAgentStatus({
-    loadError,
-    isLoading,
-    snapshot,
-  });
-  const summaryText = derivePlanSummaryText(snapshot);
-
   return (
     <section
       id="agent"
@@ -162,8 +152,6 @@ export function AgentPage({
         sessionId={sessionId}
         snapshot={snapshot}
         agentName={snapshot?.agent_name}
-        agentStatusLabel={agentStatus.label}
-        summaryText={summaryText}
         supportsVision={supportsVision}
         chatPanelRef={chatPanelRef}
         onHeightChange={setChatComposerHeight}
@@ -436,8 +424,6 @@ function AgentChatComposer({
   sessionId,
   snapshot,
   agentName,
-  agentStatusLabel,
-  summaryText,
   supportsVision = true,
   chatPanelRef,
   onHeightChange,
@@ -445,8 +431,6 @@ function AgentChatComposer({
   sessionId: string;
   snapshot: DashboardSnapshot | null;
   agentName?: string;
-  agentStatusLabel: string;
-  summaryText: string;
   supportsVision?: boolean;
   chatPanelRef: RefObject<HTMLDivElement | null>;
   onHeightChange: (height: number) => void;
@@ -846,12 +830,6 @@ function AgentChatComposer({
         onRunAction={(command) => void runSlashAction(command)}
         onRunDashboardAction={(action) => void runSlashDashboardAction(action)}
       />
-      <AgentComposerStatusLine
-        statusLabel={agentStatusLabel}
-        runtimeActive={Boolean(snapshot?.runtime_activity?.active_runtime_turn)}
-        summaryText={summaryText}
-        footerContext={snapshot?.footer_context}
-      />
       {supportsVision ? (
         <Input
           ref={fileInputRef}
@@ -866,7 +844,6 @@ function AgentChatComposer({
           }}
         />
       ) : null}
-      <Separator className="mb-2" />
       {imageAttachments.length > 0 ? (
         <div className="flex gap-2 overflow-x-auto px-2 pb-2">
           {imageAttachments.map((attachment) => (
@@ -1013,36 +990,6 @@ function AgentChatComposer({
         </Alert>
       ) : null}
     </form>
-  );
-}
-
-function AgentComposerStatusLine({
-  statusLabel,
-  runtimeActive,
-  summaryText,
-  footerContext,
-}: {
-  statusLabel: string;
-  runtimeActive: boolean;
-  summaryText: string;
-  footerContext?: string;
-}) {
-  const detail = summaryText || footerContext?.trim() || "Enter send";
-
-  return (
-    <div className="flex min-w-0 items-center gap-2 px-2 pb-2 text-xs text-muted-foreground">
-      <span
-        aria-hidden="true"
-        className={cn(
-          "size-1.5 rounded-full",
-          runtimeActive ? "bg-primary" : "bg-muted-foreground/45",
-        )}
-      />
-      <span className="shrink-0 font-medium text-foreground">
-        {runtimeActive ? "Working" : statusLabel}
-      </span>
-      <span className="min-w-0 truncate">{detail}</span>
-    </div>
   );
 }
 
@@ -4473,6 +4420,52 @@ function limitMarkdownInput(text: string, limit: number): string {
   return lines.slice(0, limit).join("\n");
 }
 
+type MarkdownCodeElementProps = {
+  className?: string;
+  children?: ReactNode;
+};
+
+function markdownNodeText(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return "";
+  }
+  if (
+    typeof node === "string" ||
+    typeof node === "number" ||
+    typeof node === "bigint"
+  ) {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(markdownNodeText).join("");
+  }
+  if (isValidElement(node)) {
+    return markdownNodeText(
+      (node.props as { children?: ReactNode }).children,
+    );
+  }
+  return "";
+}
+
+function markdownCodeLanguage(className: unknown): string {
+  return (
+    String(className ?? "")
+      .split(/\s+/)
+      .find((name) => name.startsWith("language-"))
+      ?.replace(/^language-/, "") ?? ""
+  );
+}
+
+function markdownPreCodeProps(children: ReactNode) {
+  const child = Array.isArray(children)
+    ? children.find((item) => isValidElement(item))
+    : children;
+  if (!isValidElement(child)) {
+    return null;
+  }
+  return child.props as MarkdownCodeElementProps;
+}
+
 const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
   text,
   limit,
@@ -4549,11 +4542,11 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
           ),
           hr: () => <Separator />,
           p: ({ children }: any) => <p className="break-words">{children}</p>,
-          code: (props: any) => {
-            const { inline, className, children } = props;
-            if (!inline) {
-              const language = String(className ?? "").replace(/^language-/, "");
-              const code = String(children).replace(/\n$/, "");
+          pre: ({ children }: { children?: ReactNode }) => {
+            const codeProps = markdownPreCodeProps(children);
+            if (codeProps) {
+              const language = markdownCodeLanguage(codeProps.className);
+              const code = markdownNodeText(codeProps.children).replace(/\n$/, "");
               return (
                 <AgentChatCodeBlock
                   id={`${markdownId}-code-${language || "plain"}`}
@@ -4564,6 +4557,13 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
               );
             }
 
+            return (
+              <pre className="max-w-full overflow-auto whitespace-pre-wrap rounded-md bg-muted/45 px-3 py-2 font-mono text-xs leading-5 text-foreground/90">
+                {children}
+              </pre>
+            );
+          },
+          code: ({ children }: { children?: ReactNode }) => {
             return (
               <code className="font-mono text-[0.85em] text-foreground">
                 {children}
