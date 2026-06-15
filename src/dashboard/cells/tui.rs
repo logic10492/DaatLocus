@@ -1467,12 +1467,12 @@ fn render_explored_cell_lines(cell: &ExploredActivityCell, max_width: u16) -> Ve
     let mut lines = vec![codex_header(cell.title.clone())];
     let mut detail = Vec::new();
     let mut index = 0;
-    while index < cell.calls.len().min(12) {
+    while index < cell.calls.len() {
         let call = &cell.calls[index];
         if matches!(explored_call_action(call), Some(ExploredCallUiAction::Read)) {
             let mut names = vec![explored_read_target(call)];
             index += 1;
-            while index < cell.calls.len().min(12)
+            while index < cell.calls.len()
                 && matches!(
                     explored_call_action(&cell.calls[index]),
                     Some(ExploredCallUiAction::Read)
@@ -1487,13 +1487,6 @@ fn render_explored_cell_lines(cell: &ExploredActivityCell, max_width: u16) -> Ve
             detail.push(explored_call_line(call));
             index += 1;
         }
-    }
-
-    if cell.calls.len() > 12 {
-        detail.push(Line::from(Span::styled(
-            format!("… +{} more calls", cell.calls.len() - 12),
-            dim_style(),
-        )));
     }
 
     lines.extend(prefixed_detail_lines(detail, max_width));
@@ -2792,6 +2785,39 @@ That's it.";
         assert!(
             rendered.iter().all(|line| !line.contains("lines")),
             "exploration should not render read line-count details: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn explored_renders_all_calls_without_preview_truncation() {
+        let cell = ExploredActivityCell {
+            stable_id: "explored".to_string(),
+            title: "Explored".to_string(),
+            calls: (0..14)
+                .map(|index| ExploredCallActivityCell {
+                    tool_name: "Search".to_string(),
+                    action: Some(ExploredCallUiAction::Search),
+                    target: Some(format!("needle-{index:02}")),
+                    secondary_target: Some("src/dashboard".to_string()),
+                    summary: format!("needle-{index:02} — 1 target in src/dashboard"),
+                    detail_lines: Vec::new(),
+                    detail_title: None,
+                })
+                .collect(),
+        };
+
+        let rendered = render_explored_cell_lines(&cell, 120)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            rendered.iter().any(|line| line.contains("needle-13")),
+            "exploration should render calls beyond the old preview limit: {rendered:?}"
+        );
+        assert!(
+            rendered.iter().all(|line| !line.contains("more calls")),
+            "exploration should not emit a preview truncation marker: {rendered:?}"
         );
     }
 

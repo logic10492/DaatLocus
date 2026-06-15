@@ -52,8 +52,6 @@ pub use web_activity::{
 
 pub use common::ReducedMotion;
 
-const MAX_EXPLORED_CALLS: usize = 24;
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ActivityCell {
     Assistant(AssistantActivityCell),
@@ -516,10 +514,6 @@ fn coalesce_activity_cells(cells: Vec<ActivityCell>) -> Vec<ActivityCell> {
         {
             existing_group.title = new_group.title.clone();
             existing_group.calls.extend(new_group.calls.clone());
-            if existing_group.calls.len() > MAX_EXPLORED_CALLS {
-                let drop_count = existing_group.calls.len() - MAX_EXPLORED_CALLS;
-                existing_group.calls.drain(0..drop_count);
-            }
             continue;
         }
 
@@ -731,6 +725,37 @@ mod tests {
 
         let separated = coalesce_activity_cells(vec![first_group, boundary, updated_group]);
         assert_eq!(separated.len(), 3);
+    }
+
+    #[test]
+    fn explored_coalescing_preserves_all_calls() {
+        let groups = (0..30)
+            .map(|index| {
+                ActivityCell::Explored(ExploredActivityCell {
+                    stable_id: "explored".to_string(),
+                    title: "Explored".to_string(),
+                    calls: vec![ExploredCallActivityCell {
+                        tool_name: "Search".to_string(),
+                        action: None,
+                        target: None,
+                        secondary_target: None,
+                        summary: format!("call-{index:02}"),
+                        detail_lines: Vec::new(),
+                        detail_title: None,
+                    }],
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let merged = coalesce_activity_cells(groups);
+
+        assert_eq!(merged.len(), 1);
+        let ActivityCell::Explored(group) = &merged[0] else {
+            panic!("expected explored group");
+        };
+        assert_eq!(group.calls.len(), 30);
+        assert_eq!(group.calls[0].summary, "call-00");
+        assert_eq!(group.calls[29].summary, "call-29");
     }
 
     #[test]

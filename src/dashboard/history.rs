@@ -17,7 +17,6 @@ use crate::{
 const DASHBOARD_ACTIVITY_HISTORY_DB_FILE: &str = "dashboard_activity.sqlite3";
 const DASHBOARD_ACTIVITY_HISTORY_LIMIT_MAX: usize = 200;
 pub const DASHBOARD_ACTIVITY_HISTORY_INITIAL_LIMIT: usize = 80;
-const MAX_EXPLORED_CALLS: usize = 24;
 
 #[derive(Clone)]
 pub struct DashboardActivityHistoryStore {
@@ -418,10 +417,6 @@ fn normalize_window_explored_item(item: &mut WebActivityItem, existing_items: &[
         {
             let mut calls = active_group.calls.clone();
             calls.extend(incoming_group.calls.clone());
-            if calls.len() > MAX_EXPLORED_CALLS {
-                let drop_count = calls.len() - MAX_EXPLORED_CALLS;
-                calls.drain(0..drop_count);
-            }
             incoming_group.calls = calls;
             refresh_web_activity_item_from_cell(item);
         }
@@ -610,6 +605,47 @@ mod tests {
                 .as_ref()
                 .and_then(|tool| tool.input_preview.as_deref()),
             Some("2 call(s)")
+        );
+    }
+
+    #[test]
+    fn explored_active_segment_preserves_all_calls() {
+        let stable_id = "explored";
+        let item_id = "activity-explored";
+        let first_batch = (0..20)
+            .map(|index| format!("call-{index:02}"))
+            .collect::<Vec<_>>();
+        let second_batch = (20..32)
+            .map(|index| format!("call-{index:02}"))
+            .collect::<Vec<_>>();
+        let first_refs = first_batch.iter().map(String::as_str).collect::<Vec<_>>();
+        let second_refs = second_batch.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut window = DashboardActivityHistoryWindow::default();
+
+        window.merge_new_items(vec![web_activity_item_from_cell(
+            &explored_group_with_summaries(stable_id, &first_refs),
+            item_id,
+            false,
+        )]);
+        window.merge_new_items(vec![web_activity_item_from_cell(
+            &explored_group_with_summaries(stable_id, &second_refs),
+            item_id,
+            false,
+        )]);
+
+        assert_eq!(window.items.len(), 1);
+        let ActivityCell::Explored(group) = window.items[0].cell.as_ref().unwrap() else {
+            panic!("expected explored group");
+        };
+        assert_eq!(group.calls.len(), 32);
+        assert_eq!(group.calls[0].summary, "call-00");
+        assert_eq!(group.calls[31].summary, "call-31");
+        assert_eq!(
+            window.items[0]
+                .tool
+                .as_ref()
+                .and_then(|tool| tool.input_preview.as_deref()),
+            Some("32 call(s)")
         );
     }
 }
