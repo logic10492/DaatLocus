@@ -3,10 +3,12 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
   type ClipboardEvent,
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   type ReactNode,
@@ -67,6 +69,11 @@ import {
   deriveAgentStatus,
   derivePlanSummaryText,
 } from "@/lib/dashboard-view-model";
+import {
+  highlightCodeWithShiki,
+  type ShikiHighlightedCode,
+  type ShikiHighlightToken,
+} from "@/lib/shiki-highlight";
 import { useDashboardSnapshot } from "@/hooks/use-dashboard-snapshot";
 import { cn } from "@/lib/utils";
 export { StatusPage } from "@/components/status-dashboard-page";
@@ -4069,6 +4076,10 @@ function AgentChatPatchFileBlock({
   const hiddenLineCount = file.lines.length - visibleLines.length;
   const oldWidth = agentChatDiffLineNumberWidth(visibleLines, "old_lineno");
   const newWidth = agentChatDiffLineNumberWidth(visibleLines, "new_lineno");
+  const highlighted = useShikiHighlightedCode(
+    agentChatDiffHighlightSource(visibleLines),
+    file.path,
+  );
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1">
@@ -4093,6 +4104,7 @@ function AgentChatPatchFileBlock({
               line={line}
               oldWidth={oldWidth}
               newWidth={newWidth}
+              highlightedLine={highlighted?.lines[index]}
             />
           ))}
         </div>
@@ -4110,10 +4122,12 @@ function AgentChatPatchDiffRow({
   line,
   oldWidth,
   newWidth,
+  highlightedLine,
 }: {
   line: AgentChatDiffLine;
   oldWidth: number;
   newWidth: number;
+  highlightedLine?: ShikiHighlightToken[];
 }) {
   if (line.kind === "hunk_break") {
     return (
@@ -4155,10 +4169,26 @@ function AgentChatPatchDiffRow({
         {gutter}
       </span>
       <span className="whitespace-pre-wrap break-words text-foreground/85 sm:whitespace-pre">
-        {line.text}
+        <AgentChatHighlightedInline
+          tokens={highlightedLine}
+          fallback={line.text}
+        />
       </span>
     </div>
   );
+}
+
+function agentChatDiffHighlightSource(lines: AgentChatDiffLine[]) {
+  return lines
+    .map((line) => (line.kind === "hunk_break" ? "" : line.text))
+    .join("\n");
+}
+
+function agentChatDiffLinePrefix(line: AgentChatDiffLine) {
+  if (line.kind === "hunk_break") {
+    return "  ";
+  }
+  return line.kind === "add" ? "+ " : line.kind === "delete" ? "- " : "  ";
 }
 
 function AgentChatMessageActivityLine({
@@ -4438,6 +4468,7 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
   tone?: "default" | "error";
 }) {
   const limitedText = limitMarkdownInput(text, limit);
+  const markdownId = useId();
 
   if (!limitedText.trim()) {
     return null;
@@ -4505,22 +4536,16 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
           p: ({ children }: any) => <p className="break-words">{children}</p>,
           code: (props: any) => {
             const { inline, className, children } = props;
-            if (!inline && className) {
-              const language = String(className).replace(/^language-/, "");
+            if (!inline) {
+              const language = String(className ?? "").replace(/^language-/, "");
+              const code = String(children).replace(/\n$/, "");
               return (
-                <div className="flex min-w-0 max-w-full flex-col gap-1">
-                  <div className="flex items-center gap-2 px-2 sm:px-3">
-                    <span className="font-mono text-[0.7rem] leading-none text-muted-foreground">
-                      &lt;/&gt;
-                    </span>
-                    <span className="truncate text-sm font-semibold text-foreground/90">
-                      {language || "Code"}
-                    </span>
-                  </div>
-                  <pre className="max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre-wrap px-2 font-mono text-[0.82rem] leading-6 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] sm:whitespace-pre sm:px-3">
-                    <code className={className}>{children}</code>
-                  </pre>
-                </div>
+                <AgentChatCodeBlock
+                  id={`${markdownId}-code-${language || "plain"}`}
+                  code={code}
+                  language={language}
+                  limit={limit}
+                />
               );
             }
 
@@ -4682,6 +4707,27 @@ function AgentChatImageAttachment({
   );
 }
 
+function useShikiHighlightedCode(code: string, languageOrPath: string) {
+  const [highlighted, setHighlighted] = useState<ShikiHighlightedCode | null>(
+    null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setHighlighted(null);
+    void highlightCodeWithShiki(code, languageOrPath).then((nextHighlighted) => {
+      if (!cancelled) {
+        setHighlighted(nextHighlighted);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [code, languageOrPath]);
+
+  return highlighted;
+}
+
 const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
   id,
   code,
@@ -4700,6 +4746,8 @@ const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
   const label = agentChatCodeLanguageLabel(language);
   const canCopy =
     typeof navigator !== "undefined" && Boolean(navigator.clipboard);
+  const highlighted = useShikiHighlightedCode(code, language);
+  const visibleHighlightedLines = highlighted?.lines.slice(0, limit) ?? null;
 
   async function handleCopyCode() {
     if (!canCopy) {
@@ -4757,7 +4805,14 @@ const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
           className="max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre px-3 font-mono text-[0.82rem] leading-6 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]"
           data-code-block-id={id}
         >
-          {visibleLines.join("\n")}
+          {visibleHighlightedLines ? (
+            <AgentChatHighlightedCodeLines
+              lines={visibleHighlightedLines}
+              lineKeyPrefix={`${id}-line`}
+            />
+          ) : (
+            visibleLines.join("\n")
+          )}
         </pre>
         {hiddenLines.length > 0 ? (
           <div
@@ -4774,6 +4829,72 @@ const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
     </div>
   );
 });
+
+function AgentChatHighlightedCodeLines({
+  lines,
+  lineKeyPrefix,
+}: {
+  lines: ShikiHighlightToken[][];
+  lineKeyPrefix: string;
+}) {
+  return (
+    <>
+      {lines.map((line, lineIndex) => (
+        <Fragment key={`${lineKeyPrefix}-${lineIndex}`}>
+          <AgentChatHighlightedInline
+            tokens={line}
+            fallback={line.length === 0 ? " " : ""}
+          />
+          {lineIndex < lines.length - 1 ? "\n" : null}
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
+function AgentChatHighlightedInline({
+  tokens,
+  fallback,
+}: {
+  tokens: ShikiHighlightToken[] | null | undefined;
+  fallback: string;
+}) {
+  if (!tokens || tokens.length === 0) {
+    return <>{fallback}</>;
+  }
+
+  return (
+    <>
+      {tokens.map((token, index) => (
+        <span
+          key={`${index}-${token.content}`}
+          style={agentChatShikiTokenStyle(token)}
+        >
+          {token.content}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function agentChatShikiTokenStyle(token: ShikiHighlightToken): CSSProperties {
+  const style: CSSProperties = {};
+  if (token.color) {
+    style.color = token.color;
+  }
+  if (typeof token.fontStyle === "number") {
+    if (token.fontStyle & 1) {
+      style.fontStyle = "italic";
+    }
+    if (token.fontStyle & 2) {
+      style.fontWeight = 700;
+    }
+    if (token.fontStyle & 4) {
+      style.textDecorationLine = "underline";
+    }
+  }
+  return style;
+}
 
 function agentChatCodeLanguageLabel(language: string) {
   const normalized = language.trim().toLowerCase();
@@ -4827,35 +4948,62 @@ function AgentChatDiffBlock({
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-2 font-mono text-xs">
-      {visibleFiles.map((file, fileIndex) => {
-        const visibleLines = file.lines.slice(0, limit);
-        const hiddenLines = file.lines.slice(limit);
-        return (
-          <div
-            key={`${id}-file-${fileIndex}`}
-            className="flex min-w-0 max-w-full flex-col gap-1"
-          >
-            <div className="flex items-center justify-between gap-3 px-2 sm:px-3">
-              <p className="min-w-0 truncate text-foreground/85">{file.path}</p>
-              <span className="shrink-0 font-sans text-[0.68rem] text-muted-foreground">
-                <span className="text-primary">+{file.added_lines}</span>{" "}
-                <span className="text-destructive">-{file.removed_lines}</span>
-              </span>
-            </div>
-            <pre className="max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre-wrap px-2 leading-5 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] sm:whitespace-pre sm:px-3">
-              {visibleLines.map((line) => renderDiffLine(line)).join("\n")}
-            </pre>
-            {hiddenLines.length > 0 ? (
-              <p className="px-2 font-sans text-xs text-muted-foreground sm:px-3">
-                … +{hiddenLines.length} more diff line(s)
-              </p>
-            ) : null}
-          </div>
-        );
-      })}
+      {visibleFiles.map((file, fileIndex) => (
+        <AgentChatDiffBlockFile
+          key={`${id}-file-${fileIndex}`}
+          file={file}
+          limit={limit}
+        />
+      ))}
       {hiddenFileCount > 0 ? (
         <p className="font-sans text-xs text-muted-foreground">
           … +{hiddenFileCount} more file(s)
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function AgentChatDiffBlockFile({
+  file,
+  limit,
+}: {
+  file: AgentChatDiffFile;
+  limit: number;
+}) {
+  const visibleLines = file.lines.slice(0, limit);
+  const hiddenLines = file.lines.slice(limit);
+  const highlighted = useShikiHighlightedCode(
+    agentChatDiffHighlightSource(visibleLines),
+    file.path,
+  );
+
+  return (
+    <div className="flex min-w-0 max-w-full flex-col gap-1">
+      <div className="flex items-center justify-between gap-3 px-2 sm:px-3">
+        <p className="min-w-0 truncate text-foreground/85">{file.path}</p>
+        <span className="shrink-0 font-sans text-[0.68rem] text-muted-foreground">
+          <span className="text-primary">+{file.added_lines}</span>{" "}
+          <span className="text-destructive">-{file.removed_lines}</span>
+        </span>
+      </div>
+      <pre className="max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre-wrap px-2 leading-5 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin] sm:whitespace-pre sm:px-3">
+        {visibleLines.map((line, lineIndex) => (
+          <Fragment key={`${file.path}-legacy-diff-${lineIndex}`}>
+            <span className="text-muted-foreground">
+              {agentChatDiffLinePrefix(line)}
+            </span>
+            <AgentChatHighlightedInline
+              tokens={highlighted?.lines[lineIndex]}
+              fallback={line.text}
+            />
+            {lineIndex < visibleLines.length - 1 ? "\n" : null}
+          </Fragment>
+        ))}
+      </pre>
+      {hiddenLines.length > 0 ? (
+        <p className="px-2 font-sans text-xs text-muted-foreground sm:px-3">
+          … +{hiddenLines.length} more diff line(s)
         </p>
       ) : null}
     </div>
@@ -5898,15 +6046,6 @@ function diffLinesValue(value: unknown): AgentChatDiffLine[] {
       old_lineno: nullableNumberValue(line.old_lineno),
       new_lineno: nullableNumberValue(line.new_lineno),
     }));
-}
-
-function renderDiffLine(line: AgentChatDiffLine) {
-  const prefix = line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " ";
-  if (line.kind === "hunk_break") {
-    return `  ${line.text}`;
-  }
-
-  return `${prefix} ${line.text}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
