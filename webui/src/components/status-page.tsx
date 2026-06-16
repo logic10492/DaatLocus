@@ -3842,9 +3842,7 @@ function AgentChatRuntimeStatusCell({
         <span className="font-semibold text-foreground">
           <AgentChatMarkdownInline text={title} />
         </span>{" "}
-        <span className="text-muted-foreground">({elapsedText} • use </span>
-        <span className="font-semibold text-foreground">interrupt</span>
-        <span className="text-muted-foreground"> button)</span>
+        <span className="text-muted-foreground">({elapsedText})</span>
         {detailText ? (
           <>
             <span className="text-muted-foreground"> — </span>
