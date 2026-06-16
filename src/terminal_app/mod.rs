@@ -80,11 +80,13 @@ pub struct TerminalSessionState {
 
 impl TerminalApp {
     const DEFAULT_EXEC_YIELD_TIME_MS: u64 = 10_000;
+    const WINDOWS_INITIAL_EXEC_YIELD_FLOOR_MS: u64 = 2_000;
     const DEFAULT_WRITE_STDIN_YIELD_TIME_MS: u64 = 250;
     const DEFAULT_WAIT_YIELD_TIME_MS: u64 = 30_000;
     const MIN_EMPTY_POLL_YIELD_TIME_MS: u64 = 5_000;
     const MAX_WRITE_STDIN_YIELD_TIME_MS: u64 = 30_000;
     const MAX_WAIT_YIELD_TIME_MS: u64 = 120_000;
+    const TRAILING_OUTPUT_DRAIN_GRACE_MS: u64 = 100;
     const MAX_EXITED_SESSION_TOMBSTONES: usize = 4;
 
     pub fn new() -> Self {
@@ -194,15 +196,10 @@ impl TerminalApp {
             session.state.cwd = Some(workdir);
         }
         session.state.has_unread_output = true;
-        let start_offset = session
-            .process
-            .as_ref()
-            .map(|process| process.output_len())
-            .unwrap_or(0);
+        let start_offset = session.output_offset;
         let mut progress_offset = start_offset;
         session.last_activity = Instant::now();
-        let timeout =
-            Duration::from_millis(yield_time_ms.unwrap_or(Self::DEFAULT_EXEC_YIELD_TIME_MS));
+        let timeout = Duration::from_millis(Self::initial_exec_yield_time_ms(yield_time_ms));
         let started_at = Instant::now();
         loop {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -222,6 +219,7 @@ impl TerminalApp {
                 break;
             }
         }
+        wait_for_trailing_terminal_output(session).await;
         refresh_terminal_session(session);
         let chunk = session
             .process
@@ -263,13 +261,13 @@ impl TerminalApp {
             bail!(reason);
         }
         let session = self.session_mut(session_id)?;
+        let start_offset = session.output_offset;
         let Some(process) = session.process.as_mut() else {
             bail!("terminal session `{session_id}` has no running process");
         };
         if let Some(updated_cwd) = Self::cwd_from_shell_input(&text) {
             session.state.cwd = Some(updated_cwd);
         }
-        let start_offset = process.output_len();
         let mut progress_offset = start_offset;
         process
             .write(&text)
@@ -319,6 +317,7 @@ impl TerminalApp {
                 break;
             }
         }
+        wait_for_trailing_terminal_output(session).await;
         refresh_terminal_session(session);
         let chunk = session
             .process
@@ -342,6 +341,15 @@ impl TerminalApp {
             output_retained_bytes: output_stats.retained_bytes,
             output_buffer_capacity: output_stats.buffer_capacity,
         })
+    }
+
+    fn initial_exec_yield_time_ms(yield_time_ms: Option<u64>) -> u64 {
+        let requested = yield_time_ms.unwrap_or(Self::DEFAULT_EXEC_YIELD_TIME_MS);
+        if cfg!(windows) {
+            requested.max(Self::WINDOWS_INITIAL_EXEC_YIELD_FLOOR_MS)
+        } else {
+            requested
+        }
     }
 
     pub async fn terminate_session(&mut self, session_id: &str) -> Result<TerminalSessionState> {
@@ -1125,6 +1133,20 @@ fn refresh_terminal_session(session: &mut TerminalSession) {
     }
 }
 
+async fn wait_for_trailing_terminal_output(session: &TerminalSession) {
+    if session.state.status == "running" {
+        return;
+    }
+    let Some(process) = session.process.as_ref() else {
+        return;
+    };
+    let _ = process
+        .wait_for_output_drained(Duration::from_millis(
+            TerminalApp::TRAILING_OUTPUT_DRAIN_GRACE_MS,
+        ))
+        .await;
+}
+
 fn render_session_state_line(state: &TerminalSessionState) -> String {
     format!(
         "session={} status={} pid={} exit={} cwd={} unread={} output_total_bytes={} output_retained_bytes={} output_dropped_bytes={} output_buffer_capacity={} command={} preview={}",
@@ -1282,11 +1304,36 @@ mod tests {
         }
     }
 
+    fn marked_high_output_command(byte_count: usize) -> String {
+        if cfg!(windows) {
+            format!(
+                "[Console]::Out.Write('HEAD-MARKER'); [Console]::Out.Write(('x' * {byte_count})); [Console]::Out.Write('TAIL-MARKER')"
+            )
+        } else {
+            format!(
+                "printf 'HEAD-MARKER'; printf '%{byte_count}s' '' | tr ' ' x; printf 'TAIL-MARKER'"
+            )
+        }
+    }
+
     fn delayed_output_then_sleep_command(text: &str) -> String {
         if cfg!(windows) {
             format!("Start-Sleep -Milliseconds 100; Write-Output '{text}'; Start-Sleep -Seconds 2")
         } else {
             format!("sleep 0.1; printf '%s\\n' '{text}'; sleep 2")
+        }
+    }
+
+    fn delayed_output_after_ms_then_sleep_command(text: &str, delay_ms: u64) -> String {
+        if cfg!(windows) {
+            format!(
+                "Start-Sleep -Milliseconds {delay_ms}; Write-Output '{text}'; Start-Sleep -Seconds 2"
+            )
+        } else {
+            format!(
+                "sleep {}; printf '%s\\n' '{text}'; sleep 2",
+                delay_ms as f64 / 1000.0
+            )
         }
     }
 
@@ -1339,6 +1386,27 @@ mod tests {
         } else {
             format!("printf '%s' \"${{{name}-missing}}\"")
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn initial_exec_yield_time_uses_windows_floor() {
+        assert_eq!(
+            TerminalApp::initial_exec_yield_time_ms(Some(1)),
+            TerminalApp::WINDOWS_INITIAL_EXEC_YIELD_FLOOR_MS
+        );
+        assert_eq!(
+            TerminalApp::initial_exec_yield_time_ms(Some(
+                TerminalApp::WINDOWS_INITIAL_EXEC_YIELD_FLOOR_MS + 1
+            )),
+            TerminalApp::WINDOWS_INITIAL_EXEC_YIELD_FLOOR_MS + 1
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn initial_exec_yield_time_has_no_platform_floor() {
+        assert_eq!(TerminalApp::initial_exec_yield_time_ms(Some(1)), 1);
     }
 
     #[tokio::test]
@@ -1509,6 +1577,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exec_captures_fast_output_with_short_yield() {
+        let mut app = TerminalApp::new();
+        let sandbox_policy = test_sandbox_policy();
+
+        let result = app
+            .exec_command_with_progress(
+                TerminalExecCommandRequest {
+                    command: echo_command("fast-output"),
+                    session_id: None,
+                    workdir: None,
+                    sandbox_policy: &sandbox_policy,
+                    yield_time_ms: Some(1),
+                    max_chars: None,
+                },
+                |_session, _delta| {},
+            )
+            .await
+            .expect("fast command should run");
+
+        assert!(
+            result.output.contains("fast-output"),
+            "short initial yield should still capture fast output: {:?}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_stdin_poll_returns_unread_output_produced_between_calls() {
+        let mut app = TerminalApp::new();
+        let sandbox_policy = test_sandbox_policy();
+        let marker = "between-poll-output";
+        let output_delay_ms = if cfg!(windows) {
+            TerminalApp::WINDOWS_INITIAL_EXEC_YIELD_FLOOR_MS + 500
+        } else {
+            500
+        };
+
+        let started = app
+            .exec_command_with_progress(
+                TerminalExecCommandRequest {
+                    command: delayed_output_after_ms_then_sleep_command(marker, output_delay_ms),
+                    session_id: None,
+                    workdir: None,
+                    sandbox_policy: &sandbox_policy,
+                    yield_time_ms: Some(50),
+                    max_chars: None,
+                },
+                |_session, _delta| {},
+            )
+            .await
+            .expect("exec should start delayed output command");
+
+        assert_eq!(started.session.status, "running");
+        assert!(
+            started.output.trim().is_empty(),
+            "initial short yield should not see delayed output: {:?}",
+            started.output
+        );
+
+        tokio::time::sleep(Duration::from_millis(output_delay_ms + 300)).await;
+        let polled = app
+            .write_stdin_with_progress(
+                &started.session.session_id,
+                String::new(),
+                TerminalWaitMode::AnyOutput,
+                Some(5_000),
+                None,
+                |_session, _delta| {},
+            )
+            .await
+            .expect("empty stdin poll should succeed");
+
+        assert!(
+            polled.output.contains(marker),
+            "poll should return unread output produced between tool calls: {:?}",
+            polled.output
+        );
+
+        if polled.session.status == "running" {
+            app.terminate_session(&polled.session.session_id)
+                .await
+                .expect("terminate should succeed");
+        }
+    }
+
+    #[tokio::test]
     async fn high_output_command_reports_bounded_buffer_truncation() {
         let mut app = TerminalApp::new_with_output_buffer_capacity(1024);
         let sandbox_policy = test_sandbox_policy();
@@ -1546,6 +1700,65 @@ mod tests {
             result.output.chars().filter(|ch| *ch == 'x').count() <= 1024,
             "output should retain only the bounded tail"
         );
+    }
+
+    #[tokio::test]
+    async fn high_output_preserves_head_and_tail() {
+        let mut app = TerminalApp::new_with_output_buffer_capacity(128);
+        let sandbox_policy = test_sandbox_policy();
+
+        let result = app
+            .exec_command_with_progress(
+                TerminalExecCommandRequest {
+                    command: marked_high_output_command(4096),
+                    session_id: None,
+                    workdir: None,
+                    sandbox_policy: &sandbox_policy,
+                    yield_time_ms: Some(5_000),
+                    max_chars: None,
+                },
+                |_session, _delta| {},
+            )
+            .await
+            .expect("marked high-output command should succeed");
+
+        assert!(
+            result.output_missed_bytes > 0,
+            "expected bounded buffer to report omitted middle bytes"
+        );
+        assert!(
+            result.output.contains("HEAD-MARKER"),
+            "head marker should be retained: {:?}",
+            result.output
+        );
+        assert!(
+            result.output.contains("TAIL-MARKER"),
+            "tail marker should be retained: {:?}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_exec_injects_stable_env_defaults() {
+        let mut app = TerminalApp::new();
+        let sandbox_policy = test_sandbox_policy();
+
+        let result = app
+            .exec_command_with_progress(
+                TerminalExecCommandRequest {
+                    command: env_value_command("PAGER"),
+                    session_id: None,
+                    workdir: None,
+                    sandbox_policy: &sandbox_policy,
+                    yield_time_ms: Some(5_000),
+                    max_chars: None,
+                },
+                |_session, _delta| {},
+            )
+            .await
+            .expect("env default check command should run");
+
+        assert_eq!(result.output.trim(), "cat");
     }
 
     #[tokio::test]

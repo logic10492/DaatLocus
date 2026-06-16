@@ -1,12 +1,16 @@
 use std::{
     collections::VecDeque,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use parking_lot::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Notify;
 
 use crate::sandbox::{
     RuntimeSandboxPolicy, SandboxAsyncChild, SandboxChildStdin, SandboxProcessOptions, SandboxStdio,
@@ -18,7 +22,9 @@ pub struct TerminalProcess {
     child: SandboxAsyncChild,
     stdin: Option<SandboxChildStdin>,
     last_update: Arc<Mutex<Instant>>,
-    output: Arc<Mutex<BoundedOutputBuffer>>,
+    output: Arc<Mutex<HeadTailOutputBuffer>>,
+    active_readers: Arc<AtomicUsize>,
+    output_drained: Arc<Notify>,
 }
 
 #[derive(Clone, Debug)]
@@ -38,10 +44,19 @@ pub struct TerminalOutputStats {
 }
 
 #[derive(Debug)]
-struct BoundedOutputBuffer {
-    bytes: VecDeque<u8>,
+struct HeadTailOutputBuffer {
     capacity: usize,
+    head_budget: usize,
+    tail_budget: usize,
+    head: VecDeque<OutputSegment>,
+    tail: VecDeque<OutputSegment>,
     total_written: usize,
+}
+
+#[derive(Clone, Debug)]
+struct OutputSegment {
+    start: usize,
+    bytes: Vec<u8>,
 }
 
 impl TerminalProcess {
@@ -80,13 +95,30 @@ impl TerminalProcess {
         let stdout = child.take_stdout();
         let stderr = child.take_stderr();
         let last_update = Arc::new(Mutex::new(Instant::now()));
-        let output = Arc::new(Mutex::new(BoundedOutputBuffer::new(output_buffer_capacity)));
+        let output = Arc::new(Mutex::new(HeadTailOutputBuffer::new(
+            output_buffer_capacity,
+        )));
+        let reader_count = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
+        let active_readers = Arc::new(AtomicUsize::new(reader_count));
+        let output_drained = Arc::new(Notify::new());
 
         if let Some(stdout) = stdout {
-            spawn_reader(stdout, output.clone(), last_update.clone());
+            spawn_reader(
+                stdout,
+                output.clone(),
+                last_update.clone(),
+                active_readers.clone(),
+                output_drained.clone(),
+            );
         }
         if let Some(stderr) = stderr {
-            spawn_reader(stderr, output.clone(), last_update.clone());
+            spawn_reader(
+                stderr,
+                output.clone(),
+                last_update.clone(),
+                active_readers.clone(),
+                output_drained.clone(),
+            );
         }
 
         Ok(Self {
@@ -94,6 +126,8 @@ impl TerminalProcess {
             stdin,
             last_update,
             output,
+            active_readers,
+            output_drained,
         })
     }
 
@@ -121,6 +155,20 @@ impl TerminalProcess {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    pub async fn wait_for_output_drained(&self, timeout: Duration) -> bool {
+        if self.active_readers.load(Ordering::Acquire) == 0 {
+            return true;
+        }
+
+        tokio::time::timeout(timeout, async {
+            while self.active_readers.load(Ordering::Acquire) > 0 {
+                self.output_drained.notified().await;
+            }
+        })
+        .await
+        .is_ok()
     }
 
     pub fn process_id(&self) -> Option<u32> {
@@ -156,39 +204,101 @@ impl TerminalProcess {
     }
 }
 
-impl BoundedOutputBuffer {
+impl HeadTailOutputBuffer {
     fn new(capacity: usize) -> Self {
+        let head_budget = capacity / 2;
+        let tail_budget = capacity.saturating_sub(head_budget);
         Self {
-            bytes: VecDeque::new(),
             capacity,
+            head_budget,
+            tail_budget,
+            head: VecDeque::new(),
+            tail: VecDeque::new(),
             total_written: 0,
         }
     }
 
     fn append(&mut self, bytes: &[u8]) {
+        let start = self.total_written;
         self.total_written = self.total_written.saturating_add(bytes.len());
         if self.capacity == 0 {
-            self.bytes.clear();
             return;
         }
-        if bytes.len() >= self.capacity {
-            self.bytes.clear();
-            self.bytes.extend(
-                bytes[bytes.len().saturating_sub(self.capacity)..]
-                    .iter()
-                    .copied(),
-            );
+
+        let head_bytes = self.head_bytes();
+        if head_bytes < self.head_budget {
+            let remaining_head = self.head_budget.saturating_sub(head_bytes);
+            if bytes.len() <= remaining_head {
+                self.head.push_back(OutputSegment {
+                    start,
+                    bytes: bytes.to_vec(),
+                });
+                return;
+            }
+
+            let (head_part, tail_part) = bytes.split_at(remaining_head);
+            if !head_part.is_empty() {
+                self.head.push_back(OutputSegment {
+                    start,
+                    bytes: head_part.to_vec(),
+                });
+            }
+            self.push_tail(start + remaining_head, tail_part);
             return;
         }
-        self.bytes.extend(bytes.iter().copied());
-        let overflow = self.bytes.len().saturating_sub(self.capacity);
-        if overflow > 0 {
-            self.bytes.drain(0..overflow);
+
+        self.push_tail(start, bytes);
+    }
+
+    fn push_tail(&mut self, start: usize, bytes: &[u8]) {
+        if self.tail_budget == 0 || bytes.is_empty() {
+            return;
+        }
+
+        if bytes.len() >= self.tail_budget {
+            let keep_from = bytes.len().saturating_sub(self.tail_budget);
+            self.tail.clear();
+            self.tail.push_back(OutputSegment {
+                start: start + keep_from,
+                bytes: bytes[keep_from..].to_vec(),
+            });
+            return;
+        }
+
+        self.tail.push_back(OutputSegment {
+            start,
+            bytes: bytes.to_vec(),
+        });
+        self.trim_tail_to_budget();
+    }
+
+    fn trim_tail_to_budget(&mut self) {
+        let mut overflow = self.tail_bytes().saturating_sub(self.tail_budget);
+        while overflow > 0 {
+            let Some(front) = self.tail.front_mut() else {
+                break;
+            };
+            if overflow >= front.bytes.len() {
+                overflow -= front.bytes.len();
+                self.tail.pop_front();
+                continue;
+            }
+            front.bytes.drain(..overflow);
+            front.start += overflow;
+            break;
         }
     }
 
-    fn base_offset(&self) -> usize {
-        self.total_written.saturating_sub(self.bytes.len())
+    fn head_bytes(&self) -> usize {
+        self.head.iter().map(|segment| segment.bytes.len()).sum()
+    }
+
+    fn tail_bytes(&self) -> usize {
+        self.tail.iter().map(|segment| segment.bytes.len()).sum()
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.head_bytes().saturating_add(self.tail_bytes())
     }
 
     fn end_offset(&self) -> usize {
@@ -196,17 +306,32 @@ impl BoundedOutputBuffer {
     }
 
     fn output_since(&self, offset: usize) -> TerminalOutputChunk {
-        let base_offset = self.base_offset();
         let end_offset = self.end_offset();
-        let missed_bytes = base_offset.saturating_sub(offset);
-        let start_offset = offset.max(base_offset).min(end_offset);
-        let local_start = start_offset.saturating_sub(base_offset);
-        let bytes = self
-            .bytes
-            .iter()
-            .skip(local_start)
-            .copied()
-            .collect::<Vec<_>>();
+        let mut cursor = offset.min(end_offset);
+        let mut missed_bytes = 0usize;
+        let mut bytes = Vec::new();
+
+        for segment in self.iter_segments() {
+            let segment_start = segment.start;
+            let segment_end = segment.start.saturating_add(segment.bytes.len());
+            if segment_end <= cursor {
+                continue;
+            }
+
+            if cursor < segment_start {
+                missed_bytes = missed_bytes.saturating_add(segment_start - cursor);
+                cursor = segment_start;
+            }
+
+            let local_start = cursor.saturating_sub(segment_start);
+            bytes.extend_from_slice(&segment.bytes[local_start..]);
+            cursor = segment_end;
+        }
+
+        if cursor < end_offset {
+            missed_bytes = missed_bytes.saturating_add(end_offset - cursor);
+        }
+
         TerminalOutputChunk {
             text: String::from_utf8_lossy(&bytes).into_owned(),
             next_offset: end_offset,
@@ -216,7 +341,10 @@ impl BoundedOutputBuffer {
     }
 
     fn retained_text(&self) -> String {
-        let bytes = self.bytes.iter().copied().collect::<Vec<_>>();
+        let mut bytes = Vec::with_capacity(self.retained_bytes());
+        for segment in self.iter_segments() {
+            bytes.extend_from_slice(&segment.bytes);
+        }
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
@@ -224,32 +352,67 @@ impl BoundedOutputBuffer {
         TerminalOutputStats {
             buffer_capacity: self.capacity,
             total_written_bytes: self.total_written,
-            retained_bytes: self.bytes.len(),
-            dropped_bytes: self.base_offset(),
+            retained_bytes: self.retained_bytes(),
+            dropped_bytes: self.total_written.saturating_sub(self.retained_bytes()),
         }
+    }
+
+    fn iter_segments(&self) -> impl Iterator<Item = &OutputSegment> {
+        self.head.iter().chain(self.tail.iter())
     }
 }
 
 fn spawn_reader<R>(
     mut reader: R,
-    output: Arc<Mutex<BoundedOutputBuffer>>,
+    output: Arc<Mutex<HeadTailOutputBuffer>>,
     last_update: Arc<Mutex<Instant>>,
+    active_readers: Arc<AtomicUsize>,
+    output_drained: Arc<Notify>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         let mut buffer = [0u8; 4096];
+        let mut pending = Vec::<u8>::new();
         loop {
             match reader.read(&mut buffer).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    output.lock().append(&buffer[..n]);
-                    *last_update.lock() = Instant::now();
+                    pending.extend_from_slice(&buffer[..n]);
+                    while let Some(chunk) = take_valid_utf8_prefix(&mut pending) {
+                        output.lock().append(&chunk);
+                        *last_update.lock() = Instant::now();
+                    }
                 }
                 Err(_) => break,
             }
         }
+        if !pending.is_empty() {
+            output.lock().append(&pending);
+            *last_update.lock() = Instant::now();
+        }
+        if active_readers.fetch_sub(1, Ordering::AcqRel) == 1 {
+            output_drained.notify_waiters();
+        }
     });
+}
+
+fn take_valid_utf8_prefix(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    if buffer.is_empty() {
+        return None;
+    }
+
+    match std::str::from_utf8(buffer) {
+        Ok(_) => Some(std::mem::take(buffer)),
+        Err(err) => {
+            let valid_up_to = err.valid_up_to();
+            if valid_up_to > 0 {
+                return Some(buffer.drain(..valid_up_to).collect());
+            }
+            err.error_len()
+                .map(|len| buffer.drain(..len).collect::<Vec<u8>>())
+        }
+    }
 }
 
 fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
@@ -270,21 +433,63 @@ fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 }
 
 fn shell_command(command: &str) -> String {
-    command.to_string()
+    if cfg!(windows) {
+        let prefix = terminal_env_defaults()
+            .iter()
+            .map(|(name, value)| format!("$env:{name}={}", powershell_single_quoted(value)))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("{prefix}; {command}")
+    } else {
+        let prefix = terminal_env_defaults()
+            .iter()
+            .map(|(name, value)| format!("{name}={}", sh_single_quoted(value)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("export {prefix}; {command}")
+    }
+}
+
+fn terminal_env_defaults() -> [(&'static str, &'static str); 10] {
+    [
+        ("NO_COLOR", "1"),
+        ("TERM", "dumb"),
+        ("LANG", "C.UTF-8"),
+        ("LC_CTYPE", "C.UTF-8"),
+        ("LC_ALL", "C.UTF-8"),
+        ("COLORTERM", ""),
+        ("PAGER", "cat"),
+        ("GIT_PAGER", "cat"),
+        ("GH_PAGER", "cat"),
+        ("CODEX_CI", "1"),
+    ]
+}
+
+fn sh_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn powershell_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BoundedOutputBuffer, shell_command};
+    use super::{HeadTailOutputBuffer, shell_command};
 
     #[test]
-    fn shell_command_does_not_wrap_command_in_cd() {
-        assert_eq!(shell_command("pwd"), "pwd");
+    fn shell_command_injects_stable_terminal_env() {
+        let command = shell_command("pwd");
+
+        assert!(command.contains("NO_COLOR"));
+        assert!(command.contains("TERM"));
+        assert!(command.contains("PAGER"));
+        assert!(command.contains("pwd"));
     }
 
     #[test]
-    fn bounded_output_buffer_drops_oldest_bytes_and_reports_missed_offsets() {
-        let mut buffer = BoundedOutputBuffer::new(8);
+    fn output_buffer_preserves_head_and_tail_and_reports_missed_offsets() {
+        let mut buffer = HeadTailOutputBuffer::new(8);
         buffer.append(b"abcdef");
         buffer.append(b"ghijkl");
 
@@ -295,11 +500,25 @@ mod tests {
 
         let chunk = buffer.output_since(0);
         assert_eq!(chunk.missed_bytes, 4);
-        assert_eq!(chunk.text, "efghijkl");
+        assert_eq!(chunk.text, "abcdijkl");
         assert_eq!(chunk.next_offset, 12);
 
         let recent = buffer.output_since(10);
         assert_eq!(recent.missed_bytes, 0);
         assert_eq!(recent.text, "kl");
+    }
+
+    #[test]
+    fn output_buffer_keeps_incomplete_utf8_until_complete() {
+        let mut pending = Vec::new();
+        pending.extend_from_slice("中".as_bytes().split_at(2).0);
+        assert!(super::take_valid_utf8_prefix(&mut pending).is_none());
+
+        pending.push("中".as_bytes()[2]);
+        assert_eq!(
+            super::take_valid_utf8_prefix(&mut pending),
+            Some("中".as_bytes().to_vec())
+        );
+        assert!(pending.is_empty());
     }
 }
