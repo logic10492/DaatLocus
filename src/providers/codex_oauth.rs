@@ -2,7 +2,10 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -24,7 +27,7 @@ use crate::{
     },
     core::{Llm, TokenUsage, TokenUsageInfo},
     persistence::{PersistenceFileMode, PersistenceStore, write_bytes_atomic},
-    providers::thinking::codex_reasoning_effort,
+    providers::thinking::{codex_reasoning_effort, thinking_budget_is_none},
     reasoning::runtime::{
         AgentContent, AgentContentPart, AgentMessage, AgentToolCall, AgentToolInputSpec,
         AgentTurnItem, AgentTurnRequest, AgentTurnStreamResult, HistoryMessage, PromptRequest,
@@ -83,7 +86,10 @@ struct CodexResponsesClient {
     installation_id: String,
     /// Whether this model accepts image/vision input. Derived from config
     /// or catalog heuristic; can be set to `false` at runtime on error.
-    supports_vision: std::sync::atomic::AtomicBool,
+    supports_vision: AtomicBool,
+    /// Whether this model/account accepts `reasoning.summary`.
+    /// It is an optional display enhancement, so runtime errors disable it.
+    supports_reasoning_summary: AtomicBool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +212,8 @@ impl CodexResponsesClient {
             }),
             client_version,
             installation_id: Uuid::new_v4().to_string(),
-            supports_vision: std::sync::atomic::AtomicBool::new(supports_vision_initial),
+            supports_vision: AtomicBool::new(supports_vision_initial),
+            supports_reasoning_summary: AtomicBool::new(true),
         }
     }
 
@@ -457,20 +464,24 @@ impl CodexResponsesClient {
             .into());
         }
         let request_context = summarize_agent_turn_request(&request, Some(&budget));
-        use std::sync::atomic::Ordering;
-        let strip_images = !self.supports_vision.load(Ordering::Relaxed);
+        let mut strip_images = !self.supports_vision.load(Ordering::Relaxed);
         let request_identity = codex_request_identity(context);
-        let payload = build_agent_responses_payload(
-            self,
-            request.clone(),
-            strip_images,
-            request_identity.as_ref(),
-        );
-        let response = self
-            .post_responses_with_retry(&payload, &request_context, request_identity.as_ref())
-            .await?;
-        let status = response.status();
-        if !status.is_success() {
+        loop {
+            let payload = build_agent_responses_payload(
+                self,
+                request.clone(),
+                strip_images,
+                request_identity.as_ref(),
+            );
+            let response = self
+                .post_responses_with_retry(&payload, &request_context, request_identity.as_ref())
+                .await?;
+            let status = response.status();
+            if status.is_success() {
+                return self
+                    .parse_responses_stream(Some(context), response, true)
+                    .await;
+            }
             let body = response
                 .text()
                 .await
@@ -487,42 +498,27 @@ impl CodexResponsesClient {
                 )
                 .into());
             }
+            if super::io::should_retry_request_without_reasoning_summary(&body)
+                && self.supports_reasoning_summary.load(Ordering::Relaxed)
+            {
+                self.supports_reasoning_summary
+                    .store(false, Ordering::Relaxed);
+                warn!(
+                    "Codex Responses rejected reasoning.summary; retrying agent turn without reasoning summaries\n{}",
+                    request_context.join("\n")
+                );
+                continue;
+            }
             if super::io::looks_like_vision_unsupported_error(&body)
                 && self.supports_vision.load(Ordering::Relaxed)
             {
                 self.supports_vision.store(false, Ordering::Relaxed);
+                strip_images = true;
                 warn!(
                     "Codex Responses rejected image input; retrying agent turn without images\n{}",
                     request_context.join("\n")
                 );
-                let payload = build_agent_responses_payload(
-                    self,
-                    request,
-                    /*strip_images=*/ true,
-                    request_identity.as_ref(),
-                );
-                let response = self
-                    .post_responses_with_retry(
-                        &payload,
-                        &request_context,
-                        request_identity.as_ref(),
-                    )
-                    .await?;
-                let status = response.status();
-                if status.is_success() {
-                    return self
-                        .parse_responses_stream(Some(context), response, true)
-                        .await;
-                }
-                let body = response
-                    .text()
-                    .await
-                    .map_err(|err| miette!("Codex Responses body read failed: {err}"))?;
-                return Err(miette!(
-                    "Codex Responses returned HTTP {}: {}",
-                    status,
-                    truncate_for_error(&body)
-                ));
+                continue;
             }
             return Err(miette!(
                 "Codex Responses returned HTTP {}: {}",
@@ -530,8 +526,6 @@ impl CodexResponsesClient {
                 truncate_for_error(&body)
             ));
         }
-        self.parse_responses_stream(Some(context), response, true)
-            .await
     }
 
     async fn parse_responses_stream(
@@ -906,10 +900,35 @@ fn base_responses_payload(
         payload["prompt_cache_key"] = json!(prompt_cache_key(identity, request_kind));
         payload["client_metadata"][CODEX_WINDOW_ID_HEADER] = json!(identity.window_id);
     }
-    if let Some(budget) = client.thinking_budget.as_deref() {
-        payload["reasoning"] = json!({ "effort": codex_reasoning_effort(budget) });
+    if let Some(reasoning) = codex_reasoning_payload(client, request_kind) {
+        payload["reasoning"] = reasoning;
     }
     payload
+}
+
+fn codex_reasoning_payload(client: &CodexResponsesClient, request_kind: &str) -> Option<Value> {
+    let reasoning_summary = request_kind == "agent"
+        && client.supports_reasoning_summary.load(Ordering::Relaxed)
+        && !client
+            .thinking_budget
+            .as_deref()
+            .is_some_and(thinking_budget_is_none);
+    let effort = client
+        .thinking_budget
+        .as_deref()
+        .map(codex_reasoning_effort);
+    if effort.is_none() && !reasoning_summary {
+        return None;
+    }
+
+    let mut reasoning = serde_json::Map::new();
+    if let Some(effort) = effort {
+        reasoning.insert("effort".to_string(), json!(effort));
+    }
+    if reasoning_summary {
+        reasoning.insert("summary".to_string(), json!("auto"));
+    }
+    Some(Value::Object(reasoning))
 }
 
 fn codex_request_identity(context: &Context) -> Option<CodexRequestIdentity> {
@@ -1665,6 +1684,36 @@ mod tests {
     }
 
     #[test]
+    fn codex_agent_payload_requests_reasoning_summary() {
+        let payload = build_agent_responses_payload(
+            &test_client(),
+            AgentTurnRequest {
+                messages: vec![AgentMessage::system("base"), AgentMessage::user("work")],
+                tools: Vec::new(),
+            },
+            false,
+            None,
+        );
+
+        assert_eq!(payload["reasoning"]["summary"], "auto");
+        assert!(payload["reasoning"].get("effort").is_none(), "{payload:#}");
+    }
+
+    #[test]
+    fn codex_prompt_payload_does_not_request_reasoning_summary() {
+        let payload = base_responses_payload(
+            &test_client(),
+            "instructions".to_string(),
+            vec![],
+            vec![],
+            None,
+            "prompt",
+        );
+
+        assert!(payload.get("reasoning").is_none(), "{payload:#}");
+    }
+
+    #[test]
     fn codex_thinking_budget_max_maps_to_xhigh() {
         let client = CodexResponsesClient::new(
             CODEX_RESPONSES_BASE_URL,
@@ -1686,6 +1735,60 @@ mod tests {
         );
 
         assert_eq!(payload["reasoning"]["effort"], "xhigh");
+        assert_eq!(payload["reasoning"]["summary"], "auto");
+    }
+
+    #[test]
+    fn codex_reasoning_summary_can_be_disabled_without_dropping_effort() {
+        let client = CodexResponsesClient::new(
+            CODEX_RESPONSES_BASE_URL,
+            &ModelConfig {
+                model_id: "gpt-5.4".to_string(),
+                provider: "codex-oauth".to_string(),
+                thinking_budget: Some(thinking_budget("max")),
+                ..ModelConfig::default()
+            },
+        );
+        client
+            .supports_reasoning_summary
+            .store(false, Ordering::Relaxed);
+
+        let payload = base_responses_payload(
+            &client,
+            "instructions".to_string(),
+            vec![],
+            vec![],
+            None,
+            "agent",
+        );
+
+        assert_eq!(payload["reasoning"]["effort"], "xhigh");
+        assert!(payload["reasoning"].get("summary").is_none(), "{payload:#}");
+    }
+
+    #[test]
+    fn codex_reasoning_summary_is_omitted_when_thinking_is_disabled() {
+        let client = CodexResponsesClient::new(
+            CODEX_RESPONSES_BASE_URL,
+            &ModelConfig {
+                model_id: "gpt-5.4".to_string(),
+                provider: "codex-oauth".to_string(),
+                thinking_budget: Some(thinking_budget("none")),
+                ..ModelConfig::default()
+            },
+        );
+
+        let payload = base_responses_payload(
+            &client,
+            "instructions".to_string(),
+            vec![],
+            vec![],
+            None,
+            "agent",
+        );
+
+        assert_eq!(payload["reasoning"]["effort"], "none");
+        assert!(payload["reasoning"].get("summary").is_none(), "{payload:#}");
     }
 
     #[test]

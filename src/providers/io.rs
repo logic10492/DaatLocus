@@ -61,6 +61,22 @@ pub(crate) fn should_retry_request_without_thinking_budget(body: &str) -> bool {
         || body.contains("unknown parameter: \"reasoning.effort\"")
 }
 
+pub(crate) fn should_retry_request_without_reasoning_summary(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    body.contains("reasoning.summary")
+        || (body.contains("reasoning")
+            && body.contains("summary")
+            && (body.contains("unsupported")
+                || body.contains("not supported")
+                || body.contains("unknown parameter")
+                || body.contains("unknown field")
+                || body.contains("unrecognized parameter")
+                || body.contains("unrecognized field")
+                || body.contains("invalid")
+                || body.contains("not permitted")
+                || body.contains("verified")))
+}
+
 pub(crate) fn should_retry_request_without_reasoning_content(body: &str) -> bool {
     let body = body.to_ascii_lowercase();
     body.contains("reasoning_content")
@@ -393,4 +409,22 @@ pub(crate) fn default_rate_limit_backoff(attempt: usize) -> Duration {
         _ => 12,
     };
     Duration::from_secs(seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_reasoning_summary_rejection_errors() {
+        assert!(should_retry_request_without_reasoning_summary(
+            r#"{"error":{"message":"Your organization must be verified to generate reasoning summaries.","param":"reasoning.summary","code":"unsupported_value"}}"#
+        ));
+        assert!(should_retry_request_without_reasoning_summary(
+            "Unknown parameter: 'reasoning.summary'."
+        ));
+        assert!(!should_retry_request_without_reasoning_summary(
+            "The assistant summary mentioned reasoning, but the request succeeded."
+        ));
+    }
 }
