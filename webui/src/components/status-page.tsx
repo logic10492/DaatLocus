@@ -465,6 +465,14 @@ function AgentChatComposer({
     Boolean(slashCommandFeedback?.blocksSubmit) ||
     (isWebSlashCommandInput(message) &&
       !parseWebSlashCommand(message)?.trimmed);
+  const isRuntimeInterruptible =
+    snapshot?.runtime_activity?.active_runtime_turn ?? false;
+  const sendButtonIsInterrupt = isRuntimeInterruptible;
+  const sendButtonDisabled = sendButtonIsInterrupt
+    ? isSending
+    : (!message.trim() && imageAttachments.length === 0) ||
+      isSending ||
+      slashCommandBlocksSubmit;
 
   useEffect(() => {
     setSlashCommandSelection((current) =>
@@ -680,8 +688,37 @@ function AgentChatComposer({
     }
   }
 
+  async function interruptRuntimeTurn() {
+    if (isSending || !isRuntimeInterruptible) {
+      return;
+    }
+
+    setIsSending(true);
+    setSendError(null);
+    setSlashActionFeedback(null);
+    try {
+      const result = await runDashboardAction(
+        { kind: "interrupt_runtime" },
+        { sessionId },
+      );
+      if (!result.success) {
+        setSendError(
+          result.detail ? `${result.message}: ${result.detail}` : result.message,
+        );
+      }
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSending(false);
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (sendButtonIsInterrupt) {
+      await interruptRuntimeTurn();
+      return;
+    }
     await submitComposerInput(message);
   }
 
@@ -964,18 +1001,23 @@ function AgentChatComposer({
             <ImagePlusIcon data-icon="inline-start" aria-hidden="true" />
           </Button>
           <Button
-            type="submit"
+            type={sendButtonIsInterrupt ? "button" : "submit"}
+            variant={sendButtonIsInterrupt ? "destructive" : "default"}
             size="icon-sm"
-            disabled={
-              (!message.trim() && imageAttachments.length === 0) ||
-              isSending ||
-              slashCommandBlocksSubmit
+            disabled={sendButtonDisabled}
+            aria-label={sendButtonIsInterrupt ? "Interrupt agent" : "Send message"}
+            title={sendButtonIsInterrupt ? "Interrupt agent" : "Send message"}
+            onClick={
+              sendButtonIsInterrupt
+                ? () => void interruptRuntimeTurn()
+                : undefined
             }
-            aria-label="Send message"
             className="rounded-full"
           >
             {isSending ? (
               <Spinner data-icon="inline-start" />
+            ) : sendButtonIsInterrupt ? (
+              <XIcon data-icon="inline-start" aria-hidden="true" />
             ) : (
               <SendHorizontalIcon data-icon="inline-start" aria-hidden="true" />
             )}
@@ -3800,9 +3842,9 @@ function AgentChatRuntimeStatusCell({
         <span className="font-semibold text-foreground">
           <AgentChatMarkdownInline text={title} />
         </span>{" "}
-        <span className="text-muted-foreground">({elapsedText} • </span>
-        <span className="font-semibold text-foreground">esc</span>
-        <span className="text-muted-foreground"> to interrupt)</span>
+        <span className="text-muted-foreground">({elapsedText} • use </span>
+        <span className="font-semibold text-foreground">interrupt</span>
+        <span className="text-muted-foreground"> button)</span>
         {detailText ? (
           <>
             <span className="text-muted-foreground"> — </span>
