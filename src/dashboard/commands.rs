@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::DashboardState;
 use crate::telegram_acl::TelegramAclHandle;
@@ -17,6 +18,13 @@ pub enum DashboardControlCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DashboardPendingUserInputMoveDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DashboardAction {
     RunSleep,
@@ -24,9 +32,23 @@ pub enum DashboardAction {
     InterruptRuntime,
     RestartDaemon,
     ReloadSkills,
-    SetSkillAutoUse { path: PathBuf, enabled: bool },
-    ApproveTelegramAccess { chat_id: i64 },
-    RejectTelegramAccess { chat_id: i64 },
+    SetSkillAutoUse {
+        path: PathBuf,
+        enabled: bool,
+    },
+    ApproveTelegramAccess {
+        chat_id: i64,
+    },
+    RejectTelegramAccess {
+        chat_id: i64,
+    },
+    DismissPendingUserInput {
+        event_id: Uuid,
+    },
+    MovePendingUserInput {
+        event_id: Uuid,
+        direction: DashboardPendingUserInputMoveDirection,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,5 +161,9 @@ pub(crate) fn execute_dashboard_action(
             Ok(()) => DashboardActionResult::ok(format!("rejected {chat_id}")),
             Err(err) => DashboardActionResult::error(format!("reject failed for {chat_id}: {err}")),
         },
+        DashboardAction::DismissPendingUserInput { .. }
+        | DashboardAction::MovePendingUserInput { .. } => {
+            DashboardActionResult::error("pending user input actions require a target session")
+        }
     }
 }

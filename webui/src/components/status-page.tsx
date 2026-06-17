@@ -20,6 +20,7 @@ import {
 
 import {
   ArrowDownIcon,
+  ArrowUpIcon,
   AlertTriangleIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -28,9 +29,11 @@ import {
   ImagePlusIcon,
   InfoIcon,
   SendHorizontalIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   CollapsibleTrigger,
@@ -62,6 +65,8 @@ import {
   type DashboardActionResult,
   type DashboardActivityHistoryPage,
   type DashboardCommandAttachment,
+  type DashboardPendingUserInput,
+  type DashboardPendingUserInputMoveDirection,
   type DashboardSnapshot,
   type ActivityCellVariant,
   type WebActivityBlock,
@@ -450,6 +455,10 @@ function AgentChatComposer({
   const [slashPanel, setSlashPanel] = useState<WebSlashPanel | null>(null);
   const [slashActionFeedback, setSlashActionFeedback] =
     useState<WebSlashActionFeedback | null>(null);
+  const [pendingUserInputActionId, setPendingUserInputActionId] = useState<
+    string | null
+  >(null);
+  const pendingUserInputs = snapshot?.pending_user_inputs ?? [];
 
   const inputSuggestions = useMemo(
     () => webInputSuggestions(message, snapshot),
@@ -786,6 +795,31 @@ function AgentChatComposer({
     }
   }
 
+  async function runPendingUserInputAction(
+    action: DashboardAction,
+    actionId: string,
+  ) {
+    if (pendingUserInputActionId) {
+      return;
+    }
+
+    setPendingUserInputActionId(actionId);
+    setSendError(null);
+    setSlashActionFeedback(null);
+    try {
+      const result = await runDashboardAction(action, { sessionId });
+      if (!result.success) {
+        setSendError(
+          result.detail ? `${result.message}: ${result.detail}` : result.message,
+        );
+      }
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPendingUserInputActionId(null);
+    }
+  }
+
   function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
     if (!supportsVision) {
       return;
@@ -921,6 +955,26 @@ function AgentChatComposer({
           ))}
         </div>
       ) : null}
+      <PendingUserInputQueue
+        inputs={pendingUserInputs}
+        busyActionId={pendingUserInputActionId}
+        onDismiss={(input) =>
+          void runPendingUserInputAction(
+            { kind: "dismiss_pending_user_input", event_id: input.event_id },
+            pendingUserInputDismissActionId(input),
+          )
+        }
+        onMove={(input, direction) =>
+          void runPendingUserInputAction(
+            {
+              kind: "move_pending_user_input",
+              event_id: input.event_id,
+              direction,
+            },
+            pendingUserInputMoveActionId(input, direction),
+          )
+        }
+      />
       <InputGroup className="h-auto min-h-11 items-end border-0 bg-transparent shadow-none has-[[data-slot=input-group-control]:focus-visible]:border-transparent has-[[data-slot=input-group-control]:focus-visible]:ring-0 dark:bg-transparent">
         <InputGroupTextarea
           ref={textareaRef}
@@ -1031,6 +1085,197 @@ function AgentChatComposer({
       ) : null}
     </form>
   );
+}
+
+function PendingUserInputQueue({
+  inputs,
+  busyActionId,
+  onDismiss,
+  onMove,
+}: {
+  inputs: DashboardPendingUserInput[];
+  busyActionId: string | null;
+  onDismiss: (input: DashboardPendingUserInput) => void;
+  onMove: (
+    input: DashboardPendingUserInput,
+    direction: DashboardPendingUserInputMoveDirection,
+  ) => void;
+}) {
+  if (inputs.length === 0) {
+    return null;
+  }
+
+  const queueBusy = Boolean(busyActionId);
+
+  return (
+    <section
+      aria-label="Pending user inputs"
+      className="mb-2 flex max-h-48 flex-col gap-2 overflow-auto rounded-lg border border-border/70 bg-muted/30 px-2 py-2"
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-medium text-foreground">
+            Pending user inputs
+          </p>
+          <p className="truncate text-xs text-muted-foreground">
+            Queued above the composer until the agent claims them.
+          </p>
+        </div>
+        <Badge variant="secondary" className="shrink-0">
+          {inputs.length}
+        </Badge>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        {inputs.map((input, index) => {
+          const upActionId = pendingUserInputMoveActionId(input, "up");
+          const downActionId = pendingUserInputMoveActionId(input, "down");
+          const dismissActionId = pendingUserInputDismissActionId(input);
+          const upBusy = busyActionId === upActionId;
+          const downBusy = busyActionId === downActionId;
+          const dismissBusy = busyActionId === dismissActionId;
+          const preview = pendingUserInputPreview(input);
+
+          return (
+            <div
+              key={input.event_id}
+              className="flex min-w-0 gap-2 rounded-lg border border-border/70 bg-background/80 p-2"
+            >
+              <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground">
+                {index + 1}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <Badge variant="outline" className="shrink-0">
+                    {pendingUserInputOriginLabel(input.origin)}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {formatPendingUserInputArrival(input.arrived_at_ms)}
+                  </span>
+                  {input.attachment_count > 0 ? (
+                    <Badge variant="secondary" className="shrink-0">
+                      {input.attachment_count} attachment
+                      {input.attachment_count === 1 ? "" : "s"}
+                    </Badge>
+                  ) : null}
+                </div>
+                <p className="mt-1 break-words text-sm leading-5 text-foreground">
+                  {preview}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-start gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Move pending input ${index + 1} up`}
+                  title="Move up"
+                  disabled={queueBusy || index === 0}
+                  onClick={() => onMove(input, "up")}
+                  className="rounded-full text-muted-foreground hover:text-foreground"
+                >
+                  {upBusy ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <ArrowUpIcon data-icon="inline-start" aria-hidden="true" />
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Move pending input ${index + 1} down`}
+                  title="Move down"
+                  disabled={queueBusy || index === inputs.length - 1}
+                  onClick={() => onMove(input, "down")}
+                  className="rounded-full text-muted-foreground hover:text-foreground"
+                >
+                  {downBusy ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <ArrowDownIcon data-icon="inline-start" aria-hidden="true" />
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Dismiss pending input ${index + 1}`}
+                  title="Dismiss"
+                  disabled={queueBusy}
+                  onClick={() => onDismiss(input)}
+                  className="rounded-full text-muted-foreground hover:text-foreground"
+                >
+                  {dismissBusy ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <Trash2Icon data-icon="inline-start" aria-hidden="true" />
+                  )}
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function pendingUserInputMoveActionId(
+  input: DashboardPendingUserInput,
+  direction: DashboardPendingUserInputMoveDirection,
+) {
+  return `${input.event_id}:move:${direction}`;
+}
+
+function pendingUserInputDismissActionId(input: DashboardPendingUserInput) {
+  return `${input.event_id}:dismiss`;
+}
+
+function pendingUserInputPreview(input: DashboardPendingUserInput) {
+  const text = input.incoming_text.trim();
+  if (text) {
+    return text;
+  }
+  return input.attachment_count > 0 ? "Attachment-only input" : "Empty input";
+}
+
+function pendingUserInputOriginLabel(origin: string) {
+  const normalized = origin.trim().toLowerCase();
+  if (normalized === "webui" || normalized === "web_ui") {
+    return "WebUI";
+  }
+  if (normalized === "tui") {
+    return "TUI";
+  }
+  if (normalized === "clisend" || normalized === "cli_send") {
+    return "CLI";
+  }
+  return origin.trim() || "User";
+}
+
+function formatPendingUserInputArrival(arrivedAtMs: number) {
+  if (!Number.isFinite(arrivedAtMs) || arrivedAtMs <= 0) {
+    return "queued";
+  }
+
+  const elapsedMs = Date.now() - arrivedAtMs;
+  if (elapsedMs < 60_000) {
+    return "just now";
+  }
+  if (elapsedMs < 60 * 60_000) {
+    return `${Math.floor(elapsedMs / 60_000)}m ago`;
+  }
+  if (elapsedMs < 24 * 60 * 60_000) {
+    return `${Math.floor(elapsedMs / (60 * 60_000))}h ago`;
+  }
+
+  return new Date(arrivedAtMs).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function WebSlashCommandPanel({

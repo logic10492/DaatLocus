@@ -37,6 +37,12 @@ enum PendingWorkEntryState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PendingEventMoveDirection {
+    Up,
+    Down,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PendingWork {
     Event { event_id: Uuid },
     AppNotice { app: AppId, reason: String },
@@ -199,6 +205,53 @@ impl PendingWorkQueue {
         Ok(true)
     }
 
+    pub fn pending_event_ids(&self) -> Vec<Uuid> {
+        let inner = self.inner.lock();
+        inner
+            .state
+            .queue
+            .iter()
+            .filter_map(|entry| match (&entry.work, entry.state) {
+                (PendingWork::Event { event_id }, PendingWorkEntryState::Pending) => {
+                    Some(*event_id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn move_pending_event(
+        &self,
+        event_id: Uuid,
+        direction: PendingEventMoveDirection,
+    ) -> Result<bool> {
+        let mut inner = self.inner.lock();
+        let event_indices = pending_event_indices(&inner.state.queue);
+        let Some(position) = event_indices.iter().position(|index| {
+            matches!(
+                inner.state.queue[*index].work,
+                PendingWork::Event { event_id: current } if current == event_id
+            )
+        }) else {
+            return Ok(false);
+        };
+        let target_position = match direction {
+            PendingEventMoveDirection::Up => position.checked_sub(1),
+            PendingEventMoveDirection::Down => {
+                (position + 1 < event_indices.len()).then_some(position + 1)
+            }
+        };
+        let Some(target_position) = target_position else {
+            return Ok(false);
+        };
+        inner
+            .state
+            .queue
+            .swap(event_indices[position], event_indices[target_position]);
+        persist_locked(&inner)?;
+        Ok(true)
+    }
+
     pub fn clear_events(&self) -> Result<usize> {
         let mut inner = self.inner.lock();
         let before = inner.state.queue.len();
@@ -217,6 +270,17 @@ impl PendingWorkQueue {
         let inner = self.inner.lock();
         let _ = persist_locked(&inner);
     }
+}
+
+fn pending_event_indices(queue: &VecDeque<PendingWorkEntry>) -> Vec<usize> {
+    queue
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| match (&entry.work, entry.state) {
+            (PendingWork::Event { .. }, PendingWorkEntryState::Pending) => Some(index),
+            _ => None,
+        })
+        .collect()
 }
 
 fn select_next_pending_index(queue: &VecDeque<PendingWorkEntry>) -> Option<usize> {
@@ -458,5 +522,57 @@ mod tests {
         let remaining = queue.claim_batch(2).expect("claim remaining work");
         assert_eq!(remaining.len(), 1);
         assert!(matches!(remaining[0], PendingWork::AppNotice { .. }));
+    }
+
+    #[test]
+    fn pending_event_ids_follow_manual_reordering() {
+        let queue = test_queue();
+        let first_event_id = Uuid::new_v4();
+        let second_event_id = Uuid::new_v4();
+        let third_event_id = Uuid::new_v4();
+        queue
+            .enqueue(PendingWork::Event {
+                event_id: first_event_id,
+            })
+            .expect("enqueue first event");
+        queue
+            .enqueue(PendingWork::AppNotice {
+                app: AppId::terminal(),
+                reason: "terminal changed".to_string(),
+            })
+            .expect("enqueue app notice");
+        queue
+            .enqueue(PendingWork::Event {
+                event_id: second_event_id,
+            })
+            .expect("enqueue second event");
+        queue
+            .enqueue(PendingWork::Event {
+                event_id: third_event_id,
+            })
+            .expect("enqueue third event");
+
+        assert_eq!(
+            queue.pending_event_ids(),
+            vec![first_event_id, second_event_id, third_event_id]
+        );
+        assert!(
+            queue
+                .move_pending_event(third_event_id, PendingEventMoveDirection::Up)
+                .expect("move third event up")
+        );
+        assert_eq!(
+            queue.pending_event_ids(),
+            vec![first_event_id, third_event_id, second_event_id]
+        );
+        assert!(
+            queue
+                .move_pending_event(first_event_id, PendingEventMoveDirection::Down)
+                .expect("move first event down")
+        );
+        assert_eq!(
+            queue.pending_event_ids(),
+            vec![third_event_id, first_event_id, second_event_id]
+        );
     }
 }

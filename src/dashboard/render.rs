@@ -5,14 +5,16 @@ use std::time::Duration;
 use crate::{
     context::Context,
     core::TokenUsageInfo,
-    events::EventStatus,
+    events::{EventPayload, EventStatus, EventStore},
+    pending_work::PendingWorkQueue,
     plan::{PlanStatus, PlanStep},
     sleep_status::SleepStatusSnapshot,
 };
 
 use super::{
-    DashboardContextCompositionSnapshot, DashboardPlanStep, DashboardPrimitiveOptimizationSnapshot,
-    DashboardRuntimeActivity, DashboardRuntimeActivityStatus, DashboardRuntimeOptimizationSnapshot,
+    DashboardContextCompositionSnapshot, DashboardPendingUserInput, DashboardPlanStep,
+    DashboardPrimitiveOptimizationSnapshot, DashboardRuntimeActivity,
+    DashboardRuntimeActivityStatus, DashboardRuntimeOptimizationSnapshot,
     DashboardRuntimeStatusLevel, DashboardState, DashboardTokenUsageSnapshot,
     activity_cells_from_history_items, dashboard_agent_name, render_activity_from_messages,
 };
@@ -40,6 +42,7 @@ pub fn sync_dashboard_state(
         state.skills = context.openskills.dashboard_summaries();
         state.skill_errors = context.openskills.dashboard_errors();
         state.pending_access_requests = context.telegram_acl.pending_requests();
+        state.pending_user_inputs = pending_user_inputs_for_dashboard(context);
         state.activity_cells = if state.activity_history.items.is_empty() {
             render_activity_for_dashboard(context)
         } else {
@@ -816,6 +819,36 @@ pub fn render_telegram_status_for_dashboard(context: &Context) -> String {
     }
 
     lines.join("\n")
+}
+
+pub fn pending_user_inputs_for_dashboard(context: &Context) -> Vec<DashboardPendingUserInput> {
+    pending_user_inputs_from_sources(&context.events, &context.pending_work)
+}
+
+pub fn pending_user_inputs_from_sources(
+    events: &EventStore,
+    pending_work: &PendingWorkQueue,
+) -> Vec<DashboardPendingUserInput> {
+    pending_work
+        .pending_event_ids()
+        .into_iter()
+        .filter_map(|event_id| {
+            let event = events.view(&event_id.to_string()).ok()?;
+            if !matches!(event.status, EventStatus::Pending) {
+                return None;
+            }
+            let EventPayload::TerminalIncoming(payload) = event.payload else {
+                return None;
+            };
+            Some(DashboardPendingUserInput {
+                event_id: event.event_id.to_string(),
+                origin: payload.origin,
+                incoming_text: payload.incoming_text,
+                arrived_at_ms: event.arrived_at_ms,
+                attachment_count: payload.attachments.len(),
+            })
+        })
+        .collect()
 }
 
 pub fn render_activity_for_dashboard(context: &Context) -> Vec<crate::dashboard::ActivityCell> {

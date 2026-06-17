@@ -147,6 +147,14 @@ export type DashboardPendingAccessRequest = {
   last_seen_at_ms: number;
 };
 
+export type DashboardPendingUserInput = {
+  event_id: string;
+  origin: string;
+  incoming_text: string;
+  arrived_at_ms: number;
+  attachment_count: number;
+};
+
 export type WebActivityKind =
   | "message"
   | "tool"
@@ -458,6 +466,7 @@ export type DashboardSnapshot = {
   skills?: DashboardSkillSummary[];
   skill_errors?: DashboardSkillError[];
   pending_access_requests: DashboardPendingAccessRequest[];
+  pending_user_inputs?: DashboardPendingUserInput[];
   activity_cells: unknown[];
   live_activity_cells: Array<{
     key: string;
@@ -658,6 +667,8 @@ type DashboardCommandResponse = {
   output: string;
 };
 
+export type DashboardPendingUserInputMoveDirection = "up" | "down";
+
 export type DashboardAction =
   | { kind: "run_sleep" }
   | { kind: "clear_conversation" }
@@ -666,7 +677,13 @@ export type DashboardAction =
   | { kind: "reload_skills" }
   | { kind: "set_skill_auto_use"; path: string; enabled: boolean }
   | { kind: "approve_telegram_access"; chat_id: number }
-  | { kind: "reject_telegram_access"; chat_id: number };
+  | { kind: "reject_telegram_access"; chat_id: number }
+  | { kind: "dismiss_pending_user_input"; event_id: string }
+  | {
+      kind: "move_pending_user_input";
+      event_id: string;
+      direction: DashboardPendingUserInputMoveDirection;
+    };
 
 export type DashboardActionResult = {
   success: boolean;

@@ -34,7 +34,7 @@ pub use cells::{
 pub(crate) use command_flow::execute_control_command;
 pub use commands::{
     DashboardAction, DashboardActionResult, DashboardCommandAttachment, DashboardCommandRunner,
-    DashboardControlCommand,
+    DashboardControlCommand, DashboardPendingUserInputMoveDirection,
 };
 pub use history::{
     DashboardActivityHistoryPage, DashboardActivityHistoryStore, DashboardActivityHistoryWindow,
@@ -268,6 +268,15 @@ impl Default for DashboardRuntimeActivity {
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
+pub struct DashboardPendingUserInput {
+    pub event_id: String,
+    pub origin: String,
+    pub incoming_text: String,
+    pub arrived_at_ms: i64,
+    pub attachment_count: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct DashboardState {
     #[serde(default = "default_agent_name")]
     pub agent_name: String,
@@ -285,6 +294,8 @@ pub struct DashboardState {
     pub skill_errors: Vec<OpenSkillDashboardError>,
     #[serde(default)]
     pub pending_access_requests: Vec<PendingAccessRequest>,
+    #[serde(default)]
+    pub pending_user_inputs: Vec<DashboardPendingUserInput>,
     pub activity_cells: Vec<ActivityCell>,
     pub live_activity_cells: Vec<LiveActivityCell>,
     #[serde(default = "default_web_activity_version")]

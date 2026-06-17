@@ -16,26 +16,28 @@ use crate::{
         },
     },
     dashboard::render::{
-        current_plan_step_for_dashboard, primitive_optimization_snapshot_for_dashboard,
-        render_activity_for_dashboard, render_app_status_outputs_for_dashboard,
-        render_dashboard_footer_context, render_sleep_status_output_for_dashboard,
-        render_status_command_output_for_dashboard, render_system_prompt_output_for_dashboard,
-        render_telegram_status_for_dashboard, runtime_activity_for_dashboard,
-        runtime_optimization_snapshot_for_dashboard, token_usage_snapshot_for_dashboard,
+        current_plan_step_for_dashboard, pending_user_inputs_from_sources,
+        primitive_optimization_snapshot_for_dashboard, render_activity_for_dashboard,
+        render_app_status_outputs_for_dashboard, render_dashboard_footer_context,
+        render_sleep_status_output_for_dashboard, render_status_command_output_for_dashboard,
+        render_system_prompt_output_for_dashboard, render_telegram_status_for_dashboard,
+        runtime_activity_for_dashboard, runtime_optimization_snapshot_for_dashboard,
+        token_usage_snapshot_for_dashboard,
     },
     dashboard::{
         DashboardAction, DashboardActivityHistoryStore, DashboardControlCommand,
-        DashboardRuntimeActivity, DashboardRuntimeActivityStatus, DashboardRuntimeStatusLevel,
-        DashboardState, ReducedMotion, activity_cells_from_history_items, dashboard_agent_name,
-        execute_control_command, execute_dashboard_action, sync_web_activity_state,
+        DashboardPendingUserInputMoveDirection, DashboardRuntimeActivity,
+        DashboardRuntimeActivityStatus, DashboardRuntimeStatusLevel, DashboardState, ReducedMotion,
+        activity_cells_from_history_items, dashboard_agent_name, execute_control_command,
+        execute_dashboard_action, sync_web_activity_state,
     },
     events::{
-        EventStore, TelegramIncomingEvent, TerminalIncomingAttachment,
+        EventPayload, EventStatus, EventStore, TelegramIncomingEvent, TerminalIncomingAttachment,
         TerminalIncomingAttachmentKind, TerminalIncomingEvent,
     },
     memory::Memory,
     openskills::load_openskills_for_runtime,
-    pending_work::{PendingWork, PendingWorkQueue},
+    pending_work::{PendingEventMoveDirection, PendingWork, PendingWorkQueue},
     plan::Plan,
     preturn_state::PreTurnState,
     providers::build_llm,
@@ -114,6 +116,7 @@ pub(crate) async fn run_session_serve(
         expected_ipc_token: args.ipc_token.clone(),
         lifecycle: daemon_lifecycle.clone(),
         dashboard_rx: tx.subscribe(),
+        dashboard_tx: tx.clone(),
         dashboard_history: dashboard_history.clone(),
         events: events.clone(),
         pending_work: pending_work.clone(),
@@ -245,6 +248,10 @@ pub(crate) async fn run_session_serve(
             skills: context.openskills.dashboard_summaries(),
             skill_errors: context.openskills.dashboard_errors(),
             pending_access_requests: context.telegram_acl.pending_requests(),
+            pending_user_inputs: pending_user_inputs_from_sources(
+                &context.events,
+                &context.pending_work,
+            ),
             activity_cells: if activity_history.items.is_empty() {
                 render_activity_for_dashboard(&context)
             } else {
@@ -384,6 +391,7 @@ struct SessionIpcServerState {
     expected_ipc_token: String,
     lifecycle: DaemonLifecycleHandle,
     dashboard_rx: watch::Receiver<DashboardState>,
+    dashboard_tx: watch::Sender<DashboardState>,
     dashboard_history: DashboardActivityHistoryStore,
     events: EventStore,
     pending_work: PendingWorkQueue,
@@ -462,7 +470,7 @@ async fn handle_ipc_connection(
             attachments,
             wait_for_reply,
         } => {
-            submit_user_input(
+            let response = submit_user_input(
                 &state.events,
                 &state.pending_work,
                 origin,
@@ -471,7 +479,9 @@ async fn handle_ipc_connection(
                 wait_for_reply,
                 request_id,
             )
-            .await
+            .await;
+            refresh_pending_user_inputs(&state);
+            response
         }
         SessionIpcRequest::DashboardCommand { command } => {
             let snapshot = state.dashboard_rx.borrow().clone();
@@ -487,22 +497,7 @@ async fn handle_ipc_connection(
             )
         }
         SessionIpcRequest::DashboardAction { action } => {
-            let result = if matches!(&action, DashboardAction::InterruptRuntime) {
-                match state.runtime_interrupt_tx.send(()) {
-                    Ok(()) => crate::dashboard::DashboardActionResult {
-                        success: true,
-                        message: "queued runtime interrupt".to_string(),
-                        detail: None,
-                    },
-                    Err(err) => crate::dashboard::DashboardActionResult {
-                        success: false,
-                        message: format!("failed to queue interrupt: {err}"),
-                        detail: None,
-                    },
-                }
-            } else {
-                execute_dashboard_action(action, &state.telegram_acl, &state.dashboard_control_tx)
-            };
+            let result = execute_session_dashboard_action(action, &state);
             IpcResponseEnvelope::ok(
                 request_id,
                 SessionIpcResponse::DashboardActionResult { result },
@@ -614,6 +609,138 @@ fn runtime_status_from_state(state: &SessionIpcServerState) -> SessionRuntimeSta
             DashboardRuntimeActivityStatus::Running
         ),
     }
+}
+
+fn execute_session_dashboard_action(
+    action: DashboardAction,
+    state: &SessionIpcServerState,
+) -> crate::dashboard::DashboardActionResult {
+    match action {
+        DashboardAction::InterruptRuntime => match state.runtime_interrupt_tx.send(()) {
+            Ok(()) => crate::dashboard::DashboardActionResult {
+                success: true,
+                message: "queued runtime interrupt".to_string(),
+                detail: None,
+            },
+            Err(err) => crate::dashboard::DashboardActionResult {
+                success: false,
+                message: format!("failed to queue interrupt: {err}"),
+                detail: None,
+            },
+        },
+        DashboardAction::DismissPendingUserInput { event_id } => {
+            let result = dismiss_pending_user_input(&state.events, &state.pending_work, event_id);
+            if result.success {
+                refresh_pending_user_inputs(state);
+            }
+            result
+        }
+        DashboardAction::MovePendingUserInput {
+            event_id,
+            direction,
+        } => {
+            let result =
+                move_pending_user_input(&state.events, &state.pending_work, event_id, direction);
+            if result.success {
+                refresh_pending_user_inputs(state);
+            }
+            result
+        }
+        other => execute_dashboard_action(other, &state.telegram_acl, &state.dashboard_control_tx),
+    }
+}
+
+fn refresh_pending_user_inputs(state: &SessionIpcServerState) {
+    state.dashboard_tx.send_modify(|dashboard| {
+        dashboard.pending_user_inputs =
+            pending_user_inputs_from_sources(&state.events, &state.pending_work);
+    });
+}
+
+fn dismiss_pending_user_input(
+    events: &EventStore,
+    pending_work: &PendingWorkQueue,
+    event_id: uuid::Uuid,
+) -> crate::dashboard::DashboardActionResult {
+    match validate_pending_terminal_event(events, event_id) {
+        Ok(()) => {}
+        Err(err) => {
+            return crate::dashboard::DashboardActionResult {
+                success: false,
+                message: "pending input is not dismissible".to_string(),
+                detail: Some(format!("{err:?}")),
+            };
+        }
+    }
+    if let Err(err) = pending_work.consume(PendingWork::Event { event_id }) {
+        return crate::dashboard::DashboardActionResult {
+            success: false,
+            message: "failed to remove pending input from queue".to_string(),
+            detail: Some(format!("{err:?}")),
+        };
+    }
+    match events.set_status(&event_id.to_string(), EventStatus::Dismissed, None) {
+        Ok(()) => crate::dashboard::DashboardActionResult {
+            success: true,
+            message: "dismissed pending input".to_string(),
+            detail: None,
+        },
+        Err(err) => crate::dashboard::DashboardActionResult {
+            success: false,
+            message: "failed to dismiss pending input".to_string(),
+            detail: Some(format!("{err:?}")),
+        },
+    }
+}
+
+fn move_pending_user_input(
+    events: &EventStore,
+    pending_work: &PendingWorkQueue,
+    event_id: uuid::Uuid,
+    direction: DashboardPendingUserInputMoveDirection,
+) -> crate::dashboard::DashboardActionResult {
+    match validate_pending_terminal_event(events, event_id) {
+        Ok(()) => {}
+        Err(err) => {
+            return crate::dashboard::DashboardActionResult {
+                success: false,
+                message: "pending input is not movable".to_string(),
+                detail: Some(format!("{err:?}")),
+            };
+        }
+    }
+    let direction = match direction {
+        DashboardPendingUserInputMoveDirection::Up => PendingEventMoveDirection::Up,
+        DashboardPendingUserInputMoveDirection::Down => PendingEventMoveDirection::Down,
+    };
+    match pending_work.move_pending_event(event_id, direction) {
+        Ok(true) => crate::dashboard::DashboardActionResult {
+            success: true,
+            message: "moved pending input".to_string(),
+            detail: None,
+        },
+        Ok(false) => crate::dashboard::DashboardActionResult {
+            success: true,
+            message: "pending input order unchanged".to_string(),
+            detail: None,
+        },
+        Err(err) => crate::dashboard::DashboardActionResult {
+            success: false,
+            message: "failed to move pending input".to_string(),
+            detail: Some(format!("{err:?}")),
+        },
+    }
+}
+
+fn validate_pending_terminal_event(events: &EventStore, event_id: uuid::Uuid) -> Result<()> {
+    let event = events.view(&event_id.to_string())?;
+    if !matches!(event.status, EventStatus::Pending) {
+        return Err(miette!("event {event_id} is not pending"));
+    }
+    if !matches!(event.payload, EventPayload::TerminalIncoming(_)) {
+        return Err(miette!("event {event_id} is not a user input event"));
+    }
+    Ok(())
 }
 
 async fn submit_user_input(
