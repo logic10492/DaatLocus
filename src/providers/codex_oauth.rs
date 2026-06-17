@@ -27,7 +27,7 @@ use crate::{
     },
     core::{Llm, TokenUsage, TokenUsageInfo},
     persistence::{PersistenceFileMode, PersistenceStore, write_bytes_atomic},
-    providers::thinking::{codex_reasoning_effort, thinking_budget_is_none},
+    providers::thinking::{responses_reasoning_effort, thinking_budget_is_none},
     reasoning::runtime::{
         AgentContent, AgentContentPart, AgentMessage, AgentToolCall, AgentToolInputSpec,
         AgentTurnItem, AgentTurnRequest, AgentTurnStreamResult, HistoryMessage, PromptRequest,
@@ -916,7 +916,7 @@ fn codex_reasoning_payload(client: &CodexResponsesClient, request_kind: &str) ->
     let effort = client
         .thinking_budget
         .as_deref()
-        .map(codex_reasoning_effort);
+        .map(responses_reasoning_effort);
     if effort.is_none() && !reasoning_summary {
         return None;
     }

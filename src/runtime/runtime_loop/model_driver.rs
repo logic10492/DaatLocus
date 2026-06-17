@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn invalid_request_errors_are_not_retried() {
         let err = miette!(
-            "Codex Responses returned HTTP 400 Bad Request: {{\"error\":{{\"type\":\"invalid_request_error\",\"code\":\"invalid_value\"}}}}"
+            "model provider returned HTTP 400 Bad Request: {{\"error\":{{\"type\":\"invalid_request_error\",\"code\":\"invalid_value\"}}}}"
         );
 
         assert!(!should_retry_agent_turn_error(&err));
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn transient_request_errors_are_retried() {
-        let err = miette!("Codex Responses request failed: connection reset");
+        let err = miette!("model provider request failed: connection reset");
 
         assert!(should_retry_agent_turn_error(&err));
     }

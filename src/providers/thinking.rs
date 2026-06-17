@@ -113,10 +113,10 @@ pub(super) fn chat_reasoning_effort(budget: &str) -> Option<&str> {
     }
 }
 
-pub(super) fn codex_reasoning_effort(budget: &str) -> &str {
+pub(super) fn responses_reasoning_effort(budget: &str) -> &str {
     match normalized_thinking_budget(budget).as_str() {
         "none" => "none",
-        // The Codex Responses endpoint names the largest OpenAI effort xhigh.
+        // This Responses endpoint names the largest OpenAI effort xhigh.
         "max" => "xhigh",
         _ => budget,
     }

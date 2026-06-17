@@ -461,7 +461,7 @@ fn terminal_env_defaults() -> [(&'static str, &'static str); 10] {
         ("PAGER", "cat"),
         ("GIT_PAGER", "cat"),
         ("GH_PAGER", "cat"),
-        ("CODEX_CI", "1"),
+        ("DAAT_LOCUS_CI", "1"),
     ]
 }
 
