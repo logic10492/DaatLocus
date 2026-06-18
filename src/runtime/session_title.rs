@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use chrono::Utc;
 use miette::{Result, miette};
 use serde::Deserialize;
@@ -18,6 +20,7 @@ use crate::{
 };
 
 const SESSION_TITLE_REFRESH_INTERVAL_MS: i64 = 5 * 60 * 1000;
+const SESSION_TITLE_GENERATE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_TITLE_CHARS: usize = 64;
 const MAX_EXCERPT_ITEMS: usize = 16;
 const MAX_EXCERPT_ITEM_CHARS: usize = 360;
@@ -121,7 +124,20 @@ pub async fn refresh_session_title_after_activity(
         return Ok(());
     }
 
-    let generated = generate_session_title(context, &input.excerpt).await?;
+    let generated = match tokio::time::timeout(
+        SESSION_TITLE_GENERATE_TIMEOUT,
+        generate_session_title(context, &input.excerpt),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(miette!(
+                "session title generation timed out after {}s",
+                SESSION_TITLE_GENERATE_TIMEOUT.as_secs()
+            ));
+        }
+    };
     if context
         .session_title
         .apply_generated(input.activity_signature, generated, now_ms)

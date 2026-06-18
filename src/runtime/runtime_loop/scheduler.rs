@@ -123,11 +123,6 @@ pub(crate) async fn daat_locus_loop(
         Some(cycle_started_at.elapsed().as_millis()),
     );
     let _ = execute_agent_loop_step(context, Some(tx)).await;
-    if let Err(err) =
-        crate::runtime::session_title::refresh_session_title_after_activity(context, tx).await
-    {
-        tracing::warn!("session title refresh failed: {err:?}");
-    }
     super::turn::append_final_message_separator_activity_cell(
         context,
         tx,
@@ -147,6 +142,11 @@ pub(crate) async fn daat_locus_loop(
         sleep_status,
         Some(cycle_started_at.elapsed().as_millis()),
     );
+    if let Err(err) =
+        crate::runtime::session_title::refresh_session_title_after_activity(context, tx).await
+    {
+        tracing::warn!("session title refresh failed: {err:?}");
+    }
 }
 
 fn sync_driver_frontier_from_sources(context: &Context) {
