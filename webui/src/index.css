@@ -144,3 +144,60 @@
     @apply font-sans;
   }
 }
+
+@layer utilities {
+  .agent-chat-runtime-shimmer {
+    white-space: pre-wrap;
+  }
+
+  .agent-chat-runtime-shimmer-letter {
+    display: inline-block;
+    color: color-mix(in oklch, var(--muted-foreground) 78%, var(--foreground) 22%);
+    animation: agent-chat-runtime-shimmer 2000ms ease-in-out infinite both;
+  }
+
+  .agent-chat-runtime-marker-flash {
+    animation: agent-chat-runtime-marker-flash 720ms steps(2, end) infinite;
+  }
+
+  @keyframes agent-chat-runtime-shimmer {
+    0%,
+    100% {
+      color: color-mix(in oklch, var(--muted-foreground) 78%, var(--foreground) 22%);
+      opacity: 0.72;
+      text-shadow: none;
+    }
+
+    14% {
+      color: var(--foreground);
+      opacity: 1;
+      text-shadow: 0 0 0.65rem color-mix(in oklch, var(--primary) 55%, transparent);
+    }
+
+    28% {
+      color: color-mix(in oklch, var(--foreground) 82%, var(--primary) 18%);
+      opacity: 0.9;
+      text-shadow: none;
+    }
+  }
+
+  @keyframes agent-chat-runtime-marker-flash {
+    0%,
+    100% {
+      opacity: 0.45;
+    }
+
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .agent-chat-runtime-shimmer-letter,
+    .agent-chat-runtime-marker-flash {
+      animation: none;
+      opacity: 1;
+      text-shadow: none;
+    }
+  }
+}

@@ -119,6 +119,8 @@ const AGENT_CHAT_STICKY_BOTTOM_THRESHOLD_PX = 72;
 const AGENT_CHAT_SCROLL_BUTTON_THRESHOLD_PX = 160;
 const AGENT_CHAT_MAX_IMAGE_ATTACHMENTS = 4;
 const AGENT_CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const AGENT_CHAT_RUNTIME_SHIMMER_MS = 2_000;
+const AGENT_CHAT_RUNTIME_SHIMMER_STAGGER_MS = 120;
 const AGENT_CHAT_INLINE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 const AGENT_CHAT_COMPOSER_DEFAULT_HEIGHT_PX = 60;
 const AGENT_CHAT_COMPOSER_BOTTOM_GAP_PX = 16;
@@ -424,6 +426,7 @@ type AgentChatActivityCellRender =
       title: string;
       detail?: string | null;
       startedAtMs?: number | null;
+      reducedMotion?: string | null;
     };
 
 type AgentChatExploredCallAction = "read" | "list" | "search" | "run" | "unknown";
@@ -3990,34 +3993,21 @@ function AgentChatActivityHeader({
   return (
     <div
       className={cn(
-        "flex min-w-0 items-start gap-2 text-foreground",
+        AGENT_CHAT_ACTIVITY_ROW_CLASS,
+        "text-foreground",
         !isFocused && "opacity-90",
       )}
     >
-      <span
-        aria-hidden="true"
+      <AgentChatActivityMarker
+        icon={icon}
+        tone={icon === "error" ? "error" : "default"}
         className={cn(
-          "mt-0.5 inline-flex size-5 shrink-0 items-center justify-center",
           agentChatActivityIconClass(bubble),
-          !isFocused && "size-4",
+          isRunning && "motion-safe:animate-pulse",
+          !isFocused && "text-xs",
         )}
-      >
-        {isRunning ? (
-          <span className="font-mono text-sm font-semibold leading-none motion-safe:animate-pulse">
-            •
-          </span>
-        ) : (
-          <span
-            className={cn(
-              "font-mono text-sm font-semibold leading-none",
-              !isFocused && "text-xs",
-            )}
-          >
-            {icon === "error" ? "■" : "•"}
-          </span>
-        )}
-      </span>
-      <div className="min-w-0 flex-1">
+      />
+      <div className="min-w-0">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <p
             className={cn(
@@ -4034,9 +4024,7 @@ function AgentChatActivityHeader({
                 agentChatActivityStatusClass(bubble.status, bubble.live),
               )}
             >
-              {isRunning ? (
-                <Spinner className="size-2.5" />
-              ) : null}
+              {isRunning ? <Spinner className="size-2.5" /> : null}
               {statusText}
             </span>
           ) : null}
@@ -4102,6 +4090,7 @@ function AgentChatActivityCellView({
         title={render.title}
         detail={render.detail}
         startedAtMs={render.startedAtMs}
+        reducedMotion={render.reducedMotion}
       />
     );
   }
@@ -4197,6 +4186,11 @@ function AgentChatActivityCellView({
     />
   );
 }
+
+const AGENT_CHAT_ACTIVITY_ROW_CLASS =
+  "grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-3 px-2 sm:gap-x-[16px] sm:px-3";
+const AGENT_CHAT_ACTIVITY_DETAIL_ROWS_CLASS =
+  "grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)] px-2 text-sm leading-6 sm:grid-cols-[1.75rem_minmax(0,1fr)] sm:px-3";
 
 function AgentChatActivityMarker({
   icon,
@@ -4300,7 +4294,7 @@ function AgentChatDetailRows({
   return (
     <div
       className={cn(
-        "grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)] px-2 text-sm leading-6 sm:px-3",
+        AGENT_CHAT_ACTIVITY_DETAIL_ROWS_CLASS,
         className,
       )}
     >
@@ -4323,17 +4317,20 @@ function AgentChatRuntimeStatusCell({
   title,
   detail,
   startedAtMs,
+  reducedMotion,
 }: {
   icon: AgentChatActivityMarkerKind;
   title: string;
   detail?: string | null;
   startedAtMs?: number | null;
+  reducedMotion?: string | null;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const elapsedText = formatAgentChatDuration(
     startedAtMs ? Math.max(0, nowMs - startedAtMs) : 0,
   );
   const detailText = detail?.trim();
+  const shouldAnimate = reducedMotion !== "Reduced";
 
   useEffect(() => {
     if (!startedAtMs) {
@@ -4345,14 +4342,28 @@ function AgentChatRuntimeStatusCell({
   }, [startedAtMs]);
 
   return (
-    <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-3 px-2 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere] sm:gap-x-[16px] sm:px-3">
+    <div
+      className={cn(
+        AGENT_CHAT_ACTIVITY_ROW_CLASS,
+        "text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]",
+      )}
+    >
       <AgentChatActivityMarker
         icon={icon}
-        className="motion-safe:animate-pulse text-primary"
+        className={cn(
+          shouldAnimate && "agent-chat-runtime-marker-flash text-primary",
+        )}
       />
       <p className="min-w-0 break-words">
         <span className="font-semibold text-foreground">
-          <AgentChatMarkdownInline text={title} />
+          {shouldAnimate ? (
+            <AgentChatRuntimeShimmerText
+              text={title}
+              startedAtMs={startedAtMs}
+            />
+          ) : (
+            <AgentChatMarkdownInline text={title} />
+          )}
         </span>{" "}
         <span className="text-muted-foreground">({elapsedText})</span>
         {detailText ? (
@@ -4363,6 +4374,43 @@ function AgentChatRuntimeStatusCell({
         ) : null}
       </p>
     </div>
+  );
+}
+
+function AgentChatRuntimeShimmerText({
+  text,
+  startedAtMs,
+}: {
+  text: string;
+  startedAtMs?: number | null;
+}) {
+  const baseDelayMs = useMemo(() => {
+    if (!startedAtMs) {
+      return 0;
+    }
+
+    return -(
+      Math.max(0, Date.now() - startedAtMs) % AGENT_CHAT_RUNTIME_SHIMMER_MS
+    );
+  }, [startedAtMs]);
+
+  return (
+    <span className="agent-chat-runtime-shimmer" aria-label={text}>
+      {Array.from(text).map((char, index) => (
+        <span
+          key={`${index}-${char}`}
+          aria-hidden="true"
+          className="agent-chat-runtime-shimmer-letter"
+          style={{
+            animationDelay: `${
+              baseDelayMs + index * AGENT_CHAT_RUNTIME_SHIMMER_STAGGER_MS
+            }ms`,
+          }}
+        >
+          {char}
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -4398,7 +4446,7 @@ function AgentChatActivityTextCell({
         tone === "muted" && "text-muted-foreground",
       )}
     >
-      <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-3 px-2 sm:gap-x-[16px] sm:px-3">
+      <div className={AGENT_CHAT_ACTIVITY_ROW_CLASS}>
         <AgentChatActivityMarker
           icon={icon}
           tone={tone === "error" ? "error" : "default"}
@@ -4416,7 +4464,7 @@ function AgentChatActivityTextCell({
       {renderedLineCount > 0 ? (
         <div
           className={cn(
-            "flex min-w-0 max-w-full flex-col gap-0.5 pl-7 pr-2 text-muted-foreground sm:pl-8 sm:pr-3",
+            "flex min-w-0 max-w-full flex-col gap-0.5 pl-8 pr-2 text-muted-foreground sm:pl-10 sm:pr-3",
             tone === "error" && "text-destructive/90",
             tone === "muted" && "text-muted-foreground",
           )}
@@ -4458,7 +4506,12 @@ function AgentChatStatusLineCell({
   valueClassName?: string;
 }) {
   return (
-    <div className="grid min-w-0 max-w-full grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-3 px-2 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere] sm:gap-x-[16px] sm:px-3">
+    <div
+      className={cn(
+        AGENT_CHAT_ACTIVITY_ROW_CLASS,
+        "max-w-full text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]",
+      )}
+    >
       <AgentChatActivityMarker icon={icon} />
       <p className="min-w-0 break-words font-semibold text-foreground">
         {label}
@@ -4552,7 +4605,7 @@ function AgentChatPlanActivityPanel({
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm [overflow-wrap:anywhere]">
-      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
+      <div className={cn(AGENT_CHAT_ACTIVITY_ROW_CLASS, "leading-6")}>
         <AgentChatActivityMarker icon={icon} />
         <p className="min-w-0 break-words font-semibold text-foreground [overflow-wrap:anywhere]">
           {title}
@@ -4609,7 +4662,7 @@ function AgentChatCommandExecutionPanel({
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm [overflow-wrap:anywhere]">
-      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
+      <div className={cn(AGENT_CHAT_ACTIVITY_ROW_CLASS, "leading-6")}>
         {mode === "running" ? (
           <AgentChatActivityMarker
             icon={icon}
@@ -4664,7 +4717,7 @@ function AgentChatExploredActivityPanel({
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm [overflow-wrap:anywhere]">
-      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
+      <div className={cn(AGENT_CHAT_ACTIVITY_ROW_CLASS, "leading-6")}>
         <AgentChatActivityMarker icon={icon} />
         <p className="min-w-0 break-words font-semibold text-foreground">
           {title}
@@ -4709,7 +4762,7 @@ function AgentChatPatchActivityPanel({
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1.5 text-sm [overflow-wrap:anywhere]">
-      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
+      <div className={cn(AGENT_CHAT_ACTIVITY_ROW_CLASS, "leading-6")}>
         <AgentChatActivityMarker icon={icon} />
         <p className="min-w-0 break-words font-semibold text-foreground">
           {title}
@@ -4898,14 +4951,14 @@ function AgentChatMessageActivityLine({
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]">
-      <div className="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-3 px-2 sm:gap-x-[16px] sm:px-3">
+      <div className={AGENT_CHAT_ACTIVITY_ROW_CLASS}>
         <AgentChatActivityMarker icon={icon} />
         <p className="min-w-0 break-words font-semibold text-foreground">
           {title}
         </p>
       </div>
       {visibleDetailLines.length > 0 || hiddenDetailCount > 0 ? (
-        <div className="flex min-w-0 max-w-full flex-col gap-0.5 pl-7 pr-2 text-xs leading-5 text-muted-foreground sm:pl-10 sm:pr-3">
+        <div className="flex min-w-0 max-w-full flex-col gap-0.5 pl-8 pr-2 text-xs leading-5 text-muted-foreground sm:pl-10 sm:pr-3">
           {visibleDetailLines.map((line, index) => (
             <p key={`${id}-detail-${index}`} className="break-words">
               {line}
@@ -4973,7 +5026,7 @@ function AgentChatReplyActivityLine({
         disposition === "dismissed" && "text-muted-foreground",
       )}
     >
-      <div className="flex min-w-0 items-start gap-x-3 px-2 leading-6 sm:gap-x-[16px] sm:px-3">
+      <div className={cn(AGENT_CHAT_ACTIVITY_ROW_CLASS, "leading-6")}>
         <AgentChatActivityMarker
           icon={icon}
           tone={disposition === "failed" ? "error" : "default"}
@@ -6117,6 +6170,45 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
+  const webSearch = agentChatActivityCellPayload(cell, "WebSearch");
+  if (webSearch) {
+    const action = stringValue(webSearch.action, "searched").toLowerCase();
+    const url = nullableStringValue(webSearch.url);
+    const detailLines = [url, ...stringArrayValue(webSearch.body_lines)].filter(
+      (line): line is string => Boolean(line?.trim()),
+    );
+    return {
+      kind: "browser",
+      icon: "activity",
+      title: `${action === "searching" ? "Searching" : "Searched"} the web: ${stringValue(webSearch.query, "")}`,
+      detailLines,
+    };
+  }
+
+  const codingOpenProject = agentChatActivityCellPayload(
+    cell,
+    "CodingOpenProject",
+  );
+  if (codingOpenProject) {
+    return {
+      kind: "text",
+      icon: "activity",
+      title: `Opened Project: ${stringValue(codingOpenProject.project_root, "unknown")}`,
+      bodyLines: stringArrayValue(codingOpenProject.detail_lines),
+    };
+  }
+
+  const codingReview = agentChatActivityCellPayload(cell, "CodingReview");
+  if (codingReview) {
+    const title = stringValue(codingReview.title, "Review").trim();
+    return {
+      kind: "text",
+      icon: "activity",
+      title: title || "Review",
+      bodyLines: [],
+    };
+  }
+
   const genericApp =
     agentChatActivityCellPayload(cell, "GenericApp") ??
     agentChatActivityCellPayload(cell, "ToolResult");
@@ -6260,6 +6352,18 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
+  const warning = agentChatActivityCellPayload(cell, "Warning");
+  if (warning) {
+    return {
+      kind: "text",
+      icon: "activity",
+      title: stringValue(warning.title, "Warning"),
+      bodyLines: stringArrayValue(warning.body_lines),
+      bodyLimit: AGENT_CHAT_ERROR_LINE_LIMIT,
+      tone: "muted",
+    };
+  }
+
   const error = agentChatActivityCellPayload(cell, "Error");
   if (error) {
     return {
@@ -6291,6 +6395,7 @@ function agentChatActivityCellRenderForBubble(
       title: stringValue(runtimeStatus.label, "Working"),
       detail: nullableStringValue(runtimeStatus.detail),
       startedAtMs: nullableNumberValue(runtimeStatus.active_runtime_started_at_ms),
+      reducedMotion: nullableStringValue(runtimeStatus.reduced_motion),
     };
   }
 

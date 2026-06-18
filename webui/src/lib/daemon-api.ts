@@ -299,6 +299,18 @@ export type ActivityCellBrowser = ActivityCellCommon & {
   ref_count?: number | null;
 };
 
+export type ActivityCellWebSearch = {
+  action: "searching" | "searched" | (string & {});
+  query: string;
+  url?: string | null;
+  body_lines?: string[];
+};
+
+export type ActivityCellCodingOpenProject = {
+  project_root: string;
+  detail_lines?: string[];
+};
+
 export type ActivityCellLiveExec = {
   title: string;
   call_lines?: string[];
@@ -345,6 +357,12 @@ export type ActivityCellCodingEdit = {
   diff_files?: ActivityCellPatchFile[];
 };
 
+export type ActivityCellCodingReview = {
+  title: string;
+  summary: string;
+  review_pending: boolean;
+};
+
 export type ActivityCellTelegram = {
   title: string;
   detail_lines?: string[];
@@ -380,18 +398,22 @@ export type ActivityCellVariant =
   | { User: ActivityCellUser }
   | { Browser: ActivityCellBrowser }
   | { LiveBrowser: ActivityCellBrowser }
+  | { WebSearch: ActivityCellWebSearch }
   | { GenericApp: ActivityCellCommon }
   | { ToolResult: ActivityCellCommon }
+  | { CodingOpenProject: ActivityCellCodingOpenProject }
   | { PlanResult: ActivityCellPlan }
   | { CreatePrimitiveSpecResult: ActivityCellPrimitive }
   | { ActivatePrimitiveResult: ActivityCellPrimitive }
   | { ExecResult: ActivityCellExecResult }
   | { LiveExec: ActivityCellLiveExec }
   | { CodingEdit: ActivityCellCodingEdit }
+  | { CodingReview: ActivityCellCodingReview }
   | { Patch: ActivityCellPatch }
   | { Telegram: ActivityCellTelegram }
   | { Reply: ActivityCellReply }
   | { TerminalWait: ActivityCellCommon }
+  | { Warning: ActivityCellCommon }
   | { Error: ActivityCellCommon }
   | { Thinking: ActivityCellCommon & { full_body?: string | null } }
   | { RuntimeStatus: ActivityCellRuntimeStatus }
