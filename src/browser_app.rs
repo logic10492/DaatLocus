@@ -831,40 +831,6 @@ fn browser_action_result(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Instant;
-
-    #[tokio::test]
-    async fn browser_operation_timeout_returns_instead_of_hanging() {
-        let started = Instant::now();
-        let err = browser_operation_timeout(
-            "test browser operation",
-            Duration::from_millis(10),
-            std::future::pending::<std::result::Result<(), &'static str>>(),
-        )
-        .await
-        .expect_err("pending operation should time out");
-
-        assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(err.to_string().contains("timed out after"));
-    }
-
-    #[tokio::test]
-    async fn browser_operation_timeout_preserves_operation_errors() {
-        let err = browser_operation_timeout(
-            "test browser operation",
-            Duration::from_secs(1),
-            std::future::ready(std::result::Result::<(), _>::Err("boom")),
-        )
-        .await
-        .expect_err("operation error should propagate");
-
-        assert!(err.to_string().contains("test browser operation: boom"));
-    }
-}
-
 fn browser_wait_result(result: &BrowserWaitResult, max_tokens: usize) -> AppToolExecutionResult {
     let extra_lines = vec![format!("wait_state={}", result.wait_state)];
     let model_content = browser_action_model_content(
@@ -1321,5 +1287,39 @@ impl App for BrowserApp {
         self.context = None;
         self.browser = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn browser_operation_timeout_returns_instead_of_hanging() {
+        let started = Instant::now();
+        let err = browser_operation_timeout(
+            "test browser operation",
+            Duration::from_millis(10),
+            std::future::pending::<std::result::Result<(), &'static str>>(),
+        )
+        .await
+        .expect_err("pending operation should time out");
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(err.to_string().contains("timed out after"));
+    }
+
+    #[tokio::test]
+    async fn browser_operation_timeout_preserves_operation_errors() {
+        let err = browser_operation_timeout(
+            "test browser operation",
+            Duration::from_secs(1),
+            std::future::ready(std::result::Result::<(), _>::Err("boom")),
+        )
+        .await
+        .expect_err("operation error should propagate");
+
+        assert!(err.to_string().contains("test browser operation: boom"));
     }
 }
