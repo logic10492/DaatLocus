@@ -43,6 +43,10 @@ const COMMAND_CONTINUATION_PREFIX: &str = "  │ ";
 const PATCH_DIFF_ADD_BACKGROUND: Color = Color::Rgb(20, 74, 42);
 const PATCH_DIFF_DELETE_BACKGROUND: Color = Color::Rgb(88, 34, 38);
 
+const SHIMMER_PADDING: usize = 10;
+const SHIMMER_SWEEP_MS: i64 = 2_000;
+const SHIMMER_BAND_HALF_WIDTH: f32 = 5.0;
+
 // ---------------------------------------------------------------------------
 // Viewport-culled rendering
 // ---------------------------------------------------------------------------
@@ -1079,10 +1083,7 @@ fn command_header_lines_with_marker(
 
 fn activity_marker(started_at_ms: Option<i64>) -> Span<'static> {
     let glyphs = ["•", "◦", "▪", "◦"];
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now_ms = unix_time_millis();
     let seed = started_at_ms.unwrap_or(0);
     let frame = ((now_ms.saturating_sub(seed) / 180).rem_euclid(glyphs.len() as i64)) as usize;
     Span::styled(
@@ -1091,6 +1092,89 @@ fn activity_marker(started_at_ms: Option<i64>) -> Span<'static> {
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     )
+}
+
+fn shimmer_text(text: &str, started_at_ms: Option<i64>) -> Vec<Span<'static>> {
+    let now_ms = unix_time_millis();
+    let elapsed_ms = started_at_ms
+        .map(|started_at_ms| now_ms.saturating_sub(started_at_ms))
+        .unwrap_or(now_ms);
+    shimmer_spans_at(text, elapsed_ms, terminal_supports_true_color())
+}
+
+fn shimmer_spans_at(text: &str, elapsed_ms: i64, has_true_color: bool) -> Vec<Span<'static>> {
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+
+    let char_count = chars.len();
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(index, ch)| {
+            let intensity = shimmer_intensity(index, char_count, elapsed_ms);
+            let style = if has_true_color {
+                let (r, g, b) = blend_rgb((255, 255, 255), (128, 128, 128), intensity * 0.9);
+                Style::default()
+                    .fg(Color::Rgb(r, g, b))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                shimmer_style_for_level(intensity)
+            };
+            Span::styled(ch.to_string(), style)
+        })
+        .collect()
+}
+
+fn shimmer_intensity(index: usize, char_count: usize, elapsed_ms: i64) -> f32 {
+    if char_count == 0 {
+        return 0.0;
+    }
+
+    let period = char_count + SHIMMER_PADDING * 2;
+    let phase = elapsed_ms.rem_euclid(SHIMMER_SWEEP_MS) as f32 / SHIMMER_SWEEP_MS as f32;
+    let pos = phase * period as f32;
+    let char_pos = index as f32 + SHIMMER_PADDING as f32;
+    let dist = (char_pos - pos).abs();
+
+    if dist <= SHIMMER_BAND_HALF_WIDTH {
+        let x = std::f32::consts::PI * (dist / SHIMMER_BAND_HALF_WIDTH);
+        0.5 * (1.0 + x.cos())
+    } else {
+        0.0
+    }
+}
+
+fn shimmer_style_for_level(intensity: f32) -> Style {
+    if intensity < 0.2 {
+        Style::default().add_modifier(Modifier::DIM)
+    } else if intensity < 0.6 {
+        Style::default()
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    }
+}
+
+fn terminal_supports_true_color() -> bool {
+    supports_color::on_cached(supports_color::Stream::Stdout)
+        .map(|level| level.has_16m)
+        .unwrap_or(false)
+}
+
+fn blend_rgb(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let r = (fg.0 as f32 * alpha + bg.0 as f32 * (1.0 - alpha)) as u8;
+    let g = (fg.1 as f32 * alpha + bg.1 as f32 * (1.0 - alpha)) as u8;
+    let b = (fg.2 as f32 * alpha + bg.2 as f32 * (1.0 - alpha)) as u8;
+    (r, g, b)
+}
+
+fn unix_time_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 fn user_prompt_lines(lines: Vec<Line<'static>>, max_width: u16) -> Vec<Line<'static>> {
@@ -1741,15 +1825,19 @@ fn runtime_status_cell_lines_at(
     } else {
         cell.label.trim()
     };
-    let mut spans = vec![
-        Span::styled(title.to_string(), bold_style()),
+    let mut spans = if cell.reduced_motion == ReducedMotion::Full {
+        shimmer_text(title, cell.active_runtime_started_at_ms)
+    } else {
+        vec![Span::styled(title.to_string(), bold_style())]
+    };
+    spans.extend([
         Span::styled(
             format!(" ({} • ", format_elapsed_seconds_compact(elapsed_seconds)),
             dim_style(),
         ),
         Span::styled("esc", bold_style()),
         Span::styled(" to interrupt)", dim_style()),
-    ];
+    ]);
     if let Some(detail) = cell
         .detail
         .as_deref()
@@ -2897,6 +2985,48 @@ That's it.";
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    #[test]
+    fn runtime_status_cell_full_motion_applies_working_shimmer() {
+        let cell = RuntimeStatusActivityCell {
+            label: String::new(),
+            detail: None,
+            active_runtime_started_at_ms: Some(unix_time_millis()),
+            reduced_motion: ReducedMotion::Full,
+        };
+        let rendered = runtime_status_cell_lines_at(&cell, 82, 80);
+        let line = rendered
+            .first()
+            .expect("runtime status should render a line");
+        let text = line_text(line);
+
+        assert!(
+            text.contains(" Working (1m 22s • esc to interrupt)"),
+            "runtime status should keep the visible Working text: {text}"
+        );
+        let shimmer_span_count = line
+            .spans
+            .iter()
+            .filter(|span| {
+                span.content.chars().count() == 1 && "Working".contains(span.content.as_ref())
+            })
+            .count();
+        assert_eq!(shimmer_span_count, "Working".chars().count());
+    }
+
+    #[test]
+    fn shimmer_highlight_moves_from_left_to_right() {
+        let char_count = "Working".chars().count();
+        let left = 0;
+        let right = char_count - 1;
+
+        assert!(
+            shimmer_intensity(left, char_count, 800) > shimmer_intensity(right, char_count, 800)
+        );
+        assert!(
+            shimmer_intensity(right, char_count, 1200) > shimmer_intensity(left, char_count, 1200)
+        );
     }
 
     #[test]
