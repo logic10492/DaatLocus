@@ -679,11 +679,23 @@ export type DashboardAction =
   | { kind: "approve_telegram_access"; chat_id: number }
   | { kind: "reject_telegram_access"; chat_id: number }
   | { kind: "dismiss_pending_user_input"; event_id: string }
+  | { kind: "clear_pending_user_inputs" }
+  | {
+      kind: "update_pending_user_input";
+      event_id: string;
+      incoming_text: string;
+    }
   | {
       kind: "move_pending_user_input";
       event_id: string;
       direction: DashboardPendingUserInputMoveDirection;
-    };
+    }
+  | {
+      kind: "move_pending_user_input_to_position";
+      event_id: string;
+      target_position: number;
+    }
+  | { kind: "preempt_pending_user_input"; event_id: string };
 
 export type DashboardActionResult = {
   success: boolean;

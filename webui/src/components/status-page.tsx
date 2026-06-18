@@ -20,31 +20,49 @@ import {
 
 import {
   ArrowDownIcon,
-  ArrowUpIcon,
   AlertTriangleIcon,
   CheckIcon,
   ChevronRightIcon,
   ClipboardIcon,
   CommandIcon,
+  CornerDownLeftIcon,
+  GripVerticalIcon,
   ImagePlusIcon,
   InfoIcon,
+  MoreHorizontalIcon,
+  PencilIcon,
   SendHorizontalIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   CollapsibleTrigger,
   useCollapsibleState,
 } from "@/components/ui/collapsible";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Empty,
   EmptyDescription,
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   InputGroup,
@@ -53,6 +71,7 @@ import {
 } from "@/components/ui/input-group";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
+import { Textarea } from "@/components/ui/textarea";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -66,7 +85,6 @@ import {
   type DashboardActivityHistoryPage,
   type DashboardCommandAttachment,
   type DashboardPendingUserInput,
-  type DashboardPendingUserInputMoveDirection,
   type DashboardSnapshot,
   type ActivityCellVariant,
   type WebActivityBlock,
@@ -104,6 +122,8 @@ const AGENT_CHAT_MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const AGENT_CHAT_INLINE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 const AGENT_CHAT_COMPOSER_DEFAULT_HEIGHT_PX = 60;
 const AGENT_CHAT_COMPOSER_BOTTOM_GAP_PX = 16;
+const AGENT_CHAT_PENDING_INPUT_VISIBLE_DELAY_MS = 200;
+const AGENT_CHAT_MAX_QUEUED_INPUTS = 5;
 export function AgentPage({
   sessionId,
   mockSnapshot,
@@ -459,6 +479,13 @@ function AgentChatComposer({
     string | null
   >(null);
   const pendingUserInputs = snapshot?.pending_user_inputs ?? [];
+  const visiblePendingUserInputs = useDelayedPendingUserInputs(
+    pendingUserInputs,
+    AGENT_CHAT_PENDING_INPUT_VISIBLE_DELAY_MS,
+  );
+  const queuedInputLimitReached =
+    pendingUserInputs.length >= AGENT_CHAT_MAX_QUEUED_INPUTS;
+  const queuedInputLimitMessage = `You can queue up to ${AGENT_CHAT_MAX_QUEUED_INPUTS} inputs. Wait for the agent to handle one or clear the queue.`;
 
   const inputSuggestions = useMemo(
     () => webInputSuggestions(message, snapshot),
@@ -474,14 +501,21 @@ function AgentChatComposer({
     Boolean(slashCommandFeedback?.blocksSubmit) ||
     (isWebSlashCommandInput(message) &&
       !parseWebSlashCommand(message)?.trimmed);
+  const composerHasPayload = message.trim().length > 0 || imageAttachments.length > 0;
+  const composerQueuesUserInput = !isWebSlashCommandInput(message);
+  const queuedInputLimitBlocksSubmit =
+    queuedInputLimitReached && composerHasPayload && composerQueuesUserInput;
   const isRuntimeInterruptible =
     snapshot?.runtime_activity?.active_runtime_turn ?? false;
-  const sendButtonIsInterrupt = isRuntimeInterruptible;
-  const sendButtonDisabled = sendButtonIsInterrupt
-    ? isSending
-    : (!message.trim() && imageAttachments.length === 0) ||
-      isSending ||
-      slashCommandBlocksSubmit;
+  const sendButtonInterruptsRuntime =
+    isRuntimeInterruptible && !composerHasPayload;
+  const sendButtonDisabled =
+    isSending ||
+    (sendButtonInterruptsRuntime
+      ? false
+      : !composerHasPayload ||
+        slashCommandBlocksSubmit ||
+        queuedInputLimitBlocksSubmit);
 
   useEffect(() => {
     setSlashCommandSelection((current) =>
@@ -642,6 +676,14 @@ function AgentChatComposer({
       return;
     }
 
+    if (
+      !isSlashCommand &&
+      pendingUserInputs.length >= AGENT_CHAT_MAX_QUEUED_INPUTS
+    ) {
+      setSendError(queuedInputLimitMessage);
+      return;
+    }
+
     if (isSlashCommand) {
       const panel = webSlashPanelForInput(trimmed, snapshot);
       if (panel) {
@@ -697,9 +739,9 @@ function AgentChatComposer({
     }
   }
 
-  async function interruptRuntimeTurn() {
+  async function interruptRuntimeTurn(): Promise<boolean> {
     if (isSending || !isRuntimeInterruptible) {
-      return;
+      return false;
     }
 
     setIsSending(true);
@@ -714,9 +756,12 @@ function AgentChatComposer({
         setSendError(
           result.detail ? `${result.message}: ${result.detail}` : result.message,
         );
+        return false;
       }
+      return true;
     } catch (error) {
       setSendError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setIsSending(false);
     }
@@ -724,7 +769,7 @@ function AgentChatComposer({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (sendButtonIsInterrupt) {
+    if (sendButtonInterruptsRuntime) {
       await interruptRuntimeTurn();
       return;
     }
@@ -956,22 +1001,44 @@ function AgentChatComposer({
         </div>
       ) : null}
       <PendingUserInputQueue
-        inputs={pendingUserInputs}
+        inputs={visiblePendingUserInputs}
         busyActionId={pendingUserInputActionId}
+        onPreempt={(input) =>
+          void runPendingUserInputAction(
+            { kind: "preempt_pending_user_input", event_id: input.event_id },
+            pendingUserInputPreemptActionId(input),
+          )
+        }
         onDismiss={(input) =>
           void runPendingUserInputAction(
             { kind: "dismiss_pending_user_input", event_id: input.event_id },
             pendingUserInputDismissActionId(input),
           )
         }
-        onMove={(input, direction) =>
+        onClear={() =>
+          void runPendingUserInputAction(
+            { kind: "clear_pending_user_inputs" },
+            pendingUserInputClearActionId(),
+          )
+        }
+        onEdit={(input, incomingText) =>
           void runPendingUserInputAction(
             {
-              kind: "move_pending_user_input",
+              kind: "update_pending_user_input",
               event_id: input.event_id,
-              direction,
+              incoming_text: incomingText,
             },
-            pendingUserInputMoveActionId(input, direction),
+            pendingUserInputEditActionId(input),
+          )
+        }
+        onMoveToPosition={(input, targetPosition) =>
+          void runPendingUserInputAction(
+            {
+              kind: "move_pending_user_input_to_position",
+              event_id: input.event_id,
+              target_position: targetPosition,
+            },
+            pendingUserInputMoveToPositionActionId(input, targetPosition),
           )
         }
       />
@@ -1055,14 +1122,26 @@ function AgentChatComposer({
             <ImagePlusIcon data-icon="inline-start" aria-hidden="true" />
           </Button>
           <Button
-            type={sendButtonIsInterrupt ? "button" : "submit"}
-            variant={sendButtonIsInterrupt ? "destructive" : "default"}
+            type={sendButtonInterruptsRuntime ? "button" : "submit"}
+            variant={sendButtonInterruptsRuntime ? "destructive" : "default"}
             size="icon-sm"
             disabled={sendButtonDisabled}
-            aria-label={sendButtonIsInterrupt ? "Interrupt agent" : "Send message"}
-            title={sendButtonIsInterrupt ? "Interrupt agent" : "Send message"}
+            aria-label={
+              sendButtonInterruptsRuntime
+                ? "Interrupt agent"
+                : queuedInputLimitBlocksSubmit
+                  ? "Queued input limit reached"
+                  : "Send message"
+            }
+            title={
+              sendButtonInterruptsRuntime
+                ? "Interrupt agent"
+                : queuedInputLimitBlocksSubmit
+                  ? queuedInputLimitMessage
+                  : "Send message"
+            }
             onClick={
-              sendButtonIsInterrupt
+              sendButtonInterruptsRuntime
                 ? () => void interruptRuntimeTurn()
                 : undefined
             }
@@ -1070,7 +1149,7 @@ function AgentChatComposer({
           >
             {isSending ? (
               <Spinner data-icon="inline-start" />
-            ) : sendButtonIsInterrupt ? (
+            ) : sendButtonInterruptsRuntime ? (
               <XIcon data-icon="inline-start" aria-hidden="true" />
             ) : (
               <SendHorizontalIcon data-icon="inline-start" aria-hidden="true" />
@@ -1087,145 +1166,370 @@ function AgentChatComposer({
   );
 }
 
+function useDelayedPendingUserInputs(
+  inputs: DashboardPendingUserInput[],
+  delayMs: number,
+): DashboardPendingUserInput[] {
+  const [visibleInputTick, setVisibleInputTick] = useState(0);
+
+  useEffect(() => {
+    if (inputs.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const nextDelay = inputs.reduce<number | null>((currentDelay, input) => {
+      const ageMs = Math.max(0, now - input.arrived_at_ms);
+      const remainingMs = delayMs - ageMs;
+
+      if (remainingMs <= 0) {
+        return currentDelay;
+      }
+
+      return currentDelay === null
+        ? remainingMs
+        : Math.min(currentDelay, remainingMs);
+    }, null);
+
+    if (nextDelay === null) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setVisibleInputTick((current) => current + 1);
+    }, nextDelay);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [delayMs, inputs, visibleInputTick]);
+
+  const now = Date.now();
+  return inputs.filter(
+    (input) => Math.max(0, now - input.arrived_at_ms) >= delayMs,
+  );
+}
+
 function PendingUserInputQueue({
   inputs,
   busyActionId,
+  onPreempt,
   onDismiss,
-  onMove,
+  onClear,
+  onEdit,
+  onMoveToPosition,
 }: {
   inputs: DashboardPendingUserInput[];
   busyActionId: string | null;
+  onPreempt: (input: DashboardPendingUserInput) => void;
   onDismiss: (input: DashboardPendingUserInput) => void;
-  onMove: (
+  onClear: () => void;
+  onEdit: (input: DashboardPendingUserInput, incomingText: string) => void;
+  onMoveToPosition: (
     input: DashboardPendingUserInput,
-    direction: DashboardPendingUserInputMoveDirection,
+    targetPosition: number,
   ) => void;
 }) {
+  const [draggingEventId, setDraggingEventId] = useState<string | null>(null);
+  const [dragOverEventId, setDragOverEventId] = useState<string | null>(null);
+  const [editingInput, setEditingInput] =
+    useState<DashboardPendingUserInput | null>(null);
+  const [editText, setEditText] = useState("");
+  const editTextareaId = useId();
+  const queueBusy = Boolean(busyActionId);
+  const editBusy = editingInput
+    ? busyActionId === pendingUserInputEditActionId(editingInput)
+    : false;
+
+  useEffect(() => {
+    if (
+      editingInput &&
+      !inputs.some((input) => input.event_id === editingInput.event_id)
+    ) {
+      setEditingInput(null);
+      setEditText("");
+    }
+  }, [editingInput, inputs]);
+
   if (inputs.length === 0) {
     return null;
   }
 
-  const queueBusy = Boolean(busyActionId);
+  function openEditDialog(input: DashboardPendingUserInput) {
+    setEditingInput(input);
+    setEditText(input.incoming_text);
+  }
+
+  function closeEditDialog() {
+    if (editBusy) {
+      return;
+    }
+    setEditingInput(null);
+    setEditText("");
+  }
+
+  function handleEditSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingInput || editBusy) {
+      return;
+    }
+    onEdit(editingInput, editText);
+    setEditingInput(null);
+    setEditText("");
+  }
+
+  function handleDragStart(
+    event: DragEvent<HTMLButtonElement>,
+    input: DashboardPendingUserInput,
+  ) {
+    if (queueBusy || inputs.length <= 1) {
+      event.preventDefault();
+      return;
+    }
+    event.stopPropagation();
+    setDraggingEventId(input.event_id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", input.event_id);
+  }
+
+  function handleDragOver(
+    event: DragEvent<HTMLDivElement>,
+    input: DashboardPendingUserInput,
+  ) {
+    if (!draggingEventId || draggingEventId === input.event_id) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    setDragOverEventId(input.event_id);
+  }
+
+  function handleDrop(
+    event: DragEvent<HTMLDivElement>,
+    targetInput: DashboardPendingUserInput,
+  ) {
+    const sourceEventId =
+      draggingEventId || event.dataTransfer.getData("text/plain");
+    setDraggingEventId(null);
+    setDragOverEventId(null);
+    if (!sourceEventId || sourceEventId === targetInput.event_id) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const sourceInput = inputs.find((input) => input.event_id === sourceEventId);
+    const targetPosition = inputs.findIndex(
+      (input) => input.event_id === targetInput.event_id,
+    );
+    if (!sourceInput || targetPosition < 0) {
+      return;
+    }
+    onMoveToPosition(sourceInput, targetPosition);
+  }
+
+  function resetDragState() {
+    setDraggingEventId(null);
+    setDragOverEventId(null);
+  }
 
   return (
-    <section
-      aria-label="Pending user inputs"
-      className="mb-2 flex max-h-48 flex-col gap-2 overflow-auto rounded-lg border border-border/70 bg-muted/30 px-2 py-2"
-    >
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-xs font-medium text-foreground">
-            Pending user inputs
-          </p>
-          <p className="truncate text-xs text-muted-foreground">
-            Queued above the composer until the agent claims them.
-          </p>
-        </div>
-        <Badge variant="secondary" className="shrink-0">
-          {inputs.length}
-        </Badge>
-      </div>
+    <>
+      <section
+        role="region"
+        aria-label="Pending user inputs"
+        aria-busy={queueBusy || undefined}
+        className="mb-2 border-b border-border/60 pb-2"
+      >
+        <div role="list" className="max-h-40 overflow-auto">
+          {inputs.map((input, index) => {
+            const position = index + 1;
+            const dismissBusy =
+              busyActionId === pendingUserInputDismissActionId(input);
+            const preemptBusy =
+              busyActionId === pendingUserInputPreemptActionId(input);
+            const moveBusy = Boolean(
+              busyActionId?.startsWith(`${input.event_id}:move-to:`),
+            );
+            const preview = pendingUserInputPreview(input);
+            const canReorder = inputs.length > 1;
+            const dragOver =
+              dragOverEventId === input.event_id &&
+              draggingEventId !== input.event_id;
 
-      <div className="flex flex-col gap-1">
-        {inputs.map((input, index) => {
-          const upActionId = pendingUserInputMoveActionId(input, "up");
-          const downActionId = pendingUserInputMoveActionId(input, "down");
-          const dismissActionId = pendingUserInputDismissActionId(input);
-          const upBusy = busyActionId === upActionId;
-          const downBusy = busyActionId === downActionId;
-          const dismissBusy = busyActionId === dismissActionId;
-          const preview = pendingUserInputPreview(input);
-
-          return (
-            <div
-              key={input.event_id}
-              className="flex min-w-0 gap-2 rounded-lg border border-border/70 bg-background/80 p-2"
-            >
-              <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground">
-                {index + 1}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                  <Badge variant="outline" className="shrink-0">
-                    {pendingUserInputOriginLabel(input.origin)}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    {formatPendingUserInputArrival(input.arrived_at_ms)}
-                  </span>
-                  {input.attachment_count > 0 ? (
-                    <Badge variant="secondary" className="shrink-0">
-                      {input.attachment_count} attachment
-                      {input.attachment_count === 1 ? "" : "s"}
-                    </Badge>
-                  ) : null}
-                </div>
-                <p className="mt-1 break-words text-sm leading-5 text-foreground">
+            return (
+              <div
+                key={input.event_id}
+                role="listitem"
+                onDragOver={(event) => handleDragOver(event, input)}
+                onDrop={(event) => handleDrop(event, input)}
+                onDragEnd={resetDragState}
+                className={cn(
+                  "grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_auto_auto] items-start gap-x-2 px-2 py-1 text-sm leading-5 text-foreground/90",
+                  dragOver && "rounded-md bg-accent/60",
+                )}
+              >
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  draggable={canReorder && !queueBusy}
+                  aria-label={`Drag pending input ${position}`}
+                  title={canReorder ? "Drag to reorder" : "Only one queued input"}
+                  disabled={queueBusy || !canReorder}
+                  onDragStart={(event) => handleDragStart(event, input)}
+                  onDragEnd={resetDragState}
+                  className="rounded-full text-muted-foreground hover:text-foreground disabled:opacity-60 enabled:cursor-grab enabled:active:cursor-grabbing"
+                >
+                  {moveBusy ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <GripVerticalIcon data-icon="inline-start" aria-hidden="true" />
+                  )}
+                </Button>
+                <p className="min-w-0 truncate" title={preview}>
                   {preview}
                 </p>
-              </div>
-              <div className="flex shrink-0 items-start gap-1">
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  aria-label={`Move pending input ${index + 1} up`}
-                  title="Move up"
-                  disabled={queueBusy || index === 0}
-                  onClick={() => onMove(input, "up")}
-                  className="rounded-full text-muted-foreground hover:text-foreground"
-                >
-                  {upBusy ? (
-                    <Spinner data-icon="inline-start" />
-                  ) : (
-                    <ArrowUpIcon data-icon="inline-start" aria-hidden="true" />
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Move pending input ${index + 1} down`}
-                  title="Move down"
-                  disabled={queueBusy || index === inputs.length - 1}
-                  onClick={() => onMove(input, "down")}
-                  className="rounded-full text-muted-foreground hover:text-foreground"
-                >
-                  {downBusy ? (
-                    <Spinner data-icon="inline-start" />
-                  ) : (
-                    <ArrowDownIcon data-icon="inline-start" aria-hidden="true" />
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Dismiss pending input ${index + 1}`}
-                  title="Dismiss"
+                  aria-label={`Run pending input ${position} now`}
+                  title="Run this queued input now"
                   disabled={queueBusy}
-                  onClick={() => onDismiss(input)}
+                  onClick={() => onPreempt(input)}
                   className="rounded-full text-muted-foreground hover:text-foreground"
                 >
-                  {dismissBusy ? (
+                  {preemptBusy ? (
                     <Spinner data-icon="inline-start" />
                   ) : (
-                    <Trash2Icon data-icon="inline-start" aria-hidden="true" />
+                    <CornerDownLeftIcon data-icon="inline-start" aria-hidden="true" />
                   )}
                 </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label={`More actions for pending input ${position}`}
+                      title="More actions"
+                      disabled={queueBusy}
+                      className="rounded-full text-muted-foreground hover:text-foreground"
+                    >
+                      {dismissBusy ? (
+                        <Spinner data-icon="inline-start" />
+                      ) : (
+                        <MoreHorizontalIcon
+                          data-icon="inline-start"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-44">
+                    <DropdownMenuGroup>
+                      <DropdownMenuItem
+                        disabled={queueBusy}
+                        onSelect={() => openEditDialog(input)}
+                      >
+                        <PencilIcon />
+                        <span>Edit message</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={queueBusy}
+                        variant="destructive"
+                        onSelect={() => onDismiss(input)}
+                      >
+                        <Trash2Icon />
+                        <span>Dismiss message</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={queueBusy}
+                        variant="destructive"
+                        onSelect={onClear}
+                      >
+                        <Trash2Icon />
+                        <span>Clear queue</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
+            );
+          })}
+        </div>
+      </section>
+
+      <Dialog
+        open={editingInput !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeEditDialog();
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit queued message</DialogTitle>
+            <DialogDescription>
+              Update this pending input before the agent handles it.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleEditSubmit} className="flex flex-col gap-4">
+            <FieldGroup className="gap-3">
+              <Field>
+                <FieldLabel htmlFor={editTextareaId}>Message</FieldLabel>
+                <Textarea
+                  id={editTextareaId}
+                  value={editText}
+                  rows={5}
+                  disabled={editBusy}
+                  onChange={(event) => setEditText(event.target.value)}
+                />
+              </Field>
+            </FieldGroup>
+            {editingInput && editingInput.attachment_count > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Attachments stay queued with this message.
+              </p>
+            ) : null}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={editBusy}
+                onClick={closeEditDialog}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={editBusy}>
+                {editBusy ? <Spinner data-icon="inline-start" /> : null}
+                Save
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
-function pendingUserInputMoveActionId(
+function pendingUserInputMoveToPositionActionId(
   input: DashboardPendingUserInput,
-  direction: DashboardPendingUserInputMoveDirection,
+  targetPosition: number,
 ) {
-  return `${input.event_id}:move:${direction}`;
+  return `${input.event_id}:move-to:${targetPosition}`;
+}
+
+function pendingUserInputEditActionId(input: DashboardPendingUserInput) {
+  return `${input.event_id}:edit`;
+}
+
+function pendingUserInputClearActionId() {
+  return "pending-user-inputs:clear";
+}
+
+function pendingUserInputPreemptActionId(input: DashboardPendingUserInput) {
+  return `${input.event_id}:preempt`;
 }
 
 function pendingUserInputDismissActionId(input: DashboardPendingUserInput) {
@@ -1240,43 +1544,6 @@ function pendingUserInputPreview(input: DashboardPendingUserInput) {
   return input.attachment_count > 0 ? "Attachment-only input" : "Empty input";
 }
 
-function pendingUserInputOriginLabel(origin: string) {
-  const normalized = origin.trim().toLowerCase();
-  if (normalized === "webui" || normalized === "web_ui") {
-    return "WebUI";
-  }
-  if (normalized === "tui") {
-    return "TUI";
-  }
-  if (normalized === "clisend" || normalized === "cli_send") {
-    return "CLI";
-  }
-  return origin.trim() || "User";
-}
-
-function formatPendingUserInputArrival(arrivedAtMs: number) {
-  if (!Number.isFinite(arrivedAtMs) || arrivedAtMs <= 0) {
-    return "queued";
-  }
-
-  const elapsedMs = Date.now() - arrivedAtMs;
-  if (elapsedMs < 60_000) {
-    return "just now";
-  }
-  if (elapsedMs < 60 * 60_000) {
-    return `${Math.floor(elapsedMs / 60_000)}m ago`;
-  }
-  if (elapsedMs < 24 * 60 * 60_000) {
-    return `${Math.floor(elapsedMs / (60 * 60_000))}h ago`;
-  }
-
-  return new Date(arrivedAtMs).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 function WebSlashCommandPanel({
   panel,
