@@ -989,13 +989,31 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
             summarize_runtime_inline_text(&data.title),
             data.calls.len()
         ),
-        ToolUiEvent::CodingEdit(data) => format!(
-            "edited code {} (+{} -{}, {} propagation review(s))",
-            summarize_runtime_inline_text(&data.selector),
-            data.added_lines,
-            data.removed_lines,
-            data.propagation_count
-        ),
+        ToolUiEvent::CodingEdit(data) => {
+            let title = if data.title.trim().is_empty() {
+                "edited files"
+            } else {
+                data.title.trim()
+            };
+            if data.propagation_count > 0 {
+                format!(
+                    "{} {} (+{} -{}, {} propagation review(s))",
+                    summarize_runtime_inline_text(title),
+                    summarize_runtime_inline_text(&data.selector),
+                    data.added_lines,
+                    data.removed_lines,
+                    data.propagation_count
+                )
+            } else {
+                format!(
+                    "{} {} (+{} -{})",
+                    summarize_runtime_inline_text(title),
+                    summarize_runtime_inline_text(&data.selector),
+                    data.added_lines,
+                    data.removed_lines
+                )
+            }
+        }
         ToolUiEvent::CodingReview(data) => summarize_runtime_inline_text(&data.title),
         ToolUiEvent::Browser(crate::tool_ui::BrowserUiData { title, .. }) => {
             summarize_runtime_inline_text(title)
@@ -1038,6 +1056,7 @@ fn tool_call_ui_event_title(event: &ToolCallUiEvent) -> String {
         ToolCallUiEvent::Terminal(TerminalUiData { title, .. }) => title.clone(),
         ToolCallUiEvent::Browser(crate::tool_ui::BrowserUiData { title, .. }) => title.clone(),
         ToolCallUiEvent::Patch(PatchUiData { summary_line, .. }) => summary_line.clone(),
+        ToolCallUiEvent::CodingEdit(data) => data.title.clone(),
         ToolCallUiEvent::Telegram(TelegramUiData { title, .. }) => title.clone(),
     }
 }

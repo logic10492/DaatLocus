@@ -348,6 +348,8 @@ export type ActivityCellPatch = {
 export type ActivityCellCodingEdit = {
   stable_id: string;
   title: string;
+  tool_name?: string | null;
+  tool_app?: string | null;
   selector: string;
   file?: string | null;
   added_lines: number;

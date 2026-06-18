@@ -14,8 +14,9 @@ use crate::{
     },
     schema_utils::{model_schema_for, structured_edit_args_schema},
     tool_ui::{
-        EXPLORED_STABLE_ID, ExploredCallUiAction, ExploredCallUiData, PatchDiffLineKind,
-        PatchDiffLineUiData, PatchFileOperation, PatchFileUiData, ToolCallUiEvent, ToolUiEvent,
+        CodingEditUiData, EXPLORED_STABLE_ID, ExploredCallUiAction, ExploredCallUiData,
+        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData,
+        ToolCallUiEvent, ToolUiEvent,
     },
 };
 
@@ -95,11 +96,21 @@ fn render_edit_file_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
             removed_lines: 0,
             diff_lines: structured_edit_preview_lines(edit.content.as_ref()),
         })
-        .collect();
-    Ok(ToolCallUiEvent::patch(
-        format!("{} structured edit(s)", args.edits.len()),
-        files,
-    ))
+        .collect::<Vec<_>>();
+    let added_lines = files.iter().map(|file| file.added_lines).sum::<usize>();
+    Ok(ToolCallUiEvent::coding_edit(CodingEditUiData {
+        stable_id: edit_file_stable_id(call),
+        title: "File Edit".to_string(),
+        tool_name: Some("edit_file".to_string()),
+        tool_app: Some("Workspace".to_string()),
+        selector: format!("{} structured edit(s)", args.edits.len()),
+        file: args.edits.first().map(|edit| edit.path.clone()),
+        added_lines,
+        removed_lines: 0,
+        propagation_count: 0,
+        impact_lines: Vec::new(),
+        diff_files: files,
+    }))
 }
 
 fn execute_read_file_runtime_tool<'a>(
@@ -213,17 +224,12 @@ fn execute_edit_file_runtime_tool<'a>(
             .iter()
             .map(|file| file.removed_lines)
             .sum::<usize>();
-        let ui_summary = match result.files.as_slice() {
-            [file] => file.path.clone(),
-            files => format!("{} files", files.len()),
+        let diff_files = applied_edit_ui_files(&result);
+        let title = if result.files.len() == 1 {
+            "Edited File"
+        } else {
+            "Edited Files"
         };
-        let mut detail_lines = vec![format!("+{} -{}", added_lines, removed_lines)];
-        detail_lines.extend(result.files.iter().map(|file| {
-            format!(
-                "{} (+{} -{})",
-                file.path, file.added_lines, file.removed_lines
-            )
-        }));
         Ok(ToolExecutionResult::new(
             format!("edited {} file(s)", result.files.len()),
             json!({
@@ -242,7 +248,19 @@ fn execute_edit_file_runtime_tool<'a>(
                     })
                 }).collect::<Vec<_>>(),
             }),
-            explored_tool_event("Edit", None, None, None, ui_summary, detail_lines),
+            ToolUiEvent::coding_edit(CodingEditUiData {
+                stable_id: edit_file_stable_id(call),
+                title: title.to_string(),
+                tool_name: Some("edit_file".to_string()),
+                tool_app: Some("Workspace".to_string()),
+                selector: "hash-anchored file edit".to_string(),
+                file: result.files.first().map(|file| file.path.clone()),
+                added_lines,
+                removed_lines,
+                propagation_count: 0,
+                impact_lines: Vec::new(),
+                diff_files,
+            }),
         ))
     })
 }
@@ -307,6 +325,102 @@ fn display_tool_path(requested: &str, resolved: &Path) -> String {
     }
 }
 
+fn edit_file_stable_id(call: &AgentToolCall) -> String {
+    let suffix = call
+        .id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if suffix.is_empty() {
+        "file-edit-unknown".to_string()
+    } else {
+        format!("file-edit-{suffix}")
+    }
+}
+
+fn applied_edit_ui_files(
+    summary: &scope_engine::api::AppliedStructuredEditSummary,
+) -> Vec<PatchFileUiData> {
+    summary
+        .files
+        .iter()
+        .map(|file| PatchFileUiData {
+            path: file.path.clone(),
+            operation: match file.operation {
+                scope_engine::api::AppliedStructuredEditOperation::Add => PatchFileOperation::Add,
+                scope_engine::api::AppliedStructuredEditOperation::Update => {
+                    PatchFileOperation::Update
+                }
+            },
+            added_lines: file.added_lines,
+            removed_lines: file.removed_lines,
+            diff_lines: applied_edit_diff_lines(&file.original_content, &file.new_content),
+        })
+        .collect()
+}
+
+fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLineUiData> {
+    let patch = diffy::create_patch(original, new_content);
+    let mut lines = Vec::new();
+
+    for (hunk_index, hunk) in patch.hunks().iter().enumerate() {
+        if hunk_index > 0 {
+            lines.push(PatchDiffLineUiData {
+                kind: PatchDiffLineKind::HunkBreak,
+                old_lineno: None,
+                new_lineno: None,
+                text: String::new(),
+            });
+        }
+
+        let mut old_lineno = hunk.old_range().start();
+        let mut new_lineno = hunk.new_range().start();
+        for line in hunk.lines() {
+            match line {
+                diffy::Line::Context(text) => {
+                    lines.push(PatchDiffLineUiData {
+                        kind: PatchDiffLineKind::Context,
+                        old_lineno: Some(old_lineno),
+                        new_lineno: Some(new_lineno),
+                        text: diff_line_text(text),
+                    });
+                    old_lineno += 1;
+                    new_lineno += 1;
+                }
+                diffy::Line::Delete(text) => {
+                    lines.push(PatchDiffLineUiData {
+                        kind: PatchDiffLineKind::Delete,
+                        old_lineno: Some(old_lineno),
+                        new_lineno: None,
+                        text: diff_line_text(text),
+                    });
+                    old_lineno += 1;
+                }
+                diffy::Line::Insert(text) => {
+                    lines.push(PatchDiffLineUiData {
+                        kind: PatchDiffLineKind::Add,
+                        old_lineno: None,
+                        new_lineno: Some(new_lineno),
+                        text: diff_line_text(text),
+                    });
+                    new_lineno += 1;
+                }
+            }
+        }
+    }
+
+    lines
+}
+
+fn diff_line_text(text: &str) -> String {
+    text.trim_end_matches(['\r', '\n']).to_string()
+}
 fn edit_content_line_count(content: Option<&scope_engine::api::EditContent>) -> usize {
     match content {
         Some(scope_engine::api::EditContent::Lines(lines)) => lines.len(),

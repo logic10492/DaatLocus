@@ -747,6 +747,14 @@ pub fn render_telegram_tool_result_status(
                     plural_noun(event.files.len(), "File", "Files")
                 ),
             )),
+            ToolUiEvent::CodingEdit(event) => Some(telegram_status(
+                glyph::PATCH,
+                format!(
+                    "Edited {} {}",
+                    event.diff_files.len(),
+                    plural_noun(event.diff_files.len(), "File", "Files")
+                ),
+            )),
             _ => Some(telegram_status(glyph::PATCH, "Edited Files")),
         },
         "terminal_exec" => {
@@ -1412,13 +1420,17 @@ mod tests {
             std::fs::read_to_string(root.join("README.md")).expect("read markdown fixture"),
             "new\n"
         );
-        let ToolUiEvent::Explored(ui_event) = &result.ui_event else {
-            panic!("edit_file should render as explored activity");
+        let ToolUiEvent::CodingEdit(ui_event) = &result.ui_event else {
+            panic!("edit_file should render as coding edit activity");
         };
-        assert_eq!(ui_event.stable_id, crate::tool_ui::EXPLORED_STABLE_ID);
-        assert_eq!(ui_event.calls.len(), 1);
-        assert_eq!(ui_event.calls[0].tool_name, "Edit");
-        assert_eq!(ui_event.calls[0].summary, "README.md");
+        assert_eq!(ui_event.title, "Edited File");
+        assert_eq!(ui_event.tool_name.as_deref(), Some("edit_file"));
+        assert_eq!(ui_event.tool_app.as_deref(), Some("Workspace"));
+        assert_eq!(ui_event.file.as_deref(), Some("README.md"));
+        assert_eq!(ui_event.added_lines, 1);
+        assert_eq!(ui_event.removed_lines, 1);
+        assert_eq!(ui_event.propagation_count, 0);
+        assert_eq!(ui_event.diff_files.len(), 1);
     }
 
     #[tokio::test]

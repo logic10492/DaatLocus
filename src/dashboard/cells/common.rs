@@ -105,6 +105,8 @@ pub struct ExploredActivityCell {
 pub struct CodingEditActivityCell {
     pub stable_id: String,
     pub title: String,
+    pub tool_name: Option<String>,
+    pub tool_app: Option<String>,
     pub selector: String,
     pub file: Option<String>,
     pub added_lines: usize,
@@ -264,6 +266,8 @@ impl From<CodingEditUiData> for CodingEditActivityCell {
         Self {
             stable_id: data.stable_id,
             title: data.title,
+            tool_name: data.tool_name,
+            tool_app: data.tool_app,
             selector: data.selector,
             file: data.file,
             added_lines: data.added_lines,

@@ -3110,6 +3110,8 @@ That's it.";
         let cell = CodingEditActivityCell {
             stable_id: "edit-1".to_string(),
             title: "Code Edit".to_string(),
+            tool_name: None,
+            tool_app: None,
             selector: "hash-anchored edit".to_string(),
             file: Some("src/app.rs".to_string()),
             added_lines: 1,

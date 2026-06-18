@@ -1014,6 +1014,8 @@ impl App for CodingApp {
                     ui_event: ToolUiEvent::coding_edit(CodingEditUiData {
                         stable_id: self.coding_edit_stable_id(&args.edits),
                         title: "Edited Code".to_string(),
+                        tool_name: None,
+                        tool_app: None,
                         selector: "hash-anchored edit".to_string(),
                         file: args.edits.first().map(|e| e.path.clone()),
                         added_lines,

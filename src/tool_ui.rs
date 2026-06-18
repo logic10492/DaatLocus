@@ -41,6 +41,7 @@ pub enum ToolCallUiEvent {
     Terminal(TerminalUiData),
     Browser(BrowserUiData),
     Patch(PatchUiData),
+    CodingEdit(CodingEditUiData),
     Telegram(TelegramUiData),
     Plan(PlanUiData),
     CreatePrimitiveSpec(ToolUiData),
@@ -140,6 +141,10 @@ pub enum ExploredCallUiAction {
 pub struct CodingEditUiData {
     pub stable_id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_app: Option<String>,
     pub selector: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
@@ -434,11 +439,8 @@ impl ToolUiEvent {
 }
 
 impl ToolCallUiEvent {
-    pub fn patch(summary_line: impl Into<String>, files: Vec<PatchFileUiData>) -> Self {
-        Self::Patch(PatchUiData {
-            summary_line: summary_line.into(),
-            files,
-        })
+    pub fn coding_edit(data: CodingEditUiData) -> Self {
+        Self::CodingEdit(data)
     }
 
     pub fn terminal(

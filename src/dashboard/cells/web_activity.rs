@@ -645,12 +645,20 @@ fn apply_explored_cell(item: &mut WebActivityItem, cell: &ExploredActivityCell) 
 }
 
 fn apply_coding_edit_cell(item: &mut WebActivityItem, cell: &CodingEditActivityCell) {
-    item.kind = WebActivityKind::Tool;
+    let tool_name = cell.tool_name.as_deref().unwrap_or("edit_code");
+    let tool_app = cell.tool_app.as_deref().unwrap_or("Coding");
+    let include_impact =
+        tool_name == "edit_code" || cell.propagation_count > 0 || !cell.impact_lines.is_empty();
+    item.kind = WebActivityKind::Patch;
     item.actor = Some(WebActivityActor::Tool);
     item.ui_hint = Some("coding-edit code-change".to_string());
-    item.title = "Code Edit".to_string();
+    item.title = if cell.title.trim().is_empty() {
+        "Edit".to_string()
+    } else {
+        cell.title.clone()
+    };
     item.metadata = Some(serde_json::json!({
-        "kind": "coding-edit",
+        "kind": if tool_name == "edit_file" { "file-edit" } else { "coding-edit" },
         "category": "code-change",
     }));
     let affected_files = cell
@@ -658,14 +666,19 @@ fn apply_coding_edit_cell(item: &mut WebActivityItem, cell: &CodingEditActivityC
         .iter()
         .map(|file| file.path.clone())
         .collect::<Vec<_>>();
-    item.tool = Some(WebActivityTool {
-        name: "edit_code".to_string(),
-        app: Some("Coding".to_string()),
-        input_preview: Some(cell.selector.clone()),
-        output_preview: Some(format!(
+    let output_preview = if include_impact {
+        format!(
             "+{} -{} · {} propagation review(s)",
             cell.added_lines, cell.removed_lines, cell.propagation_count
-        )),
+        )
+    } else {
+        format!("+{} -{}", cell.added_lines, cell.removed_lines)
+    };
+    item.tool = Some(WebActivityTool {
+        name: tool_name.to_string(),
+        app: Some(tool_app.to_string()),
+        input_preview: Some(cell.selector.clone()),
+        output_preview: Some(output_preview),
         output_ref: Some(cell.stable_id.clone()),
         duration_ms: None,
         exit_code: None,
@@ -686,10 +699,12 @@ fn apply_coding_edit_cell(item: &mut WebActivityItem, cell: &CodingEditActivityC
         key: "Changes".to_string(),
         value: format!("+{} -{}", cell.added_lines, cell.removed_lines),
     });
-    entries.push(WebActivityKvEntry {
-        key: "Impact".to_string(),
-        value: format!("{} propagation review(s)", cell.propagation_count),
-    });
+    if include_impact {
+        entries.push(WebActivityKvEntry {
+            key: "Impact".to_string(),
+            value: format!("{} propagation review(s)", cell.propagation_count),
+        });
+    }
     item.blocks = vec![WebActivityBlock::Kv { entries }];
     if !cell.diff_files.is_empty() {
         item.blocks.push(WebActivityBlock::Diff {
@@ -1150,5 +1165,38 @@ mod tests {
             serde_json::from_str(&encoded).expect("deserialize web activity tool");
 
         assert_eq!(decoded.duration_ms, Some(123));
+    }
+
+    #[test]
+    fn coding_edit_web_activity_renders_as_patch_with_tool_metadata() {
+        let item = web_activity_item_from_cell(
+            &ActivityCell::CodingEdit(CodingEditActivityCell {
+                stable_id: "file-edit-call".to_string(),
+                title: "Edited File".to_string(),
+                tool_name: Some("edit_file".to_string()),
+                tool_app: Some("Workspace".to_string()),
+                selector: "hash-anchored file edit".to_string(),
+                file: Some("README.md".to_string()),
+                added_lines: 1,
+                removed_lines: 1,
+                propagation_count: 0,
+                impact_lines: Vec::new(),
+                diff_files: vec![PatchFileUiData {
+                    path: "README.md".to_string(),
+                    operation: PatchFileOperation::Update,
+                    added_lines: 1,
+                    removed_lines: 1,
+                    diff_lines: Vec::new(),
+                }],
+            }),
+            "item-1",
+            false,
+        );
+
+        assert_eq!(item.kind, WebActivityKind::Patch);
+        let tool = item.tool.expect("coding edit web tool metadata");
+        assert_eq!(tool.name, "edit_file");
+        assert_eq!(tool.app.as_deref(), Some("Workspace"));
+        assert_eq!(tool.affected_files, vec!["README.md".to_string()]);
     }
 }
