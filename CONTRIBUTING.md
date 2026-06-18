@@ -5,22 +5,29 @@ preserve the boundaries that make state explicit, actions auditable, and
 experience reusable.
 
 Read [Architecture](docs/architecture.md) first if you are changing runtime
-objects, tools, Apps, workflows, memory, sleep, daemon behavior, or persistence.
-Coding-agent-facing constraints live in [AGENTS.md](AGENTS.md).
+objects, tools, Apps, workflows, memory, sleep, daemon behavior, sessions,
+dashboard clients, or persistence. Coding-agent-facing constraints live in
+[AGENTS.md](AGENTS.md).
 
 ## Design Rules
 
 - Plain assistant text must not cause external side effects.
-- Prefer explicit ids over hidden selected cursors.
-- Keep `Event`, `PendingWork`, `App`, `Plan`, `Workflow`, `Memory`, and `Sleep`
-  as separate concepts.
+- Prefer explicit ids and freshness guards over hidden selected cursors.
+- Keep `Event`, `PendingWork`, `App`, `Plan`, `Workflow`, `Memory`, `Sleep`,
+  `Manager`, and `Session` as separate concepts.
+- App tools are called directly through their namespace. Do not reintroduce app
+  focus or activation as a tool-exposure gate.
+- Telegram is a transport and event source, not an App.
+- Static file tools are `read_file` and `edit_file`; they are runtime tools, not
+  an App namespace.
 - Let code handle mechanical work such as lookup, deduplication, freshness
-  checks, persistence, delivery bookkeeping, and evidence recording.
-- Use App-scoped tools for stateful operating surfaces instead of expanding one
-  flat global tool list.
+  checks, persistence, delivery bookkeeping, schema validation, and evidence
+  recording.
+- Keep AfterClaim Context, PreTurn Context, capability docs, App state, and
+  memory as separate layers.
 - Keep runtime error correction separate from workflow improvement.
-- Treat workflow changes as changes to reusable execution assets, not as prompt
-  edits or chat memory.
+- Treat workflow changes as changes to reusable SOP primitive assets, not as
+  prompt edits or chat memory.
 
 ## Quality Gates
 
@@ -28,6 +35,7 @@ CI currently runs:
 
 ```bash
 cargo fmt --all -- --check
+cd webui && bun install --frozen-lockfile && bun run test
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo deny --locked check bans sources licenses
@@ -61,6 +69,7 @@ Available scenarios:
 - `mixed`: committed activity, live cells, skills toggle panel, markdown, diffs,
   browser, terminal, and reply cells.
 - `long-history`: many committed activity cells with an explicit scroll offset.
+- `scrolling`: deterministic scroll movement through a large activity list.
 - `live-activity`: active runtime status and live activity cells.
 - `command-panels`: skills list panel and command-bar rendering.
 
@@ -86,11 +95,12 @@ Avoid vague titles such as `fix`, `update`, `misc`, `wip`, or `cleanup`.
 
 ## Adding Or Changing Tools
 
-When adding or changing a tool:
+When adding or changing a model-facing tool:
 
 - state what world state it reads or mutates
 - require explicit identifiers where stale state can exist
 - validate schemas at declaration and execution time
+- use the conservative model-facing JSON Schema dialect
 - decide whether the tool creates a turn boundary
 - test invalid arguments and tool availability
 - add runtime error evidence only when misuse is code-detectable
@@ -100,19 +110,71 @@ available.
 
 ## Adding Or Changing Apps
 
-An App is a focusable, stateful operating surface.
+An App is a stateful capability domain, not a focus gate.
 
 When changing an App:
 
 - keep `state`, `usage`, and `how_to_use` separate
-- define focus and blur behavior when relevant
-- keep dynamic tools scoped to the App
+- expose model-facing tools through the App namespace
+- keep the generated `appid__get_state` surface accurate and cheap
 - keep app notices explicit and resolvable
+- bind operations to explicit ids such as page ids, terminal session ids, paths,
+  or app-specific object ids
 - do not put reusable task procedures into App prompt docs
+- do not add focus/blur requirements unless the runtime contract is explicitly
+  redesigned
 
 Transports such as Telegram are not Apps by default. If code already receives a
 structured external fact, model it as an event source rather than an interface
 the model must navigate.
+
+Workspace Apps currently use one Lua 5.4 module loaded from `runtime/app.lua`.
+The supported hook surface is `config`, `init`, `render_state`, `list_tools`,
+`call_tool`, and `poll_notices`; do not document or depend on removed
+`on_focus` / `on_blur` hooks.
+
+## Changing Coding Or File Tools
+
+Coding source operations use `path + line#hash` anchors:
+
+- `coding__search_code` returns matched source lines.
+- `coding__read_code` accepts a path plus anchor and `around` or `full` mode.
+- `coding__edit_code` applies structured edits with SCOPE validation and review.
+- `read_file` handles explicit file/range reads.
+- `edit_file` handles non-SCOPE ordinary file edits.
+
+When a Coding project is open, `edit_file` must not edit SCOPE-owned source
+files. Use `coding__edit_code` so propagation review is available.
+
+## Changing Manager, Sessions, Or Transports
+
+The Manager is the only public server. Session processes are private runtime
+workers reached through Manager-owned IPC.
+
+When changing this area:
+
+- keep public clients connected to the Manager, not direct Session endpoints
+- keep runtime `Context`, `EventStore`, `PendingWorkQueue`, `Plan`, memory, apps,
+  and model loop inside one Session
+- keep the Manager responsible for public auth, session registry, lifecycle,
+  routing, and Telegram default-session mapping
+- do not expose IPC names, tokens, process ids, or lifecycle internals as normal
+  WebUI/TUI/API state
+- keep `daat-locus code <project-dir>` as a multi-session project selector, not
+  a project-to-single-session mapping
+
+## Changing Dashboard Clients
+
+`DashboardState` is shared session/runtime state. `TuiViewState` is local to one
+TUI client. Do not solve local TUI behavior by mutating shared dashboard state.
+
+TUI rendering should stay a pure full-frame projection scheduled by
+`FrameRequester`. Input handling should reduce input into local view-state
+changes or explicit `DashboardAction` effects; it should not render directly.
+
+WebUI session rendering should use structured dashboard and activity-cell data.
+Do not parse rendered TUI strings, prose, or command output into web structure
+when a typed contract should exist instead.
 
 ## Changing Workflows Or Sleep
 
@@ -124,21 +186,25 @@ When changing workflow or sleep behavior:
 - do not feed raw full conversations into runtime error correction
 - do not patch workflows from runtime protocol errors
 - do not let sleep mutate builtin workflows
+- do not persist temporary primitive compositions as new primitive specs by
+  default
 
 Runtime error correction changes global tool and protocol contracts. Workflow
-improvement changes reusable execution processes for task classes.
+improvement changes reusable SOP primitive specs for task classes.
 
 ## High-Risk Areas
 
 Treat these areas as high risk:
 
 - daemon authentication and lifecycle
+- Manager/Session IPC and session registry
 - runtime turn scheduling, context compaction, and pending work
 - event completion and Telegram delivery
 - terminal process management
 - browser reference freshness
 - filesystem sandboxing
-- workspace app workers
+- Coding/SCOPE edit and propagation review boundaries
+- workspace app worker lifecycle and schema validation
 - provider credentials and OAuth storage
 - Hindsight retain and recall integration
 - sleep-time contract and workflow evolution

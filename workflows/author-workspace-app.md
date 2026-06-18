@@ -18,9 +18,9 @@ id: author-workspace-app
 2. Check whether `~/daat-locus-workspace/apps/<app_id_snake_case>/` already exists and decide whether to create it or complete an existing package.
 3. Create the minimal package structure and first ensure `app.toml` points to `runtime/app.lua`.
 4. Implement the minimal runnable loop in `runtime/app.lua`, covering at least the state/render path and the tool call or notice/poll path actually needed by the task.
-5. Write `prompt/usage.md` to explain what the app is and when it is worth focusing.
-6. Write `prompt/how_to_use.md` to explain how to operate the app after focus, without mixing workflow content into app prompts.
-7. Try `focus_app` to verify the app can be loaded, recognized, and rendered correctly; fix package structure or schema issues as needed.
+5. Write `prompt/usage.md` to explain what the app is and when it is worth using.
+6. Write `prompt/how_to_use.md` to explain how to operate the app's namespaced tools and generated state surface, without mixing workflow content into app prompts.
+7. Verify the app can be loaded, recognized, and rendered through the workspace app registry or generated `appid__get_state` surface; fix package structure or schema issues as needed.
 8. When feasible, run one minimal recheck to ensure render, tool input/output, and reload behavior are not obviously broken.
 
 ## Done Criteria

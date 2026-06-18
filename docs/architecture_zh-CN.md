@@ -1,417 +1,361 @@
 # Daat Locus 架构说明
 
-> 本文是面向使用者、贡献者的公开架构说明。它解释 Daat Locus 为什么这样设计，以及各个核心概念如何协同工作。更细的编码约束、实现边界和贡献规则应参考 `AGENTS.md` 与 `CONTRIBUTING.md`。
+> 本文是面向使用者和贡献者的公开架构说明，描述当前实现中的边界。更严格的编码规则、agent-facing 约束和贡献政策见 `AGENTS.md` 与 `CONTRIBUTING.md`。
 
-Daat Locus 是一个长期运行的本地 agent runtime。它的目标不是把 LLM 包装成一个一问一答聊天机器人，而是把 LLM 放进一个受运行时约束的行动系统中：外部事件进入队列，runtime 渲染当前世界状态，模型做语义判断并调用工具，工具显式改变世界，执行证据再被沉淀到 workflow 和 sleep 阶段中。
+Daat Locus 是一个长期运行在本地、由工具驱动的 agent runtime。Runtime 拥有持久状态，认领结构化工作，注入结构化上下文，暴露显式工具，执行工具调用，并记录由此产生的证据。模型的自然语言输出会成为解释或记录；外部效果由显式工具和 completion actions 产生。
 
-换句话说，Daat Locus 的中心不是“对话”，而是**持续运行中的世界状态**。
+当前架构围绕显式工具调用、有状态能力域、结构化 runtime context、隔离的 Sessions，以及可审计的 memory、workflow 和 sleep-time improvement 证据组织。
 
 ## 设计目标
 
-Daat Locus 面向那些会从长期实践中变得更好的工作：维护同一个项目、反复处理同一类任务、使用同一组工具完成连续任务、在 human-in-loop 反馈中逐渐贴合使用者的判断方式。
+Daat Locus 面向会从反复实践中变好的工作：长期维护项目、处理重复任务类型、记住实践经验，并把经验转化为可审计的 runtime 资产。
 
-它希望解决几个常见 agent 设计问题：
+主要设计目标是：
 
-1. **文本被误当成行动**
-   很多 agent 只要模型输出“我已经完成”，系统就默认完成。Daat Locus 不这样做。外部世界的变化必须通过显式工具调用发生。
+1. **工具产生外部效果**
 
-2. **工具列表平铺导致注意力分散**
-   当所有工具都同时暴露给模型时，模型很容易忽略当前正在操作的软件表面。Daat Locus 通过 App 模型让工具被局部化、状态化、可聚焦。
+   自然语言输出提供解释或记录。事件完成、文件编辑、终端命令、浏览器交互、代码编辑、plan 更新、primitive 绑定等外部效果都通过显式工具发生。
 
-3. **经验只停留在聊天记忆里**
-   普通记忆能让 agent 记住发生过什么，但不一定能让它形成更稳定的行动方式。Daat Locus 把反复执行的任务沉淀成 workflow，并在 sleep 阶段基于执行证据持续改进。
+2. **状态保持显式**
 
-4. **自我改进过于泛化**
-   Daat Locus 不把 self-improvement 理解为让模型泛泛反思。它把改进拆成不同证据来源：运行时协议错误用于修正全局 runtime contract；workflow 执行记录用于改进可复用任务流程。
+   Runtime 保存 events、pending work、App state、memory、plan、workflow binding、session metadata、dashboard state 和 delivery state。代码直接存储和渲染机械状态，模型注意力放在语义判断上。
 
-5. **人类反馈难以长期复利**
-   Daat Locus 的目标不是替代人的判断，而是把高质量 human-in-loop 反馈转化为可执行的长期约束：workflow、测试、工具边界、审批规则和运行时不变量。
+3. **能力保留各自 domain**
 
-## 核心原则
+   Browser、Terminal、Coding 是分离的有状态能力域。它们的工具有 namespace，并绑定显式标识符。模型通过对应 domain namespace 直接调用工具。
 
-### 文本不是行动
+4. **机械工作归代码**
 
-模型输出的自然语言通常只是解释、草稿或中间记录。它不会自动变成外部世界的动作。
+   队列枚举、去重、freshness 检查、delivery bookkeeping、schema validation 和 evidence recording 由代码完成。模型把注意力放在语义判断上。
 
-如果要回复 Telegram 消息，必须通过事件完成工具。
-如果要修改文件，必须通过明确的文件或 patch 工具。
-如果要结束一个 app notice，必须通过对应的 resolution 工具。
-如果要改变长期 workflow，必须通过 sleep 或受控 workflow 变更流程。
+5. **经验成为可审计资产**
 
-这条原则让 Daat Locus 能够区分：
+   Memory 保持连续性；可复用流程存入 SOP primitive specs。Runtime errors 和 workflow run evidence 会进入相互独立的 sleep-time improvement 路径。
 
-- 模型说了什么；
-- 模型打算做什么；
-- runtime 实际记录到什么；
-- 外部世界是否真的被改变。
+6. **Session 是隔离 runtime**
 
-### Runtime 拥有世界状态
+   公开 daemon 是 Manager。每个 Session process 拥有一个 runtime，只能由 Manager 通过私有本地 IPC 访问。
 
-Daat Locus 不把聊天上下文当成唯一事实来源。Runtime 会维护和渲染当前世界状态，包括待处理事件、当前计划、已绑定 workflow、前台 App、App 状态、长期记忆召回结果、系统时间与机器状态等。
+## Runtime 循环
 
-模型每一轮看到的是经过整理的 world snapshot，而不是一堆未经区分的消息历史。
+当前高层流程是：
 
-### 代码负责机械工作，模型负责语义判断
-
-Daat Locus 尽量避免让模型做代码可以稳定完成的机械任务，例如：
-
-- 枚举队列；
-- 去重；
-- 查找最新事件；
-- 维护 outbox；
-- 判断某个 id 是否过期；
-- 记录 workflow 执行证据；
-- 持久化状态。
-
-模型应该做的是语义判断：是否需要回应、应该怎样回应、是否需要聚焦某个 App、是否需要绑定 workflow、下一步应该调用什么工具。
-
-这不是为了削弱模型，而是为了让模型把注意力放在真正需要智能的地方。
-
-### 经验是可执行资产，不只是记忆
-
-Daat Locus 使用长期记忆来保持上下文连续性，但它更重视“可执行经验”：某类任务应该怎样做、哪些步骤容易失败、哪些边界需要更明确、哪些流程值得复用。
-
-这些经验会被建模成 workflow，而不是只写进聊天记忆或 profile。
-
-### 自我改进必须可审计
-
-Daat Locus 的 sleep 阶段不应神秘地“让 agent 变聪明”。任何可持久化的行为变化，都应该能回答：
-
-- 改动来自什么证据；
-- 改动影响哪个层级；
-- 是全局 runtime contract，还是某类任务 workflow；
-- 是否可以回滚；
-- 是否需要人类审核。
-
-## 总体运行模型
-
-Daat Locus 的基本循环可以概括为：
-
-1. 外部输入或 App notice 进入 pending work；
-2. Runtime 认领一项工作；
-3. Runtime 组装当前 world snapshot；
-4. 模型基于 snapshot 做判断；
-5. 模型通过工具显式行动；
-6. Runtime 执行工具并记录结果；
-7. 如果工作尚未显式完成，runtime 会继续要求模型处理；
-8. 工作完成后，runtime 记录必要的 evidence；
-9. Sleep 阶段整理这些 evidence，改进 runtime contract 或 workflow。
+1. 客户端或 transport 把输入发送给 Manager daemon。
+2. Manager 选择或创建目标 Session，并通过私有本地 IPC 转发输入。
+3. Session 注册 event 或 app notice，并入队 `PendingWork`。
+4. Runtime 认领一个 work item。
+5. 新认领输入和 primitive routing 作为一次性的 AfterClaim Context 注入。
+6. 每一轮模型调用前，当前执行状态作为 PreTurn Context 注入。
+7. 模型做语义判断并调用显式工具。
+8. 工具修改 state、apps、files、processes、events、plans 或 workflow bindings。
+9. 已认领工作通过对应 completion tool 完成。
+10. Runtime 记录 dashboard history、memory、workflow runs 和 sleep-time improvement 需要的 evidence。
 
 ```mermaid
 flowchart LR
-    Input[外部输入<br/>用户命令 / Telegram / App notice]
-    Queue[PendingWork 队列]
-    Snapshot[World Snapshot]
-    Model[模型判断]
-    Tools[显式工具调用]
-    Apps[Focused Apps<br/>Terminal / Browser / Workspace Apps]
-    State[持久状态<br/>events / plan / memory / workflows]
-    Evidence[执行证据<br/>runtime errors / workflow records]
-    Sleep[Sleep 阶段]
-    Update[行为约束更新<br/>runtime contract / workflow patches]
+    Client[WebUI / TUI / CLI / Telegram]
+    Manager[Manager daemon<br/>public API and routing]
+    Session[Session process<br/>one runtime]
+    Pending[PendingWork]
+    After[AfterClaim Context]
+    Pre[PreTurn Context]
+    Model[Model judgment]
+    Tools[Explicit tools]
+    State[Events / apps / plan / memory / workflows]
+    Sleep[Sleep improvement]
 
-    Input --> Queue --> Snapshot --> Model --> Tools
-    Tools --> Apps
+    Client --> Manager --> Session --> Pending --> After --> Pre --> Model --> Tools
     Tools --> State
-    State --> Snapshot
-    Tools --> Evidence
-    Evidence --> Sleep --> Update --> Snapshot
+    State --> Pre
+    Tools --> Pending
+    State --> Sleep
+    Sleep --> State
 ```
 
-这个循环的关键点是：**模型不是 runtime 的唯一事实来源，工具结果和持久状态才是行动是否发生的依据。**
+关键事实是：工具结果和持久状态与模型判断共同构成 runtime 的事实来源，并决定动作是否真实发生。
 
-## 核心对象
+## Runtime Context 模型
+
+当前实现按生命周期拆分 model-facing runtime context。
+
+### AfterClaim Context
+
+AfterClaim Context 在工作被认领后注入。它是这项已认领工作的 one-shot context：
+
+- 已认领 events 和 app notices；
+- 处理它们所需的 source metadata；
+- workflow primitive routing：完整 primitive id vocabulary，以及 top relevant primitives 的展开摘要。
+
+它是 claimed work 的一次性 context。Event input 作为 claimed input record 的一部分位于这里。
+
+### PreTurn Context
+
+PreTurn Context 在每轮模型调用前注入。它包含工具调用后可能变化的当前执行状态：
+
+- 当前时间、机器状态等 sensory 信息；
+- coding project in scope 时的 project instruction context；
+- 当前 plan；
+- 当前绑定的 primitive 或临时 primitive composition。
+
+App state 通过 Browser、Terminal 或 Coding 对应的 `appid__get_state` 工具按需读取。
+
+### Capability Docs 独立存在
+
+App usage docs、App how-to-use docs、project instructions、event completion rules 和 workflow routing 保持为各自 instruction layers，并承担各自职责。
+
+## 核心 Runtime 对象
 
 ### Event
 
-Event 是系统已经收到的结构化外部事实。它通常意味着“外部世界发生了某件事，需要 agent 做语义判断”。
+`Event` 是系统已经收到的结构化外部事实。当前 Session 代码会把 Telegram input 和 terminal/client user input 存成 event payload。它表示需要语义判断并给出显式 disposition 的工作。聊天窗口、选中的 conversation 和 App cursor 属于客户端或 App state surface。
 
-Event 不等于聊天窗口，也不等于 App 内部游标。它回答的是：
-
-- 发生了什么；
-- 是否需要回应；
-- 应以什么 disposition 结束；
-- 如果需要回应，应该发送什么最终内容。
-
-以 Telegram 为例，新的 Telegram 消息会被 transport 转换成 Event，然后进入 pending work。模型处理这个事件时，不需要“打开 Telegram App 找消息”；runtime 已经知道是哪条消息、来自哪个 chat、对应哪个 event id。
+已认领 event 通过 `finish_and_send` 结束。`resolved` 和 `failed` 需要包含内容的 `reply_message`；`dismissed` 是静默完成路径。回复发送和 event resolution 通过显式 completion tools 完成。
 
 ### PendingWork
 
-PendingWork 是驱动 runtime 下一轮工作的调度单位。它可以来自 Event，也可以来自后台 App notice。
+`PendingWork` 是驱动下一轮 runtime 的调度单位。当前变体是 event work 和 app notice work。Events 优先于 app notices。
 
-PendingWork 只负责调度，不负责业务判断。它不应该变成另一个隐藏状态机，也不应该承载长期语义。
-
-### World Snapshot
-
-World Snapshot 是模型每轮判断前看到的当前世界摘要。它会把分散的 runtime 状态组织成 agent 可理解的上下文。
-
-典型 snapshot 包括：
-
-- 当前时间和机器状态；
-- 当前计划；
-- 当前绑定的 workflow；
-- 候选 workflow 摘要；
-- 待处理事件摘要；
-- 当前前台 App 和 App 状态；
-- 自动召回的长期记忆；
-- 必要的工具使用约束。
-
-Snapshot 的目标不是把所有日志塞给模型，而是提供足够的判断材料，避免模型做无意义的机械探索。
+队列保持调度层职责：claim、release、consume 和 requeue work。语义判断仍由模型和显式工具完成。
 
 ### Plan
 
-Plan 是当前任务的短期执行计划。它用于帮助模型保持步骤意识，但它不是 backlog，不是长期知识库，也不是事件列表。
-
-一个健康的 plan 应该服务于当前任务：接下来要做什么，当前进行到哪一步，完成后是否应该清空。
+`Plan` 是当前任务的短期执行计划。Backlog 和持久知识库由其他存储承担。包含步骤的 active plan 必须正好有一个 `in_progress` step；任务完成后清空 plan。
 
 ### Memory
 
-Memory 用于上下文连续性和长期经验召回。它可以帮助模型理解用户偏好、历史背景、项目经验和之前的决策。
-
-但 Memory 不应该被当作即时状态缓存。事件状态、App 状态、workflow 绑定、delivery 状态等应由 runtime 持久化和渲染，而不是依赖模型从记忆里猜。
+Memory 提供上下文连续性和长期召回。Runtime state 和 tool results 保存 events、delivery、app state 或 workflow binding 的即时事实。
 
 ### Workflow
 
-Workflow 是针对可复用 SOP primitives 的 runtime 绑定和演化层。持久化 spec 是 primitive specification；它不是 App 的说明文档，也不是模型天生能力，更不是当前 plan 的长期副本。
+`Workflow` 是可复用 SOP primitives 的绑定和演化层。Daat Locus 区分三层：
 
-Workflow 回答的问题是：
+- `PrimitiveSpec`：持久化 primitive specification asset。
+- `WorkflowBinding`：当前任务绑定单个 primitive，或临时组合多个已有 primitives。
+- `PrimitiveRunRecord`：runtime 代码在工作完成边界记录的执行证据。
 
-- 什么类型的任务值得复用稳定流程；
-- 通常应按什么顺序推进；
-- 什么算完成；
-- 遇到阻塞或失败时如何恢复；
-- 哪些约束需要反复遵守。
+临时 composition 保持 runtime state。持久 primitive specs 通过显式 primitive 编辑或 workflow evolution 路径更新。
 
-Daat Locus 区分三层概念：
-
-- **PrimitiveSpec**：持久化 SOP primitive specification，可被 agent 读取；
-- **WorkflowBinding**：当前任务是否绑定某个 workflow，是 runtime 状态；
-- **PrimitiveRunRecord**：白天执行后留下的证据，用于 sleep 阶段改进 workflow。
-
-这种分层很重要。PrimitiveSpec 不携带“当前是否 active”这类运行时状态；WorkflowBinding 不应写回 primitive spec 本身；PrimitiveRunRecord 由 runtime 自动记录，不应让模型手写执行日志。
+Builtin primitives 位于仓库 `workflows/*.md`，由 `build.rs` 编译进程序。可演化 workspace primitives 位于 `~/daat-locus-workspace/workflows`。
 
 ## App 模型
 
-### App 是有状态操作表面
+`App` 是有状态能力域，拥有自己的 tools、state、lifecycle、usage guidance 和 operation guidance。
 
-Daat Locus 中的 App 不是普通插件，也不是工具包。App 是 agent 观察和行动时面对的、有状态的运行时表面。
+当前内置 App 是：
 
-人类使用电脑时，不会从“所有可能操作的全局列表”里挑动作。我们会打开终端，看输出，输入命令，等待结果；或者打开浏览器，看当前页面，点击、跳转，再根据新页面继续操作。
+- **Browser**：持久 page sessions、loading、语义 page snapshots、element refs、navigation 和 page interaction。
+- **Terminal**：持久 command sessions、unread output、stdin continuation、process lifecycle 和 working directories。
+- **Coding**：由 scope-engine 支撑的项目级 source operations，包括 semantic search、hash-anchored reads/edits 和 propagation review。
 
-Daat Locus 给 agent 提供类似的交互模型。
+### App Tool Exposure
 
-一个 App 至少提供三层信息：
+App 是直接 namespace tool domain。Runtime tool construction 会把每个已安装 App 的有效 tool specs 直接暴露在 App namespace 下，并额外生成 state tool：
 
-- **state**：当前可见状态；
-- **usage**：它适合什么时候使用；
-- **how_to_use**：聚焦后应该怎样操作。
+```text
+browser__get_state
+browser__browser_open_page
+terminal__get_state
+terminal__terminal_exec
+coding__get_state
+coding__open_project
+coding__search_code
+```
 
-这三层不应混在一起。State 不是教程；usage 不是完整操作手册；how_to_use 也不是当前世界事实。
+App 仍然在内部拥有 state 和 lifecycle。Tool ownership 体现在工具名里，操作使用显式标识符和可见 runtime selection inputs。
 
-### 为什么需要 focus
+### State、Usage 与 How-To-Use
 
-Focus 不是形式主义。它的作用是让模型的注意力和工具空间局部化。
+每个 App 暴露三层信息：
 
-当 Terminal 被聚焦时，模型关心 shell session、命令输出、stdin、进程是否仍在运行。
-当 Browser 被聚焦时，模型关心页面内容、导航状态、元素引用、页面是否加载完成。
-当 workspace app 被聚焦时，模型关心该 app 暴露的状态、notice 和局部工具。
+- `state`：当前结构化事实，由 `appid__get_state` 返回，并在 app-status surface 中渲染；
+- `usage`：什么时候值得使用这个 capability domain；
+- `how_to_use`：如何安全操作这个 App 的工具。
 
-这比把所有工具长期暴露给模型更稳定，因为模型总是知道自己正在操作哪个软件表面。
+这三层保持分离：state 报告当前事实，usage 描述适用场景，how-to-use 文本说明安全操作方式。
 
-### Terminal 与 Browser
+### 静态文件工具是 Runtime Tools
 
-Terminal 是 App，因为它有持续 session、输出等待、stdin 写入、进程终止和工作目录等时间语义。
+`read_file` 和 `edit_file` 是普通 runtime tools。它们处理 Markdown、TOML、YAML、JSON、shell scripts、generated files 和 SCOPE 外路径的显式 path/range read 与 hash-anchored edit。
 
-Browser 是 App，因为页面内容是局部且会变化的；点击、导航、等待加载、重新读取页面都会影响之后能否继续操作。
+当 Coding project 已打开时，SCOPE 拥有的 source file 需要使用 `coding__edit_code`，这样 parse validation 和 propagation review 才能运行。
 
-这两个 App 都说明了 Daat Locus 的核心观点：**工具调用不是孤立函数，而是在某个状态化软件表面上的连续动作。**
+### Telegram 是 Transport
 
-### Telegram 这种 im 接口为什么不是 App
+Telegram 是 transport 和 event source。Manager 负责 poll/receive Telegram input、处理 access 和 default-session mapping、把普通消息路由到 Session、drain Session outbox，并记录 delivery result。
 
-Telegram 在 Daat Locus 中是 transport 和 event source，而不是 App。
+模型从 runtime 获得结构化事实和 event id，判断 event，并用 `finish_and_send` 完成它。
 
-原因是：当 Telegram 消息到达时，runtime 已经知道足够的结构化事实：消息内容、来源 chat、event id、是否已知联系人等。标准处理路径是“判断并完成这个事件”，而不是“打开一个 Telegram UI、选择 chat、再查找消息”。
+### Workspace Apps
 
-如果把 Telegram 建模成 App，系统反而容易引入隐藏游标：当前打开哪个 chat、当前选中哪条消息、发送动作是否依赖界面状态等。这会削弱事件完成的可审计性。
+第三方 workspace Apps 是 source-first 资产，位于：
 
-因此，Telegram 消息进入 Event；回复则通过显式 completion 工具进入 outbox，再由 transport 异步投递。
+```text
+~/daat-locus-workspace/apps/<app_id_snake_case>/
+  app.toml
+  runtime/app.lua
+  prompt/usage.md
+  prompt/how_to_use.md
+```
+
+Host 通过 `mlua` 从 `runtime/app.lua` 加载一个 Lua 5.4 module。当前 Lua surface 使用单一 module instance，hooks 包括 `config(ctx)`、`init(ctx, state)`、`render_state(ctx, state)`、`list_tools(ctx, state)`、`call_tool(ctx, state, name, args)` 和 `poll_notices(ctx, state)`。
+
+Workspace app prompts 描述 App 能力；可复用任务 SOP 位于 workflow primitive specs。
 
 ## 工具与行动边界
 
-Daat Locus 把工具视为改变世界状态的显式接口。一个工具调用应该清楚说明：它读取什么、改变什么、需要哪些显式参数、失败时如何记录。
-
 ### 显式标识符优先
 
-工具参数应尽量使用明确 id，而不是依赖隐藏的“当前选中对象”。
+工具调用应绑定到具体 id 或 freshness guard：
 
-例如：
+- event completion 绑定到已认领 event；
+- Browser 调用绑定 `page_id`，交互操作还要绑定 `element_ref`；
+- Terminal continuation 绑定 `session_id`；
+- Coding reads/edits 绑定 `path + line#hash`；
+- session APIs 绑定 opaque `session_id`；
+- primitive binding 使用 primitive ids 或临时 composition id。
 
-- 事件完成应绑定具体 event id；
-- Browser 操作应绑定具体 page 和元素引用；
-- Terminal 操作应绑定具体 session；
-- Workflow 绑定应指向明确 workflow。
+显式标识符让 stale-state 错误可审计。
 
-这样做的目的是防止 stale state 和隐藏 cursor 造成误操作。
+### Coding 与文件编辑边界
 
-### App-scoped tools
+Coding 使用一种可见 source-location vocabulary：`path + line#hash`。
 
-属于某个 App 的工具应只在合适的 App 上下文中暴露和使用。Browser 工具不应在任何上下文中偷偷执行；Terminal 工具也不应绕过 Terminal 的状态表面。
+- `coding__search_code` 返回带 path-scoped anchors 的 matched source lines。
+- `coding__read_code` 读取 path plus anchor，mode 为 `around` 或 `full`。
+- `coding__edit_code` 应用 structured hash-anchored edits，并返回 propagation results。
+- `coding__next_review` 在编辑后暴露 pending impact review events。
 
-这让模型的每次行动都能回答：“我现在是在操作哪个 App 的哪个状态？”
+显式 path/range read 属于 `read_file`；`read_code` 处理 path plus anchor。配置、generated 和 SCOPE 外编辑属于 `edit_file`；SCOPE source edits 属于 `edit_code`。
 
-### Event completion tools
+### Model-Facing Schema Dialect
 
-外部事件的最终处理必须通过 completion 工具完成。自然语言文本可以是解释，但不能替代 completion。
+Runtime tools、App tools 和 structured model outputs 使用保守 JSON Schema dialect。Schema root 必须是 object；object properties 必须 required，并用 `additionalProperties: false` 关闭；optional values 表示为 nullable required fields；正确性来自生成并验证后的 provider-boundary schemas。
 
-这样 runtime 才能知道：事件是否被解决、是否需要发送消息、消息是否进入 outbox、transport 是否投递成功、失败是否需要重试或记录。
+Rust 侧通常使用 `#[model_schema]` 加 `model_schema_for::<T>()`。动态 workspace app schemas 会在加载时校验。
 
-## Workflow 与经验复利
+## Multi-Session 架构
 
-Daat Locus 的长期性不只来自记忆，也来自 workflow。
+Daat Locus 是 client-server multi-session system。
 
-当 agent 反复处理同一类任务时，单纯“记住以前发生过什么”是不够的。更重要的是形成稳定的执行方式：哪些步骤有效，哪些前置判断必要，哪些失败值得提前避免，哪些动作必须接受 human-in-loop 审核。
+```text
+WebUI / TUI / CLI / Telegram control
+  -> Manager daemon public API
+  -> Session process over private local IPC
+```
 
-Workflow 就是这些经验的可执行载体。
+客户端只连接 Manager daemon。Session processes 是私有 runtime workers，公开 client target 是 Manager。
 
-### Workflow 不是 prompt
+### Manager 职责
 
-Workflow 可以被模型读取，但它不是普通 prompt。它是 runtime 管理的执行资产，有 id、有适用范围、有流程、有完成标准，也有演化历史。
+Manager 拥有：
 
-这意味着 workflow 可以被选择、绑定、记录执行结果，并在 sleep 阶段被修正。
+- public HTTP/WebSocket endpoints 和 embedded WebUI serving；
+- daemon authentication 和 token validation；
+- session registry 和 lifecycle；
+- session spawn、stop、restart、delete、health check；
+- `/send`、dashboard requests、command requests 和 Telegram input 的路由；
+- Telegram ACL、default-session mapping、outbox delivery 和 Telegram-only session control commands；
+- 从目标 Sessions proxy dashboard snapshot/history/stream。
 
-### Builtin primitive 与 workspace primitive spec
+Manager 保持 public API、auth、routing、lifecycle 和 compact status summary 边界。Runtime `Context` 创建、model loop 执行，以及 per-session memory/event/app/plan 所有权属于 Session processes。
 
-Daat Locus 区分基础内置 SOP primitive 和可演化 workspace primitive spec。
+### Session 职责
 
-Builtin primitive 更像基础能力层，通常随代码仓库发布，不应被 sleep 自动修改。
-Workspace primitive spec 是长期实践中沉淀出来的本地执行经验，可以在 human-in-loop 和 sleep 机制下逐步改进。
+每个 Session process 拥有且只拥有一个 runtime：
 
-### Workflow 演化
+- 一个 `Context`；
+- 一个 `EventStore` 和 `PendingWorkQueue`；
+- 一份 conversation 和 memory state；
+- 一个 `Plan`；
+- 一个 `AppManager` 和 app instance set；
+- 一个 dashboard state stream；
+- 一个 model loop。
 
-Workflow 演化的目标不是让 agent 随机重写自己的行为，而是基于真实执行证据修正某类任务的流程。
+Session 向 Manager 暴露私有 IPC handlers。Public HTTP serving、global session registry loading、multi-session management 和 Telegram polling 属于 Manager。
 
-典型改进包括：
+### Session Registry 与 Code Mode
 
-- 增加必要的前置检查；
-- 明确完成标准；
-- 修正容易反复失败的步骤；
-- 增加 human approval 条件；
-- 合并重复或高度相似的 workflow。
+Manager 持久化 session metadata，包括 opaque `session_id`、scope、process status、IPC metadata、optional project directory、title 和 timestamps。公开 session list 只暴露用户可见 identity、title、scope 和基本 summary fields；IPC token 和 process internals 保持 Manager-private。
 
-这种改进不是一次性提示词工程，而是长期维护过程。
+`daat-locus run` 使用 general sessions。`daat-locus code <project-dir>` 会 canonicalize project directory，并只展示该路径下的 project-scoped sessions。创建 code session 会生成新的 opaque `session_id`；同一 project directory 可以拥有多个 code sessions。
 
-## Sleep 阶段
+### Manager-Session IPC
 
-Sleep 是 Daat Locus 的异步整理与改进阶段。它不应该被理解为“模型休息时随便反思一下”。
+Manager 和 Session 通过 `interprocess` Tokio local sockets 通信。协议使用 framed JSON envelopes，包含 protocol version、request id、session id、IPC token 和 request body。请求包括 status、user input submission、dashboard snapshot/history/stream、dashboard commands/actions、Telegram event queueing、Telegram outbox draining、delivery recording、requeueing 和 shutdown。
 
-Sleep 的核心作用是：把白天运行时留下的证据转化为更稳定的后续行为。
+这个 IPC 是 Manager/Session 协调的本地实现边界。
 
-### 两类证据
+### Telegram Routing
 
-Daat Locus 主要区分两类证据：
+已批准 Telegram chats 由 Manager 映射到默认 Session。缺少有效 mapping 的 chat 收到第一条普通消息时，会创建新的 general Session 并保存 mapping。`/session_list`、`/session_new`、`/session_attach`、`/session_delete` 这类 Telegram-only session commands 由 Manager 在 Session event registration 前处理。普通 chat messages 作为 runtime events 路由到 Session event stores。
 
-1. **运行时协议错误**
-   这类错误说明模型违反了全局 runtime contract 或工具协议。例如没有显式完成事件、工具参数不符合 schema、继续了错误的 session、使用了过期引用等。
+## Dashboard 与交互客户端
 
-2. **Workflow 执行记录**
-   这类记录来自绑定 workflow 的真实任务执行。它说明某个 workflow 在实际使用中是否顺利，哪些步骤有效，哪里可能需要 patch 或 merge。
+`DashboardState` 是由 Session 产生、TUI/WebUI/其他客户端消费的 shared cross-client session/runtime snapshot。它包含 activity cells、live activity、runtime status、plan summaries、app status output、skills、Telegram access requests、token usage 和 context/optimization summaries。
 
-### 两条改进路径
+TUI 本地交互状态属于 `TuiViewState`：command input、slash completion、panels、scroll offsets、local feedback、expanded display choices、history paging state 和 render caches。多个 TUI clients 可以展示同一个 `DashboardState`，但拥有各自 `TuiViewState`。
 
-Daat Locus 将 sleep 改进拆成两条独立路径：
+TUI 架构是：
 
-- **Runtime Error Correction**：修正全局 runtime contract 和工具协议约束，避免同类运行时错误重复发生；
-- **Workflow Improvement**：基于 workflow 执行记录改进 workspace primitive spec，让反复任务流程越来越贴合实践。
+```text
+DashboardState + TuiViewState
+  -> input_controller reducer
+  -> optional DashboardCommandRunner effect
+  -> FrameRequester schedule
+  -> pure full-frame render
+```
 
-这两条路径不能混淆。运行时协议错误不应直接变成某个任务 workflow 的步骤；workflow 执行质量问题也不应随意被归因到全局 prompt 或 runtime contract。
+`FrameRequester` 是 draw scheduler。TUI 使用 full-frame rendering、coalesced draw requests，并通过 `FrameRequester` 安排 animation frames。
 
-### 为什么不做泛泛反思
+Slash commands 是顶层产品入口。`/skills`、`/telegram`、`/debug`、`/app-status`、`/status` 这类命令应打开 panel 或执行一个明确动作。大型 typed CLI tree 留给 internal、remote-control 或 test surfaces。
 
-泛泛反思容易产生负复利：模型可能把偶然现象固化成规则，也可能把测试过拟合成目标。
+WebUI session rendering 直接读取 structured `DashboardState`、`WebActivityItem` 和 `ActivityCell` 数据，并镜像 TUI session activity hierarchy。
 
-Daat Locus 更偏向证据驱动：只有当 evidence 足够明确时，才应改变对应层级的行为资产。能用代码判断的错误，由代码检测；需要人类价值判断的高风险变化，应保留 human approval。
+## Sleep 与自我改进
 
-## Human-in-loop 与自我塑形
+Sleep 是 evidence-driven improvement，有两条独立路径：
 
-Daat Locus 并不追求无约束自治。它更适合一种 human-guided self-improvement 模式：人类负责方向、抽象边界、风险判断和最终审批；runtime 负责执行、验证、记录、复盘和沉淀。
+- **Runtime Error Correction** 消费代码检测到的 runtime/protocol error cases，产出小的全局 runtime contract corrections。
+- **Workflow Improvement** 消费 workflow-bound primitive run records，patch 或 merge workspace primitive specs。
 
-这种模式的关键不是让 agent 替代人类判断，而是让高质量人类反馈产生复利。
+这两条路径保持分离：runtime protocol errors 进入 contract corrections；workflow quality evidence 进入 workflow primitive patch/merge 决策。
 
-例如，开发者反复指出：
+## 持久化边界
 
-- 某类修改不能只改 prompt，必须加 runtime guard；
-- 高风险路径必须人工审批；
-- 工具可见性不仅要在展示阶段控制，也要在执行阶段校验；
-- 不要把 transport 建模成 App；
-- 不要让模型做代码可以稳定完成的机械工作。
+受保护 runtime state 包括 configuration、daemon auth tokens、Telegram ACL/default-session mapping、session registry、events、pending work、runtime conversation and memory、plans、dashboard history、app-local state 和 sleep artifacts。
 
-这些反馈如果只停留在聊天里，很快会丢失。Daat Locus 的目标是把它们转化成 workflow、测试、审批规则、运行时约束或文档规范，成为下一次行动的默认结构。
+可编辑 workspace assets 包括 project files、workspace app source packages 和 workspace primitive specs。Builtin primitive specs 是编译进 binary 的 repository assets，在 runtime 中只读。
 
-这也是 Daat Locus 和普通一次性 coding agent 的重要差异：它更像一个会长期被使用者塑形的本地维护 runtime。
+这条边界把 runtime-owned state 与 project-file edits 分开，同时允许 agent-maintained workspace assets 在受控流程中演化。
 
-## 第三方 Workspace App
+## 当前架构形态
 
-Daat Locus 支持 source-first 的 workspace app 方向。第三方 App 不是外部黑盒插件，而是位于本地 workspace 中、可被 agent 读取和修改的源代码资产。
+### Work Queue Runtime
 
-这种设计有几个目的：
+Daat Locus 可以暴露类似聊天的界面；核心由 pending work、structured context、explicit tools、persisted state 和 evidence 组成。
 
-- 让 app 行为可审计；
-- 让 agent 能在 human-in-loop 下修改和维护 app；
-- 避免过早引入复杂 ABI 或远程插件系统；
-- 保持 usage、how_to_use 与 runtime 代码的分层。
+### Domain-Owned Tools
 
-第三方 App 的文档不应塞进 workflow。App 说明的是“这个软件表面是什么、何时使用、如何操作”；workflow 说明的是“某类任务应该怎样完成”。这两者必须分开。
+工具按 domain ownership 暴露。App tool names 显示 owner namespace；有状态 domain 通过 `get_state` 和显式标识符提供操作入口。
 
-## Daemon 与持久状态
+### Source-First Workspace Apps
 
-Daat Locus 默认以 daemon 模型运行。前台 TUI、Telegram transport、控制接口和 runtime loop 都围绕同一个长期运行状态工作。
+Workspace Apps 是 source-first、本地、可审计的能力域。Workflow primitive specs 承载 self-optimizing task procedures。
 
-Daemon 模型让 Daat Locus 能够：
+### Evidence-Driven Improvement
 
-- 持续接收外部事件；
-- 保持 App、workflow、memory 与 pending work 状态；
-- 在用户不主动输入时继续处理后台工作；
-- 在 sleep 阶段整理执行证据；
-- 提供 attachable 的前台界面。
-
-持久状态通常分为两类：
-
-- **受保护 runtime 状态**：配置、事件、memory、transport state、sleep artifacts 等；
-- **可编辑 workspace 资产**：workspace apps、workspace primitive specs、项目文件等。
-
-这种区分很重要。Runtime 状态不应随意被 agent 当成普通项目文件改写；workspace 资产则可以在受控流程中被 agent 编辑和演化。
-
-## 与常见 agent 形态的区别
-
-### 不以聊天 session 为中心
-
-Daat Locus 可以有对话界面，但它的核心不是 session。它的核心是长期 runtime state、pending work、world snapshot、tool-mediated actions 和 sleep evidence。
-
-### 不以 subagent 为核心
-
-Daat Locus 不默认把任务拆给多个临时 subagent，因为这会削弱责任归属和经验复利。它更倾向于单一权威 runtime，加上多个 App 表面、多个 workflow 资产和必要时的隔离 worker。
-
-如果未来引入 worker，也应是受控分析、评估或 sandbox 执行单元，而不是拥有独立世界状态的第二个主 agent。
-
-### 不把 App 等同于插件
-
-插件通常只是能力扩展；App 则是可聚焦、有状态、能渲染当前状态并暴露局部工具的软件表面。
-
-### 不把自我改进等同于反思文本
-
-Daat Locus 的 self-improvement 不是“写一段我哪里做得不好”。它要求 evidence、归属层级、可持久化资产和可审计变更。
+Self-improvement 要求 evidence、ownership layer、persistent artifacts 和 auditable changes。
 
 ## 总结
 
-Daat Locus 的核心不是“让模型拥有更多工具”，而是让模型在一个长期运行、可审计、可复盘、可被人类塑形的 runtime 中行动。
+Daat Locus 当前可以用几个稳定事实概括：
 
-它的架构可以浓缩成几句话：
+- 外部效果通过显式工具和 completion actions 发生；
+- Apps 是有状态能力域，工具通过直接 namespace 暴露；
+- Events、PendingWork 与 Apps 是分离概念；
+- runtime context 拆成 AfterClaim 和 PreTurn 两层；
+- Manager 是唯一 public server，Sessions 是私有 runtime workers；
+- workflows 是可复用 SOP primitives 和 runtime compositions；
+- sleep 通过 runtime-error 和 workflow improvement 两条独立路径消费显式 evidence。
 
-- 文本不是行动，工具才改变世界；
-- Runtime 拥有世界状态，模型基于 snapshot 做语义判断；
-- App 是有状态操作表面，不是平铺工具包；
-- Workflow 是可复用执行经验，不是聊天记忆；
-- Sleep 消费执行证据，而不是泛泛反思；
-- Human-in-loop 不是阻碍自治，而是正向复利的来源。
-
-Daat Locus 的目标不是制造一个脱离人类判断的自治系统，而是构建一个能长期接收反馈、沉淀经验、贴合使用者工作方式的个人 agent runtime。
+目标是构建一个能行动、验证、记忆和改进，同时保持可审计、并持续受人类判断塑形的本地 agent runtime。

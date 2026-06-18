@@ -52,18 +52,17 @@ Use this checklist before tagging a Daat Locus release.
   - `config(ctx)`
   - `init(ctx, state)`
   - `render_state(ctx, state)`
-  - `tools(ctx, state)`
-  - `call_tool(ctx, state, input)`
-  - `on_focus(ctx, state)`
-  - `on_blur(ctx, state)`
+  - `list_tools(ctx, state)`
+  - `call_tool(ctx, state, name, args)`
   - `poll_notices(ctx, state)`
 
 ## Quality Gates
 
-- Run `cargo fmt --check`.
-- Run `cargo clippy --all-targets -- -D warnings`.
-- Run `cargo test --no-default-features`.
-- Run `cargo deny check bans sources licenses`.
+- Run `cargo fmt --all -- --check`.
+- Run WebUI tests with `cd webui && bun install --frozen-lockfile && bun run test`.
+- Run `cargo clippy --locked --all-targets -- -D warnings`.
+- Run `cargo test --locked`.
+- Run `cargo deny --locked check bans sources licenses`.
 - Run targeted manual smoke tests for:
   - first-time setup
   - daemon start and attach

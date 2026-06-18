@@ -10,7 +10,7 @@ id: inspect-local-project
 
 ## Preconditions
 - The project path is known and readable.
-- Local inspection tools are available through the focused app or terminal surface.
+- Local inspection tools are available through Coding, Terminal, or static file tools as appropriate.
 - The task goal is specific enough to guide what parts of the project should be inspected.
 - Repository or workspace instructions, if present, can be read and followed.
 

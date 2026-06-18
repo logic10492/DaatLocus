@@ -24,53 +24,16 @@ An agent runtime that truly has experience.
 
 ## What Is This?
 
-Daat Locus is a long-running local self-governing Agent Runtime.
+Daat Locus is a long-running local, tool-driven agent runtime.
 
 It is built for work that becomes better through history: maintaining the same
-project over time, repeatedly handling the same class of task, remembering your
-preferences and practical experience, and distilling them to improve later
-behavior.
+project over time, repeatedly handling the same class of task, remembering
+practical experience, and turning that experience into reusable runtime
+structure.
 
-## Core Ideas
-
-## Apps For Agents
-
-When humans use a computer, we rarely choose an action from a global list of
-everything the machine can do. We open a terminal, read the current output,
-enter a command, and wait for the result; or we open a browser, read the current
-page, click, navigate, and continue from the new page.
-
-Daat Locus gives agents a similar interaction model.
-
-Apps provide stateful operating surfaces for the runtime. Each App renders the
-current state the agent can see, explains when it should be used, explains how
-it should be operated, and exposes a local set of tools when focused.
-
-Compared with a flat tool list, this gives the model three things:
-
-1. **Locality**: the agent only sees tools relevant to the current operating
-   surface.
-2. **State grounding**: actions are based on the state currently displayed by
-   the App, instead of choosing tools out of context.
-3. **Temporal continuity**: long-running surfaces such as Terminal and Browser
-   can be safely continued.
-
-Apps are how Daat Locus turns "tools" into "software operating surfaces".
-
-Therefore, Daat Locus does not need `SKILLS.md` to explain how a group of tools
-should be used. The App itself is self-describing.
-
-### Workflow Self-Improvement
-
-Daat Locus executes tasks with workflows as blueprints, then feeds execution
-experience back into workflows during an independent sleep phase.
-
-While awake, Daat Locus executes tasks and records practical experience. During
-sleep, it organizes that experience, fixes recurring problems, and improves the
-workflows that later tasks depend on.
-
-Sleep optimization also attempts to merge similar workflows to avoid unbounded
-growth.
+Daat Locus is not a one-shot chatbot wrapper. External input enters the runtime
+as structured work, the model makes semantic decisions, and real-world changes
+happen only through explicit tools.
 
 ## Quick Start
 
@@ -106,10 +69,22 @@ run `cargo build -p daat-locus --release --locked` directly.
 
 [releases-url]: https://github.com/shadow3aaa/DaatLocus/releases
 
+## Common Entry Points
+
+```bash
+daat-locus run                 # open the foreground runtime flow
+daat-locus code <project-dir>  # select or create a project-scoped session
+daat-locus attach              # attach to an existing daemon
+daat-locus send "..."          # send one message and wait for a reply
+daat-locus config              # open the interactive config menu
+```
+
 ## Documentation
 
 - [简体中文 README](README_zh-CN.md)
 - [Architecture](docs/architecture.md)
+- [Configuration](docs/configuration.md)
+- [Contributing](CONTRIBUTING.md)
 - [Builtin SOP primitive specs](workflows/README.md)
 
 ## License

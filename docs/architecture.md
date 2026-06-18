@@ -1,592 +1,493 @@
 # Daat Locus Architecture
 
-> This is a public architecture document for users and contributors. It
-> explains why Daat Locus is designed this way, and how its core concepts work
-> together. For finer coding constraints, implementation boundaries, and
-> contribution rules, refer to `AGENTS.md` and `CONTRIBUTING.md`.
+> This is the public architecture document for users and contributors. It
+> describes the current implementation boundaries. For stricter coding rules,
+> agent-facing constraints, and contribution policy, see `AGENTS.md` and
+> `CONTRIBUTING.md`.
 
-Daat Locus is a long-running local agent runtime. Its goal is not to wrap an
-LLM into a question-answering chatbot, but to place the LLM inside an
-action-oriented system governed by the runtime: external events enter a queue,
-the runtime renders the current world state, the model makes semantic judgments
-and calls tools, tools explicitly change the world, and execution evidence is
-distilled into workflows and sleep-time improvement.
+Daat Locus is a long-running local, tool-driven agent runtime. The runtime owns
+durable state, claims structured work, injects structured context, exposes
+explicit tools, executes tool calls, and records the resulting evidence. The
+model's natural-language output is recorded as explanation; external effects are
+produced by explicit tools and completion actions.
 
-In other words, the center of Daat Locus is not "conversation". It is **the
-world state of a continuously running system**.
+Its architecture is organized around explicit tool calls, stateful capability
+domains, structured runtime context, isolated Sessions, and auditable evidence
+for memory, workflow, and sleep-time improvement.
 
 ## Design Goals
 
-Daat Locus is built for work that becomes better through long-term practice:
-maintaining the same project, repeatedly handling the same class of task, using
-the same set of tools across continuous work, and gradually adapting to the
-user's judgment through human-in-loop feedback.
+Daat Locus is built for work that improves through repeated practice:
+maintaining projects over time, handling recurring task classes, remembering
+practical experience, and turning that experience into auditable runtime assets.
 
-It aims to solve several common agent design problems:
+The main design goals are:
 
-1. **Text is mistaken for action**
+1. **Tools produce external effects**
 
-   In many agent systems, once the model says "I have completed this", the
-   system treats the task as complete. Daat Locus does not. Changes to the
-   external world must happen through explicit tool calls.
+   Natural-language output provides explanations and records. Event completion,
+   file edits, terminal commands, browser interaction, code edits, plan updates,
+   primitive binding, and other effects happen through explicit tools.
 
-2. **Flat tool lists scatter attention**
+2. **State is explicit**
 
-   When every tool is exposed to the model at the same time, the model can
-   easily lose track of the software surface it is currently operating. Daat
-   Locus uses the App model to make tools local, stateful, and focusable.
+   The runtime stores events, pending work, app state, memory, plans, workflow
+   bindings, session metadata, dashboard state, and delivery state. Code stores
+   or renders mechanical state directly so model attention stays on semantic
+   judgment.
 
-3. **Experience stays only in chat memory**
+3. **Capabilities stay in their domains**
 
-   Ordinary memory can help an agent remember what happened, but it does not
-   necessarily create a more stable way to act. Daat Locus distills repeated
-   tasks into workflows, then improves them during sleep based on execution
-   evidence.
+   Browser, Terminal, and Coding are separate stateful capability domains. Their
+   tools are namespaced and operate on explicit identifiers. The model calls
+   each tool directly through its domain namespace.
 
-4. **Self-improvement is too generic**
+4. **Mechanical work belongs to code**
 
-   Daat Locus does not define self-improvement as vague reflection by the
-   model. It separates improvement by evidence source: runtime protocol errors
-   are used to correct global runtime contracts, while workflow execution
-   records are used to improve reusable task procedures.
+   Queue enumeration, deduplication, freshness checks, delivery bookkeeping,
+   schema validation, and evidence recording belong in code. The model spends
+   attention on semantic judgment.
 
-5. **Human feedback is hard to compound over time**
+5. **Experience becomes auditable assets**
 
-   Daat Locus is not trying to replace human judgment. Its goal is to turn
-   high-quality human-in-loop feedback into executable long-term constraints:
-   workflows, tests, tool boundaries, approval rules, and runtime invariants.
+   Memory keeps continuity, but reusable procedures live in SOP primitive specs.
+   Runtime errors and workflow run evidence feed separate sleep-time improvement
+   paths.
 
-## Core Principles
+6. **Sessions are isolated runtimes**
 
-### Text Is Not Action
+   The public daemon is a Manager. Each Session process owns one runtime and is
+   reached only through private local IPC from the Manager.
 
-Natural-language model output is usually an explanation, draft, or intermediate
-record. It does not automatically become an external-world action.
+## Runtime Loop
 
-To reply to a Telegram message, the model must use an event completion tool.
-To edit files, it must use an explicit file or patch tool.
-To finish an app notice, it must use the corresponding resolution tool.
-To change a long-term workflow, it must go through sleep or a controlled
-workflow change process.
+The current high-level flow is:
 
-This principle lets Daat Locus distinguish:
-
-- what the model said;
-- what the model intended to do;
-- what the runtime actually recorded;
-- whether the external world was really changed.
-
-### The Runtime Owns World State
-
-Daat Locus does not treat chat context as the only source of truth. The runtime
-maintains and renders the current world state, including pending events, the
-current plan, bound workflows, the foreground App, App state, long-term memory
-recall, system time, machine state, and more.
-
-Each model turn sees an organized world snapshot, not an undifferentiated pile
-of message history.
-
-### Code Handles Mechanical Work, The Model Handles Semantics
-
-Daat Locus tries to avoid making the model do mechanical tasks that code can
-perform reliably, such as:
-
-- enumerating queues;
-- deduplication;
-- finding the latest event;
-- maintaining an outbox;
-- deciding whether an id is stale;
-- recording workflow execution evidence;
-- persisting state.
-
-The model should handle semantic judgment: whether to respond, how to respond,
-whether to focus an App, whether to bind a workflow, and which tool to call
-next.
-
-This does not weaken the model. It lets the model spend attention on what
-actually requires intelligence.
-
-### Experience Is An Executable Asset, Not Just Memory
-
-Daat Locus uses long-term memory for contextual continuity, but it values
-"executable experience" more: how a class of task should be done, which steps
-tend to fail, which boundaries need to be clearer, and which processes are
-worth reusing.
-
-These experiences are modeled as workflows, not merely written into chat memory
-or a profile.
-
-### Self-Improvement Must Be Auditable
-
-The sleep phase in Daat Locus should not mysteriously "make the agent smarter".
-Any persistent behavior change should be able to answer:
-
-- what evidence produced this change;
-- which layer the change affects;
-- whether it is a global runtime contract or a task-class workflow;
-- whether it can be rolled back;
-- whether it requires human review.
-
-## Overall Runtime Model
-
-The basic Daat Locus loop can be summarized as:
-
-1. External input or an App notice enters pending work.
-2. The runtime claims one piece of work.
-3. The runtime assembles the current world snapshot.
-4. The model makes judgments based on the snapshot.
-5. The model acts explicitly through tools.
-6. The runtime executes tools and records results.
-7. If the work has not been explicitly completed, the runtime keeps asking the
-   model to handle it.
-8. After work completes, the runtime records necessary evidence.
-9. During sleep, the runtime organizes this evidence and improves runtime
-   contracts or workflows.
+1. A client or transport sends input to the Manager daemon.
+2. The Manager chooses or creates the target Session and routes the input over
+   private local IPC.
+3. The Session registers an event or app notice and enqueues `PendingWork`.
+4. The runtime claims one work item.
+5. Newly claimed input and primitive routing are injected once as AfterClaim
+   Context.
+6. Before every model turn, current execution state is injected as PreTurn
+   Context.
+7. The model makes semantic judgments and calls explicit tools.
+8. Tools mutate state, apps, files, processes, events, plans, or workflow
+   bindings.
+9. Claimed work finishes through the appropriate completion tool.
+10. The runtime records evidence needed by dashboard history, memory, workflow
+    runs, and sleep-time improvement.
 
 ```mermaid
 flowchart LR
-    Input[External input<br/>user command / Telegram / App notice]
-    Queue[PendingWork queue]
-    Snapshot[World Snapshot]
+    Client[WebUI / TUI / CLI / Telegram]
+    Manager[Manager daemon<br/>public API and routing]
+    Session[Session process<br/>one runtime]
+    Pending[PendingWork]
+    After[AfterClaim Context]
+    Pre[PreTurn Context]
     Model[Model judgment]
-    Tools[Explicit tool calls]
-    Apps[Focused Apps<br/>Terminal / Browser / Workspace Apps]
-    State[Persistent state<br/>events / plan / memory / workflows]
-    Evidence[Execution evidence<br/>runtime errors / workflow records]
-    Sleep[Sleep phase]
-    Update[Behavior constraint updates<br/>runtime contract / workflow patches]
+    Tools[Explicit tools]
+    State[Events / apps / plan / memory / workflows]
+    Sleep[Sleep improvement]
 
-    Input --> Queue --> Snapshot --> Model --> Tools
-    Tools --> Apps
+    Client --> Manager --> Session --> Pending --> After --> Pre --> Model --> Tools
     Tools --> State
-    State --> Snapshot
-    Tools --> Evidence
-    Evidence --> Sleep --> Update --> Snapshot
+    State --> Pre
+    Tools --> Pending
+    State --> Sleep
+    Sleep --> State
 ```
 
-The key point is: **the model is not the runtime's only source of truth. Tool
-results and persistent state are the basis for whether an action actually
-happened.**
+The important invariant is that tool results and persisted state are first-class
+sources of truth alongside model judgment. They decide whether an action
+actually happened.
 
-## Core Objects
+## Runtime Context Model
+
+Runtime context is split by lifetime in the current implementation.
+
+### AfterClaim Context
+
+AfterClaim Context is injected after work is claimed. It is one-shot context for
+that claimed work:
+
+- claimed events and claimed app notices;
+- source metadata needed to handle them;
+- workflow primitive routing: the full primitive id vocabulary plus expanded
+  summaries for top relevant primitives.
+
+It is one-shot claimed-work context. Event input lives here as part of the
+claimed input record.
+
+### PreTurn Context
+
+PreTurn Context is injected before each model turn. It contains current
+execution state that can change after tools run:
+
+- sensory information such as current time and machine status;
+- project instruction context when a coding project is in scope;
+- the current plan;
+- the currently bound primitive or temporary primitive composition.
+
+App state is read on demand through the generated `appid__get_state` tool for
+Browser, Terminal, or Coding.
+
+### Capability Docs Are Separate
+
+Keep app usage docs, app how-to-use docs, project instructions, event completion
+rules, and workflow routing as separate instruction layers with their own
+responsibilities.
+
+## Core Runtime Objects
 
 ### Event
 
-An Event is a structured external fact the system has already received. It
-usually means "something happened in the outside world, and the agent needs to
-make a semantic judgment".
+An `Event` is a structured external fact already received by the system. Current
+Session code stores Telegram input and terminal/client user input as event
+payloads. It represents work that needs semantic judgment and an explicit
+disposition. Chat windows, selected conversations, and app cursors belong to
+client or app state surfaces.
 
-An Event is not a chat window or an internal App cursor. It answers:
-
-- what happened;
-- whether a response is needed;
-- what disposition should end it;
-- if a response is needed, what final content should be sent.
-
-For example, a new Telegram message is converted by the transport into an Event
-and then enters pending work. When the model handles this event, it does not
-need to "open a Telegram App and find the message". The runtime already knows
-which message it is, which chat it came from, and which event id it belongs to.
+A claimed event ends through `finish_and_send`. `resolved` and `failed` require
+a `reply_message` with content; `dismissed` is the silent completion path. Reply
+delivery and event resolution happen through explicit completion tools.
 
 ### PendingWork
 
-PendingWork is the scheduling unit that drives the next runtime step. It may
-come from an Event or from a background App notice.
+`PendingWork` is the scheduling unit for the next runtime turn. Current variants
+are event work and app notice work. Events have priority over app notices.
 
-PendingWork is only responsible for scheduling, not business judgment. It
-should not become another hidden state machine, and it should not carry
-long-term semantics.
-
-### World Snapshot
-
-World Snapshot is the current world summary the model sees before each
-judgment. It organizes scattered runtime state into context the agent can
-understand.
-
-A typical snapshot includes:
-
-- current time and machine state;
-- current plan;
-- currently bound workflow;
-- candidate workflow summaries;
-- pending event summary;
-- current foreground App and App state;
-- automatically recalled long-term memories;
-- necessary tool-use constraints.
-
-The goal of a snapshot is not to stuff every log into the model. It is to
-provide enough judgment material and avoid meaningless mechanical exploration.
+The queue remains a scheduling layer that claims, releases, consumes, and
+requeues work. Semantic judgment remains with the model and explicit tools.
 
 ### Plan
 
-Plan is the current task's short-term execution plan. It helps the model retain
-step awareness, but it is not a backlog, not a long-term knowledge base, and
-not an event list.
-
-A healthy plan should serve the current task: what to do next, which step is in
-progress, and whether it should be cleared after completion.
+`Plan` is the short-term execution plan for the current task. Durable backlogs
+and knowledge bases live in separate storage. An active plan with steps must have
+exactly one `in_progress` step; completed plans are cleared after completion.
 
 ### Memory
 
-Memory provides contextual continuity and long-term experience recall. It can
-help the model understand user preferences, historical background, project
-experience, and previous decisions.
-
-But Memory should not be treated as an immediate state cache. Event state, App
-state, workflow binding, delivery state, and similar facts should be persisted
-and rendered by the runtime, not guessed by the model from memory.
+Memory provides continuity and long-term recall. Runtime state and tool results
+hold immediate facts for events, delivery, app state, and workflow binding.
 
 ### Workflow
 
-Workflow is the runtime binding and evolution layer for reusable SOP primitives.
-Persisted specs are primitive specifications, not App manuals, not
-innate model capabilities, and not long-term copies of the current plan.
+`Workflow` is the binding and evolution layer for reusable SOP primitives.
+Daat Locus separates three layers:
 
-Workflow answers:
+- `PrimitiveSpec`: a persisted primitive specification asset.
+- `WorkflowBinding`: the current task's binding to one primitive or a temporary
+  composition of existing primitives.
+- `PrimitiveRunRecord`: execution evidence recorded by runtime code at work
+  completion boundaries.
 
-- what kinds of tasks are worth handling through a stable process;
-- what order they usually proceed in;
-- what counts as completion;
-- how to recover from blockers or failures;
-- which constraints must be repeatedly followed.
+A temporary composition remains runtime state. Persisted primitive specs change
+through explicit primitive editing or workflow evolution paths.
 
-Daat Locus separates three workflow layers:
-
-- **PrimitiveSpec**: a persisted SOP primitive specification readable by the
-  agent;
-- **WorkflowBinding**: whether the current task is bound to a workflow, a piece
-  of runtime state;
-- **PrimitiveRunRecord**: evidence left after daytime execution for sleep-time
-  workflow improvement.
-
-This layering matters. PrimitiveSpec does not carry runtime state such as
-"currently active"; WorkflowBinding should not be written back into the
-primitive spec itself; PrimitiveRunRecord is recorded automatically by the
-runtime and should not be manually written by the model.
+Builtin primitives live in repository `workflows/*.md` and are compiled by
+`build.rs`. Evolvable workspace primitives live under
+`~/daat-locus-workspace/workflows`.
 
 ## App Model
 
-### Apps Are Stateful Operating Surfaces
+An `App` is a stateful capability domain with its own tools, state, lifecycle,
+usage guidance, and operation guidance.
 
-In Daat Locus, an App is not a normal plugin or toolkit. An App is a stateful
-runtime surface the agent observes and acts upon.
+The current built-in Apps are:
 
-When humans use a computer, we do not choose actions from a "global list of all
-possible operations". We open a terminal, read output, type a command, and wait
-for the result; or we open a browser, read the current page, click, navigate,
-and continue from the new page.
+- **Browser**: persistent page sessions, loading, semantic page snapshots,
+  element refs, navigation, and page interaction.
+- **Terminal**: persistent command sessions, unread output, stdin continuation,
+  process lifecycle, and working directories.
+- **Coding**: project-aware source operations backed by scope-engine, including
+  semantic search, hash-anchored reads and edits, and propagation review.
 
-Daat Locus gives agents a similar interaction model.
+### App Tool Exposure
 
-An App provides at least three layers of information:
+An App is a direct namespaced tool domain. Runtime tool construction exposes
+every installed App's valid tool specs directly under the App namespace, plus a
+generated state tool:
 
-- **state**: the currently visible state;
-- **usage**: when this App is appropriate;
-- **how_to_use**: how to operate it after focus.
+```text
+browser__get_state
+browser__browser_open_page
+terminal__get_state
+terminal__terminal_exec
+coding__get_state
+coding__open_project
+coding__search_code
+```
 
-These three layers should not be mixed. State is not a tutorial; usage is not a
-complete operating manual; how_to_use is not current world fact.
+The App still owns its state and lifecycle internally. Tool ownership is visible
+in the tool name, and operations use explicit identifiers and visible runtime
+selection inputs.
 
-### Why Focus Exists
+### State, Usage, And How-To-Use
 
-Focus is not ceremonial. Its purpose is to localize the model's attention and
-tool space.
+Every App exposes three separate layers:
 
-When Terminal is focused, the model cares about shell sessions, command output,
-stdin, and whether a process is still running.
-When Browser is focused, the model cares about page content, navigation state,
-element references, and whether the page has finished loading.
-When a workspace app is focused, the model cares about that app's exposed
-state, notices, and local tools.
+- `state`: current structured facts, returned by `appid__get_state` and rendered
+  in app-status surfaces;
+- `usage`: when the capability domain is worth using;
+- `how_to_use`: how to operate the App's tools safely.
 
-This is more stable than exposing all tools to the model all the time, because
-the model always knows which software surface it is operating.
+Keep these layers separate: state reports current facts, usage describes
+applicability, and how-to-use text explains safe operation.
 
-### Terminal And Browser
+### Static File Tools Are Runtime Tools
 
-Terminal is an App because it has temporal semantics such as persistent
-sessions, output waiting, stdin writes, process termination, and working
-directories.
+`read_file` and `edit_file` are ordinary runtime tools. They handle explicit
+path/range reads and hash-anchored edits for Markdown, TOML, YAML, JSON, shell
+scripts, generated files, and paths outside SCOPE.
 
-Browser is an App because page content is local and mutable. Clicking,
-navigating, waiting for loads, and rereading the page all affect whether later
-operations can continue.
+When a Coding project is open, source files owned by SCOPE require
+`coding__edit_code` so parse validation and propagation review can run.
 
-Both Apps express a core Daat Locus view: **tool calls are not isolated
-functions, but continuous actions on a stateful software surface.**
+### Telegram Is A Transport
 
-### Why IM Interfaces Such As Telegram Are Not Apps
+Telegram is a transport and event source. The Manager polls or receives
+Telegram input, resolves access and default-session mapping, routes normal
+messages to a Session, drains Session outboxes, and records delivery results.
 
-In Daat Locus, Telegram is a transport and event source, not an App.
+The model receives the structured facts and event id from runtime, judges the
+event, and completes it with `finish_and_send`.
 
-The reason is that when a Telegram message arrives, the runtime already knows
-enough structured facts: message content, source chat, event id, whether the
-contact is known, and so on. The standard handling path is "judge and complete
-this event", not "open a Telegram UI, select a chat, then find the message".
+### Workspace Apps
 
-If Telegram were modeled as an App, the system would easily introduce hidden
-cursors: which chat is currently open, which message is selected, whether send
-depends on UI state, and so on. That would weaken the auditability of event
-completion.
+Third-party workspace Apps are source-first assets under:
 
-Therefore, Telegram messages enter as Events. Replies go through explicit
-completion tools into an outbox, then the transport delivers them
-asynchronously.
+```text
+~/daat-locus-workspace/apps/<app_id_snake_case>/
+  app.toml
+  runtime/app.lua
+  prompt/usage.md
+  prompt/how_to_use.md
+```
+
+The host loads one Lua 5.4 module from `runtime/app.lua` through `mlua`. The
+current Lua surface uses one module instance with hooks such as `config(ctx)`,
+`init(ctx, state)`, `render_state(ctx, state)`, `list_tools(ctx, state)`,
+`call_tool(ctx, state, name, args)`, and `poll_notices(ctx, state)`.
+
+Workspace app prompts describe the App capability. Reusable task SOPs live in
+workflow primitive specs.
 
 ## Tool And Action Boundaries
 
-Daat Locus treats tools as explicit interfaces for changing world state. A tool
-call should clearly state what it reads, what it changes, which explicit
-parameters it needs, and how failure is recorded.
-
 ### Prefer Explicit Identifiers
 
-Tool parameters should use clear ids whenever possible, instead of relying on a
-hidden "currently selected object".
+Tool calls should bind to concrete identifiers or freshness guards:
 
-For example:
+- event completion binds to the claimed event;
+- Browser calls bind to `page_id` and, for interactions, `element_ref`;
+- Terminal continuation binds to `session_id`;
+- Coding reads and edits bind to `path + line#hash`;
+- session APIs bind to opaque `session_id` values;
+- primitive binding uses primitive ids or a temporary composition id.
 
-- event completion should bind to a concrete event id;
-- Browser operations should bind to a concrete page and element reference;
-- Terminal operations should bind to a concrete session;
-- Workflow binding should point to a specific workflow.
+Explicit identifiers make stale-state mistakes auditable.
 
-The purpose is to prevent mistakes caused by stale state and hidden cursors.
+### Coding And File Editing Boundary
 
-### App-Scoped Tools
+Coding uses one visible source-location vocabulary: `path + line#hash`.
 
-Tools that belong to an App should only be exposed and used in an appropriate
-App context. Browser tools should not secretly execute from any context;
-Terminal tools should not bypass Terminal's state surface.
+- `coding__search_code` returns matched source lines with path-scoped anchors.
+- `coding__read_code` reads a path plus anchor in `around` or `full` mode.
+- `coding__edit_code` applies structured hash-anchored edits and returns
+  propagation results.
+- `coding__next_review` exposes pending impact review events after edits.
 
-This lets every model action answer: "Which App state am I operating right
-now?"
+Explicit path/range reads belong to `read_file`; `read_code` handles path plus
+anchor. Configuration, generated, and outside-SCOPE edits belong to `edit_file`;
+SCOPE source edits belong to `edit_code`.
 
-### Event Completion Tools
+### Model-Facing Schema Dialect
 
-The final handling of an external event must go through a completion tool.
-Natural-language text can explain, but it cannot replace completion.
+Runtime tools, App tools, and structured model outputs use a conservative JSON
+Schema dialect. Schemas are root objects, object properties are required and
+closed with `additionalProperties: false`, optional values are nullable required
+fields, and correctness comes from generated and validated schemas at the
+provider boundary.
 
-Only then can the runtime know whether the event was resolved, whether a
-message should be sent, whether the message entered the outbox, whether the
-transport delivered it successfully, and whether failure needs retrying or
-recording.
+The normal Rust entry point is `#[model_schema]` plus `model_schema_for::<T>()`.
+Dynamic workspace app schemas are validated when loaded.
 
-## Workflow And Experience Compounding
+## Multi-Session Architecture
 
-Daat Locus is long-running not only because of memory, but also because of
-workflow.
+Daat Locus is a client-server multi-session system.
 
-When an agent repeatedly handles the same class of task, merely "remembering
-what happened before" is not enough. More important is forming a stable way to
-act: which steps work, which prerequisite judgments are necessary, which
-failures are worth avoiding in advance, and which actions require human-in-loop
-approval.
+```text
+WebUI / TUI / CLI / Telegram control
+  -> Manager daemon public API
+  -> Session process over private local IPC
+```
 
-Workflow is the executable carrier for that experience.
+Clients connect only to the Manager daemon. Session processes are private
+runtime workers; the Manager is the public client target.
 
-### Workflow Is Not Prompt
+### Manager Responsibilities
 
-A PrimitiveSpec can be read by the model, but it is not an ordinary prompt. It is
-a primitive specification asset managed by the runtime, with an id,
-applicability, procedure, completion criteria, and evolution history.
+The Manager owns:
 
-This means a primitive can be selected, bound, have execution results recorded,
-and have its spec corrected during sleep.
+- public HTTP/WebSocket endpoints and embedded WebUI serving;
+- daemon authentication and token validation;
+- session registry and lifecycle;
+- spawning, stopping, restarting, deleting, and health-checking sessions;
+- routing `/send`, dashboard requests, command requests, and Telegram input;
+- Telegram ACL, default-session mapping, outbox delivery, and Telegram-only
+  session control commands;
+- dashboard snapshot/history/stream proxying from target Sessions.
 
-### Builtin Primitives And Workspace Primitive Specs
+The Manager stays at public API, auth, routing, lifecycle, and compact status
+summary boundaries. Runtime `Context` creation, model loop execution, and
+per-session memory/event/app/plan ownership belong to Session processes.
 
-Daat Locus distinguishes foundational builtin SOP primitives from evolvable
-workspace primitive specs.
+### Session Responsibilities
 
-Builtin primitives are more like a base capability layer. They are usually
-shipped with the code repository and should not be automatically modified by
-sleep.
+Each Session process owns exactly one runtime:
 
-Workspace primitive specs are local execution experience distilled from
-long-term practice. They can be gradually improved through human-in-loop and
-sleep mechanisms.
+- one `Context`;
+- one `EventStore` and `PendingWorkQueue`;
+- one conversation and memory state;
+- one `Plan`;
+- one `AppManager` and app instance set;
+- one dashboard state stream;
+- one model loop.
 
-### Workflow Evolution
+A Session exposes private IPC handlers to the Manager. Public HTTP serving,
+global session registry loading, multi-session management, and Telegram polling
+belong to the Manager.
 
-The goal of workflow evolution is not to let the agent randomly rewrite its own
-behavior. It is to correct the process for a class of tasks based on real
-execution evidence.
+### Session Registry And Code Mode
 
-Typical improvements include:
+The Manager persists session metadata, including an opaque `session_id`, scope,
+process status, IPC metadata, optional project directory, title, and timestamps.
+Public session lists expose only user-facing identity, title, scope, and basic
+summary fields; IPC tokens and process internals remain Manager-private.
 
-- adding necessary prerequisite checks;
-- clarifying completion criteria;
-- fixing steps that repeatedly fail;
-- adding human approval conditions;
-- merging duplicate or highly similar workflows.
+`daat-locus run` works with general sessions. `daat-locus code <project-dir>`
+canonicalizes the project directory and shows only project-scoped sessions for
+that path. Creating a code session creates a new opaque `session_id`; a project
+directory can have multiple code sessions.
 
-This is not one-off prompt engineering. It is a long-term maintenance process.
+### Manager-Session IPC
 
-## Sleep Phase
+Manager and Session communicate with `interprocess` Tokio local sockets. The
+protocol uses framed JSON envelopes with protocol version, request id, session
+id, IPC token, and request body. Requests include status, user input submission,
+dashboard snapshot/history/stream, dashboard commands/actions, Telegram event
+queueing, Telegram outbox draining, delivery recording, requeueing, and
+shutdown.
 
-Sleep is the asynchronous organization and improvement phase in Daat Locus. It
-should not be understood as "letting the model casually reflect while resting".
+This IPC is a local implementation boundary for Manager/Session coordination.
 
-The core role of sleep is to turn evidence left by daytime runtime execution
-into more stable future behavior.
+### Telegram Routing
 
-### Two Kinds Of Evidence
+Approved Telegram chats are mapped by the Manager to a default Session. If a
+chat lacks a valid mapping, the first ordinary message creates a new general
+Session and stores the mapping. Telegram-only session commands such as
+`/session_list`, `/session_new`, `/session_attach`, and `/session_delete` are
+handled by the Manager before Session event registration. Ordinary chat messages
+are routed to Session event stores as runtime events.
 
-Daat Locus mainly distinguishes two kinds of evidence:
+## Dashboard And Interactive Clients
 
-1. **Runtime protocol errors**
+`DashboardState` is the shared cross-client session/runtime snapshot produced by
+the Session and consumed by TUI, WebUI, and other clients. It includes activity
+cells, live activity, runtime status, plan summaries, app status output, skills,
+Telegram access requests, token usage, and context/optimization summaries.
 
-   These errors mean the model violated a global runtime contract or tool
-   protocol. Examples include failing to explicitly complete an event, using
-   tool arguments that do not match schema, continuing the wrong session, using
-   stale references, and so on.
+TUI local interaction state belongs to `TuiViewState`: command input, slash
+completion, panels, scroll offsets, local feedback, expanded display choices,
+history paging state, and render caches. Multiple TUI clients can show the same
+`DashboardState` with different `TuiViewState` values.
 
-2. **Workflow execution records**
+The TUI architecture is:
 
-   These records come from real task execution bound to a workflow. They show
-   whether a workflow works smoothly in practice, which steps are effective,
-   and where the workflow may need patching or merging.
+```text
+DashboardState + TuiViewState
+  -> input_controller reducer
+  -> optional DashboardCommandRunner effect
+  -> FrameRequester schedule
+  -> pure full-frame render
+```
 
-### Two Improvement Paths
+`FrameRequester` is the draw scheduler. The TUI uses full-frame renders,
+coalesced draw requests, and animation scheduling through `FrameRequester`.
 
-Daat Locus splits sleep-time improvement into two independent paths:
+Slash commands are top-level product entry points. Commands such as `/skills`,
+`/telegram`, `/debug`, `/app-status`, and `/status` should open panels or one
+obvious action. Large typed CLI trees stay in internal, remote-control, or test
+surfaces.
 
-- **Runtime Error Correction**: corrects global runtime contracts and tool
-  protocol constraints to prevent repeated runtime errors of the same kind;
-- **Workflow Improvement**: improves workspace primitive specs based on workflow
-  execution records, making repeated task processes better match practice.
+WebUI session rendering reads structured `DashboardState`, `WebActivityItem`,
+and `ActivityCell` data directly while mirroring the TUI session activity
+hierarchy.
 
-These paths must not be confused. A runtime protocol error should not directly
-become a task workflow step. A workflow execution quality issue should not be
-casually attributed to a global prompt or runtime contract.
+## Sleep And Self-Improvement
 
-### Why Not Generic Reflection
+Sleep is evidence-driven improvement with two independent paths:
 
-Generic reflection can produce negative compounding. The model may turn an
-accident into a rule, or overfit tests into goals.
+- **Runtime Error Correction** consumes code-detected runtime/protocol error
+  cases and produces small global runtime contract corrections.
+- **Workflow Improvement** consumes workflow-bound primitive run records and
+  patches or merges workspace primitive specs.
 
-Daat Locus leans toward evidence-driven improvement: behavior assets should
-change only when the evidence is clear enough for the corresponding layer.
-Errors that code can detect should be detected by code. High-risk changes that
-require human value judgment should keep human approval.
+Keep these paths separate: runtime protocol errors feed contract corrections;
+workflow quality evidence feeds workflow primitive patch/merge decisions.
 
-## Human-In-Loop And Self-Shaping
+## Persistence Boundaries
 
-Daat Locus does not pursue unconstrained autonomy. It is better suited to a
-human-guided self-improvement mode: humans provide direction, abstraction
-boundaries, risk judgment, and final approval; the runtime handles execution,
-verification, recording, review, and distillation.
+Protected runtime state includes configuration, daemon auth tokens, Telegram
+ACL/default-session mapping, session registry, events, pending work, runtime
+conversation and memory, plans, dashboard history, app-local state, and sleep
+artifacts.
 
-The key in this mode is not letting the agent replace human judgment, but making
-high-quality human feedback compound.
+Editable workspace assets include project files, workspace app source packages,
+and workspace primitive specs. Builtin primitive specs are repository assets
+compiled into the binary and are read-only at runtime.
 
-For example, a developer may repeatedly point out:
+This boundary separates runtime-owned state from project-file edits while still
+allowing agent-maintained workspace assets to evolve through controlled
+processes.
 
-- a certain class of changes must not only edit prompts, but add runtime guards;
-- high-risk paths require human approval;
-- tool visibility must be enforced not only at display time, but also at
-  execution time;
-- transports should not be modeled as Apps;
-- the model should not do mechanical work that code can complete reliably.
+## Current Architecture Shape
 
-If this feedback only stays in chat, it is quickly lost. Daat Locus aims to
-turn it into workflows, tests, approval rules, runtime constraints, or
-documentation standards, so it becomes the default structure for the next
-action.
+### Work Queue Runtime
 
-This is also an important difference between Daat Locus and ordinary one-shot
-coding agents: it is more like a local maintenance runtime that is shaped by
-the user over time.
+Daat Locus can expose chat-like interfaces, while its core is pending work,
+structured context, explicit tools, persisted state, and evidence.
 
-## Third-Party Workspace Apps
+### Domain-Owned Tools
 
-Daat Locus supports a source-first workspace app direction. Third-party Apps are
-not external black-box plugins, but source-code assets located in the local
-workspace that the agent can read and modify.
+Tools are exposed by domain ownership. App tool names show their owner namespace,
+and stateful domains expose `get_state` with explicit identifiers.
 
-This design has several goals:
+### Source-First Workspace Apps
 
-- make app behavior auditable;
-- let the agent modify and maintain apps under human-in-loop;
-- avoid introducing complex ABIs or remote plugin systems too early;
-- preserve the separation between usage, how_to_use, and runtime code.
+Workspace Apps are source-first, local, auditable capability domains. Workflow
+primitive specs carry self-optimizing task procedures.
 
-Third-party App documentation should not be put into workflow. An App describes
-"what this software surface is, when to use it, and how to operate it"; a
-workflow describes "how a class of task should be completed". The two must stay
-separate.
+### Evidence-Driven Improvement
 
-## Daemon And Persistent State
-
-Daat Locus runs by default as a daemon. The foreground TUI, Telegram transport,
-control interface, and runtime loop all work around the same long-running
-state.
-
-The daemon model lets Daat Locus:
-
-- continuously receive external events;
-- preserve App, workflow, memory, and pending work state;
-- continue handling background work even when the user is not actively typing;
-- organize execution evidence during sleep;
-- provide an attachable foreground interface.
-
-Persistent state usually falls into two categories:
-
-- **protected runtime state**: configuration, events, memory, transport state,
-  sleep artifacts, and similar runtime-owned data;
-- **editable workspace assets**: workspace apps, workspace primitive specs,
-  project files, and similar agent-editable assets.
-
-This distinction matters. Runtime state should not be casually rewritten by the
-agent as ordinary project files. Workspace assets can be edited and evolved by
-the agent through controlled processes.
-
-## Differences From Common Agent Shapes
-
-### Not Centered On Chat Sessions
-
-Daat Locus may have conversation interfaces, but its core is not the session.
-Its core is long-running runtime state, pending work, world snapshots,
-tool-mediated actions, and sleep evidence.
-
-### Not Centered On Subagents
-
-Daat Locus does not by default split tasks across multiple temporary subagents,
-because that weakens responsibility attribution and experience compounding. It
-leans toward a single authoritative runtime, multiple App surfaces, multiple
-workflow assets, and isolated workers when necessary.
-
-If workers are introduced in the future, they should be controlled analysis,
-evaluation, or sandbox execution units, not a second main agent with independent
-world state.
-
-### Apps Are Not Plugins
-
-Plugins are usually capability extensions. Apps are focusable, stateful
-software surfaces that render current state and expose local tools.
-
-### Self-Improvement Is Not Reflection Text
-
-Daat Locus self-improvement is not "write a paragraph about what I did wrong".
-It requires evidence, ownership layer, persistent assets, and auditable changes.
+Self-improvement requires evidence, an ownership layer, persistent artifacts,
+and auditable changes.
 
 ## Summary
 
-The core of Daat Locus is not "giving the model more tools". It is letting the
-model act inside a long-running, auditable, reviewable, human-shaped runtime.
+Daat Locus can be summarized by a few current invariants:
 
-Its architecture can be condensed into a few sentences:
+- external effects flow through explicit tools and completion actions;
+- Apps are stateful capability domains with direct namespaced tools;
+- Events and PendingWork are separate from Apps;
+- runtime context is split into AfterClaim and PreTurn layers;
+- Manager is the only public server, and Sessions are private runtime workers;
+- workflows are reusable SOP primitives and runtime compositions;
+- sleep consumes explicit evidence through separate runtime-error and workflow
+  improvement paths.
 
-- text is not action, tools change the world;
-- the runtime owns world state, and the model makes semantic judgments from a
-  snapshot;
-- Apps are stateful operating surfaces, not flat toolkits;
-- Workflows are reusable execution experience, not chat memory;
-- Sleep consumes execution evidence, not vague reflection;
-- Human-in-loop is not an obstacle to autonomy, but the source of positive
-  compounding.
-
-Daat Locus is not trying to create an autonomous system detached from human
-judgment. It is trying to build a personal agent runtime that can receive
-feedback over time, distill experience, and adapt to the user's way of working.
+The goal is a local agent runtime that can act, verify, remember, and improve
+while remaining auditable and shaped by human judgment.
