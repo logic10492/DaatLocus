@@ -82,6 +82,8 @@ const DAEMON_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const SESSION_IPC_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_PROCESS_TERM_TIMEOUT: Duration = Duration::from_secs(5);
 const SESSION_PROCESS_KILL_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_DIRECTORY_REMOVE_ATTEMPTS: usize = 5;
+const SESSION_DIRECTORY_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const DAEMON_MAIN_LOG: &str = "daat-locus.log";
 const DAEMON_STDERR_LOG: &str = "daemon-stderr.log";
 pub const DAEMONIZE_ENV: &str = "DAAT_LOCUS_DAEMONIZE";
@@ -1700,18 +1702,16 @@ pub(crate) async fn delete_session_by_id(
     session_id: &session::SessionId,
     reason: &str,
 ) -> Result<bool> {
-    let ipc_token = session_tokens.read().get(session_id).cloned();
     if let Some(info) = sessions.get(session_id)
         && info.status.is_process_backed()
-        && let Some(ipc_name) = info.ipc_name.clone()
-        && let Some(ipc_token) = ipc_token
     {
-        let client = session_ipc::SessionIpcClient::new(session_id.clone(), ipc_name, ipc_token);
-        let _ = client
-            .request(session_ipc::SessionIpcRequest::Shutdown {
-                reason: reason.to_string(),
-            })
-            .await;
+        terminate_process_backed_session(
+            sessions.clone(),
+            session_tokens.clone(),
+            info,
+            reason.to_string(),
+        )
+        .await?;
     }
     session_tokens.write().remove(session_id);
     let removed = sessions.remove(session_id).await?.is_some();
@@ -1720,15 +1720,34 @@ pub(crate) async fn delete_session_by_id(
             .root()
             .to_path_buf();
         if session_dir.exists()
-            && let Err(err) = std::fs::remove_dir_all(&session_dir)
+            && let Err(err) = remove_session_directory(&session_dir).await
         {
-            tracing::warn!(
-                "failed to remove session directory {}: {err}",
-                session_dir.display()
-            );
+            tracing::warn!("{err:?}");
         }
     }
     Ok(removed)
+}
+
+async fn remove_session_directory(session_dir: &StdPath) -> Result<()> {
+    let mut last_error = None;
+    for attempt in 1..=SESSION_DIRECTORY_REMOVE_ATTEMPTS {
+        match tokio::fs::remove_dir_all(session_dir).await {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                last_error = Some(err);
+                if attempt < SESSION_DIRECTORY_REMOVE_ATTEMPTS {
+                    tokio::time::sleep(SESSION_DIRECTORY_REMOVE_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+    let err = last_error.expect("remove_dir_all should have produced an error");
+    Err(miette!(
+        "failed to remove session directory {} after {} attempt(s): {err}",
+        session_dir.display(),
+        SESSION_DIRECTORY_REMOVE_ATTEMPTS
+    ))
 }
 
 pub(crate) async fn terminate_process_backed_sessions(
@@ -3133,6 +3152,25 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(err.to_string().contains("daemon status request failed"));
+    }
+
+    #[tokio::test]
+    async fn remove_session_directory_removes_non_empty_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let session_dir = temp.path().join("session");
+        let nested_dir = session_dir.join("state");
+        tokio::fs::create_dir_all(&nested_dir)
+            .await
+            .expect("create nested session dir");
+        tokio::fs::write(nested_dir.join("events"), b"[]")
+            .await
+            .expect("write session file");
+
+        remove_session_directory(&session_dir)
+            .await
+            .expect("remove session dir");
+
+        assert!(!session_dir.exists());
     }
 
     #[test]
