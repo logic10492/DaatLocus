@@ -299,6 +299,8 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         "[manager] listening on http://{}:{}",
         DAEMON_HOST_DISPLAY, daemon_server.port
     ));
+    let daemon_tray =
+        crate::daemon_tray::spawn_daemon_tray(daemon_server.port, daemon_control_tx.clone());
 
     tokio::spawn(async {
         if let Err(err) = crate::model_catalog::refresh_models_dev_cache().await {
@@ -408,6 +410,9 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     }
 
     daemon_lifecycle.mark_stopping();
+    if let Some(tray) = &daemon_tray {
+        tray.shutdown();
+    }
     if let Some(server_shutdown_tx) = server_shutdown_tx.take() {
         let _ = server_shutdown_tx.send(());
     }

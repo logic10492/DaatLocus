@@ -13,6 +13,7 @@ mod context_budget;
 mod core;
 mod daat_locus_paths;
 mod daemon;
+mod daemon_tray;
 mod dashboard;
 mod dsml_repair;
 mod events;

@@ -16,6 +16,7 @@ include = [
     "/README.md",
     "/README_zh-CN.md",
     "/assets/logo.svg",
+    "/assets/tray-icon.ico",
     "/build.rs",
     "/docs/**",
     "/locales/**",
@@ -97,9 +98,12 @@ scope-engine = { version = "0.1.0", path = "crates/scope-engine" }
 interprocess = { version = "2.4.2", features = ["tokio"] }
 daat-locus-macros = { version = "0.1.0", path = "crates/daat-locus-macros" }
 
+[target.'cfg(windows)'.dependencies]
+tao = "0.35.3"
+tray-icon = { version = "0.24.1", default-features = false }
+
 [dev-dependencies]
 tempfile = "3.23.0"
-
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61.2"
 features = [
