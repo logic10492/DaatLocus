@@ -20,10 +20,11 @@ fn emit_build_target() {
 
 fn build_embedded_webui(manifest_dir: &Path) {
     let webui_dir = manifest_dir.join("webui");
+    let assets_dir = manifest_dir.join("assets");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("out dir"));
     let webui_work = out_dir.join("webui-work");
     let webui_dist = out_dir.join("webui-dist");
-    emit_webui_rerun_inputs(&webui_dir);
+    emit_webui_rerun_inputs(&webui_dir, &assets_dir);
 
     if !webui_dir.join("package.json").is_file() {
         panic!("WebUI package.json not found: {}", webui_dir.display());
@@ -32,7 +33,7 @@ fn build_embedded_webui(manifest_dir: &Path) {
     prepare_webui_worktree(&webui_dir, &webui_work);
     let bun_command = webui_bun_command();
     run_webui_command(&bun_command, &["install", "--frozen-lockfile"], &webui_work);
-    run_webui_build_command(&bun_command, &webui_work, &webui_dist);
+    run_webui_build_command(&bun_command, &webui_work, &webui_dist, &assets_dir);
 
     let dist_index = webui_dist.join("index.html");
     if !dist_index.is_file() {
@@ -43,7 +44,7 @@ fn build_embedded_webui(manifest_dir: &Path) {
     }
 }
 
-fn emit_webui_rerun_inputs(webui_dir: &Path) {
+fn emit_webui_rerun_inputs(webui_dir: &Path, assets_dir: &Path) {
     for path in [
         webui_dir.join("bun.lock"),
         webui_dir.join("components.json"),
@@ -52,6 +53,7 @@ fn emit_webui_rerun_inputs(webui_dir: &Path) {
         webui_dir.join("tailwind.config.cjs"),
         webui_dir.join("tsconfig.json"),
         webui_dir.join("vite.config.ts"),
+        assets_dir.join("logo.svg"),
     ] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
@@ -172,12 +174,18 @@ fn webui_bun_command() -> Vec<String> {
     vec!["bun".to_string()]
 }
 
-fn run_webui_build_command(bun_command: &[String], webui_dir: &Path, out_dir: &Path) {
+fn run_webui_build_command(
+    bun_command: &[String],
+    webui_dir: &Path,
+    out_dir: &Path,
+    assets_dir: &Path,
+) {
     let mut command = Command::new(&bun_command[0]);
     command
         .args(&bun_command[1..])
         .args(["run", "build"])
         .env("DAAT_LOCUS_WEBUI_OUT_DIR", out_dir)
+        .env("DAAT_LOCUS_ASSETS_DIR", assets_dir)
         .current_dir(webui_dir);
     run_webui_command_status(command, "WebUI build");
 }

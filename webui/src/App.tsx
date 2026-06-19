@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { LoginPage } from "@/components/login-page";
@@ -26,6 +26,8 @@ import {
 type AppPage = "agent" | "status" | "settings" | "logs";
 const SELECTED_SESSION_STORAGE_KEY = "daat-locus.webui.selected-session-id";
 
+const APP_DOCUMENT_TITLE = "Daat Locus";
+
 export default function App() {
   if (shouldRenderMockAgentPage()) {
     return <MockAgentApp />;
@@ -46,6 +48,16 @@ export default function App() {
     null,
   );
 
+  const selectedSession = useMemo(
+    () =>
+      selectedSessionId
+        ? (sessions.find(
+            (session) => session.session_id === selectedSessionId,
+          ) ?? null)
+        : null,
+    [selectedSessionId, sessions],
+  );
+
   useEffect(() => {
     function updateActivePage() {
       setActivePage(getCurrentPage());
@@ -56,6 +68,14 @@ export default function App() {
 
     return () => window.removeEventListener("hashchange", updateActivePage);
   }, []);
+
+  useEffect(() => {
+    document.title = pageDocumentTitle(
+      activePage,
+      selectedSession,
+      isAuthenticated,
+    );
+  }, [activePage, isAuthenticated, selectedSession]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -194,6 +214,9 @@ export default function App() {
 }
 
 function MockAgentApp() {
+  useEffect(() => {
+    document.title = pageDocumentTitle("agent", MOCK_SESSION, true);
+  }, []);
   return (
     <main className="min-h-screen bg-background text-foreground">
       <SidebarProvider>
@@ -299,8 +322,55 @@ function readStoredSelectedSessionId() {
 }
 
 function projectLabel(projectDir: string) {
-  const parts = projectDir.split("/").filter(Boolean);
+  const parts = projectDir.split(/[\\/]+/).filter(Boolean);
   return parts.at(-1) ?? projectDir;
+}
+
+function sessionDocumentTitle(session: SessionInfo) {
+  return (
+    session.title?.trim() ||
+    (session.project_dir ? projectLabel(session.project_dir) : null) ||
+    "Untitled session"
+  );
+}
+
+function pageLabel(page: AppPage) {
+  switch (page) {
+    case "status":
+      return "Status";
+    case "settings":
+      return "Settings";
+    case "logs":
+      return "Logs";
+    case "agent":
+    default:
+      return "Agent";
+  }
+}
+
+function pageDocumentTitle(
+  activePage: AppPage,
+  selectedSession: SessionInfo | null,
+  isAuthenticated: boolean,
+) {
+  if (!isAuthenticated) {
+    return `Sign in · ${APP_DOCUMENT_TITLE}`;
+  }
+
+  const selectedSessionTitle = selectedSession
+    ? sessionDocumentTitle(selectedSession)
+    : null;
+
+  if (activePage === "agent") {
+    return selectedSessionTitle
+      ? `${selectedSessionTitle} · ${APP_DOCUMENT_TITLE}`
+      : `Agent · ${APP_DOCUMENT_TITLE}`;
+  }
+
+  const activePageLabel = pageLabel(activePage);
+  return selectedSessionTitle
+    ? `${activePageLabel} · ${selectedSessionTitle} · ${APP_DOCUMENT_TITLE}`
+    : `${activePageLabel} · ${APP_DOCUMENT_TITLE}`;
 }
 
 function getCurrentPage(): AppPage {
