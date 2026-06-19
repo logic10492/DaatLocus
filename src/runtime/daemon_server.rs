@@ -280,6 +280,7 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     let (daemon_control_tx, mut daemon_control_rx) =
         mpsc::unbounded_channel::<DaemonControlCommand>();
     let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel();
+    let mut server_shutdown_tx = Some(server_shutdown_tx);
 
     let daemon_server = start_server(DaemonServerStartParams {
         port: config.daemon.port,
@@ -407,6 +408,9 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
     }
 
     daemon_lifecycle.mark_stopping();
+    if let Some(server_shutdown_tx) = server_shutdown_tx.take() {
+        let _ = server_shutdown_tx.send(());
+    }
     if let Some(handle) = telegram_transport {
         handle.abort();
     }
@@ -426,7 +430,6 @@ pub(crate) async fn run_daemon_serve(config: crate::config::Config) -> Result<()
         let _ = completion_tx.send(());
     }
     drop(dashboard_tx);
-    let _ = server_shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(15), daemon_server.shutdown()).await;
     if let Some(err) = session_shutdown_error {
         return Err(err);
