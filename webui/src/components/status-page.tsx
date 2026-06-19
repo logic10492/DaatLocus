@@ -1281,6 +1281,7 @@ function PendingUserInputQueue({
 
   function handleEditSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    event.stopPropagation();
     if (!editingInput || editBusy) {
       return;
     }
