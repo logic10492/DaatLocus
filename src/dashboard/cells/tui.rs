@@ -402,8 +402,9 @@ fn visible_activity_selectable_regions(
             .saturating_sub(skip)
             .min(viewport_height.saturating_sub(screen_offset));
         if visible_height > 0 {
-            regions.push(SelectableRegion::new(
-                cell.id.clone(),
+            regions.push(SelectableRegion::new_with_group(
+                SelectableId::new(format!("{}:{}", cell.id.as_str(), cell.start)),
+                SelectableId::new("activity-feed"),
                 Rect::new(area.x, screen_y, area.width, visible_height),
                 cell.lines.clone(),
                 skip,
@@ -3467,7 +3468,7 @@ That's it.";
     }
 
     #[test]
-    fn activity_cell_selection_id_survives_partial_scroll() {
+    fn activity_cell_selection_group_survives_partial_scroll() {
         let cell =
             assistant_activity_cell("first line\nsecond line\nthird line").expect("assistant cell");
         let mut cache = CachedActivityLines::new();
@@ -3503,6 +3504,7 @@ That's it.";
         );
 
         assert_eq!(top_regions[0].id, scrolled_regions[0].id);
+        assert_eq!(top_regions[0].group, scrolled_regions[0].group);
     }
 
     #[test]

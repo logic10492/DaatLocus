@@ -13,6 +13,10 @@ impl SelectableId {
     pub(super) fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
+
+    pub(super) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,25 +80,38 @@ impl SelectionRange {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ActiveSelection {
-    pub(super) id: SelectableId,
-    pub(super) anchor: TextPosition,
-    pub(super) focus: TextPosition,
-    pub(super) dragging: bool,
+    group: SelectableId,
+    anchor: SelectionEndpoint,
+    focus: SelectionEndpoint,
+    dragging: bool,
 }
 
-impl ActiveSelection {
-    pub(super) fn range(&self) -> SelectionRange {
-        SelectionRange {
-            start: self.anchor,
-            end: self.focus,
-        }
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SelectionEndpoint {
+    id: SelectableId,
+    position: TextPosition,
+}
+
+impl SelectionEndpoint {
+    fn new(id: SelectableId, position: TextPosition) -> Self {
+        Self { id, position }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveSelectionSpan {
+    region_indices: Vec<usize>,
+    start_ordinal: usize,
+    end_ordinal: usize,
+    start: TextPosition,
+    end: TextPosition,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SelectableRegion {
     pub(super) id: SelectableId,
     pub(super) area: Rect,
+    pub(super) group: SelectableId,
     lines: Vec<String>,
     visual_rows: Vec<VisualRow>,
 }
@@ -127,10 +144,15 @@ pub(crate) struct SelectionRegistry {
 
 impl SelectionRegistry {
     pub(super) fn set_regions(&mut self, regions: Vec<SelectableRegion>) {
-        if let Some(active) = self.active.as_ref()
-            && !regions.iter().any(|region| region.id == active.id)
-        {
-            self.active = None;
+        if let Some(active) = self.active.as_ref() {
+            let endpoint_visible = |endpoint: &SelectionEndpoint| {
+                regions
+                    .iter()
+                    .any(|region| region.group == active.group && region.id == endpoint.id)
+            };
+            if !endpoint_visible(&active.anchor) || !endpoint_visible(&active.focus) {
+                self.active = None;
+            }
         }
         self.regions = regions;
     }
@@ -162,13 +184,13 @@ impl SelectionRegistry {
     }
 
     pub(super) fn begin(&mut self, x: u16, y: u16) -> bool {
-        let Some((id, position)) = self.position_at(x, y) else {
+        let Some((group, endpoint)) = self.position_at(x, y) else {
             return self.clear_selection();
         };
         self.active = Some(ActiveSelection {
-            id,
-            anchor: position,
-            focus: position,
+            group,
+            anchor: endpoint.clone(),
+            focus: endpoint,
             dragging: true,
         });
         true
@@ -181,14 +203,12 @@ impl SelectionRegistry {
         if !active.dragging {
             return false;
         }
-        let Some(region) = self.region(&active.id) else {
-            return false;
-        };
-        let Some(position) = region.position_for_screen_clamped(x, y) else {
+        let group = active.group.clone();
+        let Some(endpoint) = self.position_near_group(x, y, &group) else {
             return false;
         };
         if let Some(active) = self.active.as_mut() {
-            active.focus = position;
+            active.focus = endpoint;
         }
         true
     }
@@ -203,33 +223,168 @@ impl SelectionRegistry {
 
     pub(super) fn selected_text(&self) -> Option<String> {
         let active = self.active.as_ref()?;
-        let region = self.region(&active.id)?;
-        let text = region.copy_range(&active.range());
+        let span = self.active_span(active)?;
+        let text = (span.start_ordinal..=span.end_ordinal)
+            .filter_map(|ordinal| {
+                let region = &self.regions[span.region_indices[ordinal]];
+                let range = self.range_for_span_ordinal(&span, ordinal)?;
+                let text = region.copy_range(&range);
+                (ordinal == span.start_ordinal || ordinal == span.end_ordinal || !text.is_empty())
+                    .then_some(text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         (!text.is_empty()).then_some(text)
     }
 
     pub(super) fn region_selection(&self, id: &SelectableId) -> Option<SelectionRange> {
         let active = self.active.as_ref()?;
-        if &active.id == id {
-            Some(active.range())
-        } else {
-            None
+        let span = self.active_span(active)?;
+        let ordinal = span
+            .region_indices
+            .iter()
+            .position(|index| &self.regions[*index].id == id)?;
+        if ordinal < span.start_ordinal || ordinal > span.end_ordinal {
+            return None;
         }
+        self.range_for_span_ordinal(&span, ordinal)
     }
 
-    fn position_at(&self, x: u16, y: u16) -> Option<(SelectableId, TextPosition)> {
+    fn active_span(&self, active: &ActiveSelection) -> Option<ActiveSelectionSpan> {
+        let region_indices = self.group_region_indices(&active.group);
+        let anchor_ordinal = self.endpoint_ordinal(&region_indices, &active.anchor)?;
+        let focus_ordinal = self.endpoint_ordinal(&region_indices, &active.focus)?;
+        let anchor_first = anchor_ordinal < focus_ordinal
+            || (anchor_ordinal == focus_ordinal
+                && position_le(active.anchor.position, active.focus.position));
+        let (start_ordinal, end_ordinal, start, end) = if anchor_first {
+            (
+                anchor_ordinal,
+                focus_ordinal,
+                active.anchor.position,
+                active.focus.position,
+            )
+        } else {
+            (
+                focus_ordinal,
+                anchor_ordinal,
+                active.focus.position,
+                active.anchor.position,
+            )
+        };
+        Some(ActiveSelectionSpan {
+            region_indices,
+            start_ordinal,
+            end_ordinal,
+            start,
+            end,
+        })
+    }
+
+    fn range_for_span_ordinal(
+        &self,
+        span: &ActiveSelectionSpan,
+        ordinal: usize,
+    ) -> Option<SelectionRange> {
+        let region = &self.regions[*span.region_indices.get(ordinal)?];
+        let start = if ordinal == span.start_ordinal {
+            span.start
+        } else {
+            region.start_position()
+        };
+        let end = if ordinal == span.end_ordinal {
+            span.end
+        } else {
+            region.end_position()
+        };
+        Some(SelectionRange { start, end })
+    }
+
+    fn group_region_indices(&self, group: &SelectableId) -> Vec<usize> {
+        let mut indices = self
+            .regions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, region)| (&region.group == group).then_some(index))
+            .collect::<Vec<_>>();
+        indices.sort_by_key(|index| {
+            let area = self.regions[*index].area;
+            (area.y, area.x)
+        });
+        indices
+    }
+
+    fn endpoint_ordinal(
+        &self,
+        region_indices: &[usize],
+        endpoint: &SelectionEndpoint,
+    ) -> Option<usize> {
+        region_indices
+            .iter()
+            .position(|index| self.regions[*index].id == endpoint.id)
+    }
+
+    fn position_at(&self, x: u16, y: u16) -> Option<(SelectableId, SelectionEndpoint)> {
         self.regions.iter().rev().find_map(|region| {
             region
                 .area
                 .contains((x, y).into())
-                .then(|| region.position_for_screen_clamped(x, y))
+                .then(|| region.endpoint_for_screen_clamped(x, y))
                 .flatten()
-                .map(|position| (region.id.clone(), position))
+                .map(|endpoint| (region.group.clone(), endpoint))
         })
     }
 
-    fn region(&self, id: &SelectableId) -> Option<&SelectableRegion> {
-        self.regions.iter().find(|region| &region.id == id)
+    fn position_at_in_group(
+        &self,
+        x: u16,
+        y: u16,
+        group: &SelectableId,
+    ) -> Option<SelectionEndpoint> {
+        self.regions
+            .iter()
+            .rev()
+            .filter(|region| &region.group == group)
+            .find_map(|region| {
+                region
+                    .area
+                    .contains((x, y).into())
+                    .then(|| region.endpoint_for_screen_clamped(x, y))
+                    .flatten()
+            })
+    }
+
+    fn position_near_group(
+        &self,
+        x: u16,
+        y: u16,
+        group: &SelectableId,
+    ) -> Option<SelectionEndpoint> {
+        if let Some(endpoint) = self.position_at_in_group(x, y, group) {
+            return Some(endpoint);
+        }
+
+        let mut first = None;
+        let mut previous = None;
+        for region in self
+            .regions
+            .iter()
+            .filter(|region| &region.group == group && !region.visual_rows.is_empty())
+        {
+            if first.is_none() {
+                first = Some(region);
+            }
+            if y < region.area.y {
+                return previous
+                    .or(first)
+                    .and_then(|region| region.endpoint_for_screen_clamped(x, y));
+            }
+            previous = Some(region);
+        }
+
+        previous
+            .or(first)
+            .and_then(|region| region.endpoint_for_screen_clamped(x, y))
     }
 }
 
@@ -237,6 +392,7 @@ impl SelectableRegion {
     pub(super) fn new(id: SelectableId, area: Rect, lines: Vec<String>, scroll: u16) -> Self {
         let visual_rows = wrap_lines(&lines, area, scroll);
         Self {
+            group: id.clone(),
             id,
             area,
             lines,
@@ -244,8 +400,35 @@ impl SelectableRegion {
         }
     }
 
+    pub(super) fn new_with_group(
+        id: SelectableId,
+        group: SelectableId,
+        area: Rect,
+        lines: Vec<String>,
+        scroll: u16,
+    ) -> Self {
+        let visual_rows = wrap_lines(&lines, area, scroll);
+        Self {
+            id,
+            area,
+            group,
+            lines,
+            visual_rows,
+        }
+    }
+
     pub(super) fn from_visual_rows(
         id: SelectableId,
+        area: Rect,
+        lines: Vec<String>,
+        rows: Vec<SelectableVisualRow>,
+    ) -> Self {
+        Self::from_visual_rows_with_group(id.clone(), id, area, lines, rows)
+    }
+
+    pub(super) fn from_visual_rows_with_group(
+        id: SelectableId,
+        group: SelectableId,
         area: Rect,
         lines: Vec<String>,
         rows: Vec<SelectableVisualRow>,
@@ -264,6 +447,7 @@ impl SelectableRegion {
         Self {
             id,
             area,
+            group,
             lines,
             visual_rows,
         }
@@ -290,6 +474,11 @@ impl SelectableRegion {
         }
     }
 
+    fn endpoint_for_screen_clamped(&self, x: u16, y: u16) -> Option<SelectionEndpoint> {
+        self.position_for_screen_clamped(x, y)
+            .map(|position| SelectionEndpoint::new(self.id.clone(), position))
+    }
+
     fn position_for_screen_clamped(&self, x: u16, y: u16) -> Option<TextPosition> {
         let first = self.visual_rows.first()?;
         let last = self.visual_rows.last()?;
@@ -309,6 +498,17 @@ impl SelectableRegion {
             row.logical_line,
             row.visual_col_to_byte(line, col),
         ))
+    }
+
+    fn start_position(&self) -> TextPosition {
+        TextPosition::new(0, 0)
+    }
+
+    fn end_position(&self) -> TextPosition {
+        let Some((line_index, line)) = self.lines.iter().enumerate().next_back() else {
+            return TextPosition::new(0, 0);
+        };
+        TextPosition::new(line_index, line.len())
     }
 
     fn copy_range(&self, range: &SelectionRange) -> String {
@@ -637,6 +837,33 @@ mod tests {
         assert!(registry.drag_to(99, 99));
 
         assert_eq!(registry.selected_text().as_deref(), Some("bc\ndef"));
+    }
+
+    #[test]
+    fn dragging_across_grouped_regions_selects_all_intervening_text() {
+        let mut registry = SelectionRegistry::default();
+        let group = SelectableId::new("messages");
+        registry.set_regions(vec![
+            SelectableRegion::new_with_group(
+                SelectableId::new("message-1"),
+                group.clone(),
+                Rect::new(0, 0, 20, 1),
+                vec!["first message".to_string()],
+                0,
+            ),
+            SelectableRegion::new_with_group(
+                SelectableId::new("message-2"),
+                group,
+                Rect::new(0, 2, 20, 1),
+                vec!["second message".to_string()],
+                0,
+            ),
+        ]);
+
+        assert!(registry.begin(6, 0));
+        assert!(registry.drag_to(6, 2));
+
+        assert_eq!(registry.selected_text().as_deref(), Some("message\nsecond"));
     }
 
     #[test]
