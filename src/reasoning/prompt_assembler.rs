@@ -95,13 +95,25 @@ fn render_persona_section(
     language: &str,
     configured_locale: &str,
 ) -> String {
+    let target_language = render_target_language(language);
     format!(
-        "# Persona\n\nname: {}\nlanguage: {}\nconfigured_locale: {}\n\n{}",
+        "# Persona\n\nname: {}\nlanguage: {}\nconfigured_locale: {}\n\n{}\n\n## Communication Language\n\n- Use {} for all user-visible assistant prose, including intermediate progress messages, status updates, and final replies.\n- If the user explicitly requests another language, follow that requested language until they change it.\n- Preserve code, commands, file paths, identifiers, tool names, schema keys, logs, errors, direct quotes, and source text in their original language.\n- Do not switch to English merely because tool names, system text, retrieved sources, or internal runtime context are English.",
         persona.name.trim(),
         language.trim(),
         configured_locale.trim(),
-        persona.identity_summary.trim()
+        persona.identity_summary.trim(),
+        target_language
     )
+}
+
+fn render_target_language(language: &str) -> String {
+    match language.trim() {
+        "en-US" => "English (en-US)".to_string(),
+        "zh-CN" => "Simplified Chinese (zh-CN)".to_string(),
+        "configured-locale" => "the configured locale".to_string(),
+        language if language.is_empty() => "the configured locale".to_string(),
+        language => language.to_string(),
+    }
 }
 
 fn render_app_docs_section(ctx: &Context) -> String {
@@ -217,8 +229,34 @@ mod tests {
         assert!(text.contains("# Planning"));
         assert!(text.contains("# Primitive Workflows"));
         assert!(text.contains("# Runtime Prompt Additions\n\n- extra rule"));
+        assert!(text.contains("for all user-visible assistant prose"));
         assert!(!text.contains("<core>"));
         assert!(!text.contains("<event>"));
         assert!(!text.contains("{{"));
+    }
+
+    #[test]
+    fn persona_section_has_explicit_language_rules() {
+        let persona = PromptPersonaSpec {
+            name: "Daat Locus".to_string(),
+            language: "configured-locale".to_string(),
+            identity_summary: "Daat Locus follows the configured locale.".to_string(),
+        };
+        let text = render_persona_section(&persona, "zh-CN", "zh-CN");
+
+        assert!(text.contains("## Communication Language"));
+        assert!(text.contains("Simplified Chinese (zh-CN)"));
+        assert!(text.contains("intermediate progress messages"));
+        assert!(text.contains("final replies"));
+        assert!(text.contains("Preserve code, commands, file paths"));
+        assert!(text.contains("Do not switch to English"));
+    }
+
+    #[test]
+    fn target_language_placeholder_renders_as_configured_locale() {
+        assert_eq!(
+            render_target_language("configured-locale"),
+            "the configured locale"
+        );
     }
 }
