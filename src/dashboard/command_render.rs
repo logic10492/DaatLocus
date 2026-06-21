@@ -548,7 +548,7 @@ fn pending_user_input_preview_lines(
         Span::styled("•", Style::default().fg(Color::Cyan)),
         Span::raw(" "),
         Span::styled(
-            format!("Queued follow-up inputs ({})  Ctrl+P manage", inputs.len()),
+            "Queued follow-up inputs  Ctrl+P manage",
             Style::default().fg(Color::DarkGray),
         ),
     ])];
@@ -574,10 +574,7 @@ fn pending_user_input_preview_lines(
     );
     if inputs.len() > PENDING_USER_INPUT_PREVIEW_LIMIT {
         lines.push(Line::from(vec![Span::styled(
-            format!(
-                "  … {} more queued inputs",
-                inputs.len() - PENDING_USER_INPUT_PREVIEW_LIMIT
-            ),
+            "  … more queued inputs",
             Style::default().fg(Color::DarkGray),
         )]));
     }
@@ -627,12 +624,7 @@ fn render_pending_user_input_queue_panel(
             let idx = panel.scroll + visible_idx;
             let selected = idx == panel.selected;
             let marker = if selected { "›" } else { " " };
-            let index_text = format!("{}.", idx + 1);
-            let fixed_width = 1usize
-                .saturating_add(1)
-                .saturating_add(UnicodeWidthStr::width(index_text.as_str()))
-                .saturating_add(1);
-            let preview_width = row_width.saturating_sub(fixed_width.saturating_add(2));
+            let preview_width = row_width.saturating_sub(2);
             let preview =
                 truncate_display_width(&pending_user_input_preview_text(input), preview_width);
             let preview_style = if selected {
@@ -644,8 +636,6 @@ fn render_pending_user_input_queue_panel(
             };
             Line::from(vec![
                 Span::styled(marker, Style::default().fg(Color::Cyan)),
-                Span::raw(" "),
-                Span::styled(index_text, Style::default().fg(Color::DarkGray)),
                 Span::raw(" "),
                 Span::styled(preview, preview_style),
             ])
@@ -1314,6 +1304,16 @@ mod tests {
         lines
     }
 
+    fn pending_user_input(text: &str) -> crate::dashboard::DashboardPendingUserInput {
+        crate::dashboard::DashboardPendingUserInput {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            origin: "tui".to_string(),
+            incoming_text: text.to_string(),
+            arrived_at_ms: 42,
+            attachment_count: 0,
+        }
+    }
+
     #[test]
     fn footer_line_combines_context_queue_and_hint() {
         let line = render_footer_line("gpt-5.5 · 10k/100k used", "Enter send.", 2, 1, None, 120);
@@ -1331,23 +1331,44 @@ mod tests {
 
     #[test]
     fn pending_user_input_preview_lines_show_first_inputs_without_origin() {
-        let inputs = vec![crate::dashboard::DashboardPendingUserInput {
-            event_id: uuid::Uuid::nil().to_string(),
-            origin: "tui".to_string(),
-            incoming_text: "queued follow-up".to_string(),
-            arrived_at_ms: 42,
-            attachment_count: 0,
-        }];
+        let inputs = vec![pending_user_input("queued follow-up")];
         let text = pending_user_input_preview_lines(&inputs, 120)
             .iter()
             .map(line_text)
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains("Queued follow-up inputs (1)"));
+        assert!(text.contains("Queued follow-up inputs"));
+        assert!(!text.contains("Queued follow-up inputs (1)"));
         assert!(text.contains("queued follow-up"));
         assert!(!text.contains("tui |"));
         assert!(!text.contains("webui |"));
+    }
+
+    #[test]
+    fn pending_user_input_queue_panel_omits_item_counts() {
+        let backend = TestBackend::new(60, 6);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        let panel = PendingUserInputQueuePanel {
+            inputs: vec![
+                pending_user_input("first queued"),
+                pending_user_input("second queued"),
+            ],
+            selected: 0,
+            scroll: 0,
+            feedback: None,
+        };
+
+        terminal
+            .draw(|f| render_pending_user_input_queue_panel(f, f.area(), &panel))
+            .expect("draw queue panel");
+
+        let text = trimmed_buffer_lines(terminal.backend().buffer()).join("\n");
+        assert!(text.contains("Queued inputs"));
+        assert!(text.contains("first queued"));
+        assert!(text.contains("second queued"));
+        assert!(!text.contains("› 1."));
+        assert!(!text.contains("  2."));
     }
 
     #[test]
