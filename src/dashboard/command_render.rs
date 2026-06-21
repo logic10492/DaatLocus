@@ -414,16 +414,20 @@ pub(super) fn render_command_bar(f: &mut Frame, area: Rect, state: CommandBarRen
         selectable_regions.push(region);
     }
 
-    let (cursor_x, cursor_y) = cursor_display_xy(
-        input,
-        cursor_pos,
-        available_width,
-        wrap_width,
-        2,
-        rows[input_row_index],
-        input_scroll,
-    );
-    *last_cursor_pos = Some((cursor_x, cursor_y));
+    *last_cursor_pos = if input.is_empty() {
+        None
+    } else {
+        let (cursor_x, cursor_y) = cursor_display_xy(
+            input,
+            cursor_pos,
+            available_width,
+            wrap_width,
+            2,
+            rows[input_row_index],
+            input_scroll,
+        );
+        Some((cursor_x, cursor_y))
+    };
     let popup_row_index = input_row_index + 1;
     let footer_row = if popup_rows > 0 {
         render_command_popup(
@@ -1444,6 +1448,51 @@ mod tests {
             .expect("draw command bar");
 
         assert_eq!(last_cursor_pos, Some((7, 0)));
+    }
+
+    #[test]
+    fn command_bar_hides_cursor_for_empty_input() {
+        let backend = TestBackend::new(30, 4);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        let state = crate::dashboard::DashboardState::default();
+        let context = DashboardCommandContext {
+            requests: &[],
+            state: &state,
+        };
+        let mut last_cursor_pos = None;
+        let selection = SelectionRegistry::default();
+        let mut selectable_regions = Vec::new();
+
+        terminal
+            .draw(|f| {
+                render_command_bar(
+                    f,
+                    f.area(),
+                    CommandBarRenderState {
+                        input: "",
+                        cursor_pos: 0,
+                        context: &context,
+                        feedback: None,
+                        footer_context: "",
+                        pending_paste_count: 0,
+                        pending_image_attachment_count: 0,
+                        pending_user_inputs: &[],
+                        ctrl_c_reminder: None,
+                        editing_pending_user_input: false,
+                        panel: None,
+                        panel_rows: 0,
+                        popup_selection: 0,
+                        popup_scroll: 0,
+                        last_cursor_pos: &mut last_cursor_pos,
+                        input_lines: 1,
+                        selection: &selection,
+                        selectable_regions: &mut selectable_regions,
+                    },
+                );
+            })
+            .expect("draw command bar");
+
+        assert_eq!(last_cursor_pos, None);
     }
 
     #[test]
