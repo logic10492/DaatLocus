@@ -4,12 +4,15 @@
 
 # Daat Locus
 
+<p align="center">
+  <img src="assets/preview-tui.png" alt="preview-tui" width="45%" />
+  <img src="assets/preview-webui.png" alt="preview-webui" width="45%" />
+</p>
+
 [![简体中文][readme-cn-badge]][readme-cn-url]
 [![Crates.io][crates-badge]][crates-url]
 [![CI][ci-badge]][ci-url]
 [![License][license-badge]][license-url]
-
-An agent runtime that truly has experience.
 
 </div>
 
@@ -24,54 +27,43 @@ An agent runtime that truly has experience.
 
 ## What Is This?
 
-Daat Locus is a long-running local, tool-driven agent runtime.
-
-It is built for work that becomes better through history: maintaining the same
-project over time, repeatedly handling the same class of task, remembering
-practical experience, and turning that experience into reusable runtime
-structure.
-
-Daat Locus is not a one-shot chatbot wrapper. External input enters the runtime
-as structured work, the model makes semantic decisions, and real-world changes
-happen only through explicit tools.
+Daat Locus is a long-running local agent runtime.
 
 ## Quick Start
 
 The recommended install path is `cargo-binstall`, which installs the prebuilt
-GitHub Release binary for your platform. Normal installs do not need Python,
-`uv`, or PyInstaller.
+GitHub Release binary for your platform.
+
+For now daat-locus is only tested on Windows and MacOS, but Linux should work as well.
 
 ```bash
 cargo install cargo-binstall
 cargo binstall daat-locus
-```
 
-You can also download the matching archive directly from
-[GitHub Releases][releases-url], extract it, and place `daat-locus` on your
-`PATH`.
+# OR use cargo install directly, which builds from source and requires Bun
+cargo install
+
+daat-locus
+```
 
 On first launch, Daat Locus opens an interactive setup flow.
 
 ### Source Builds
 
-`cargo install daat-locus` is available from crates.io. Source builds require
-Bun because `build.rs` builds and embeds the WebUI.
+Source builds require Bun because `build.rs` builds and embeds the WebUI.
+
+Install Bun from <https://bun.sh/> and make sure it's in your `PATH` before building.
 
 ```bash
 git clone https://github.com/shadow3aaa/DaatLocus
 cd DaatLocus
-cargo run --locked
+cargo run
 ```
-
-`cargo build` and `cargo run` build the WebUI through `build.rs` and embed the
-generated assets into the daemon by default. For a release-style local binary,
-run `cargo build -p daat-locus --release --locked` directly.
-
-[releases-url]: https://github.com/shadow3aaa/DaatLocus/releases
 
 ## Common Entry Points
 
 ```bash
+daat-locus help                # show the help message
 daat-locus run                 # open the foreground runtime flow
 daat-locus code <project-dir>  # select or create a project-scoped session
 daat-locus attach              # attach to an existing daemon
