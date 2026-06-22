@@ -23,7 +23,7 @@ import {
   AlertTriangleIcon,
   CheckIcon,
   ChevronRightIcon,
-  ClipboardIcon,
+  CopyIcon,
   CommandIcon,
   CornerDownLeftIcon,
   GripVerticalIcon,
@@ -5729,7 +5729,6 @@ function AgentChatBlock({
         id={blockId}
         code={stringValue(record.code, "")}
         language={stringValue(record.language, "")}
-        limit={lineLimit}
       />
     );
   }
@@ -5956,13 +5955,12 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
                   id={`${markdownId}-code-${language || "plain"}`}
                   code={code}
                   language={language}
-                  limit={limit}
                 />
               );
             }
 
             return (
-              <pre className="max-w-full overflow-auto whitespace-pre-wrap rounded-md bg-muted/45 px-3 py-2 font-mono text-xs leading-5 text-foreground/90">
+              <pre className="min-w-0 max-w-full overflow-x-auto overflow-y-visible whitespace-pre rounded-3xl bg-muted/55 px-6 py-5 pb-8 font-mono text-xs leading-5 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-gutter:stable] [scrollbar-width:thin]">
                 {children}
               </pre>
             );
@@ -6183,22 +6181,16 @@ const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
   id,
   code,
   language,
-  limit,
 }: {
   id: string;
   code: string;
   language: string;
-  limit: number;
 }) {
   const [hasCopied, setHasCopied] = useState(false);
-  const lines = code.split(/\r?\n/);
-  const visibleLines = lines.slice(0, limit);
-  const hiddenLines = lines.slice(limit);
   const label = agentChatCodeLanguageLabel(language);
   const canCopy =
     typeof navigator !== "undefined" && Boolean(navigator.clipboard);
   const highlighted = useShikiHighlightedCode(code, language);
-  const visibleHighlightedLines = highlighted?.lines.slice(0, limit) ?? null;
 
   async function handleCopyCode() {
     if (!canCopy) {
@@ -6219,18 +6211,18 @@ const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
   }
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-1">
-      <div className="flex items-center justify-between gap-3 px-3">
-        <div className="flex min-w-0 items-center gap-2">
+    <div className="flex min-w-0 max-w-full flex-col gap-3 rounded-3xl bg-muted/55 px-6 py-5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <span
             aria-hidden="true"
-            className="inline-flex size-5 shrink-0 items-center justify-center text-muted-foreground"
+            className="inline-flex shrink-0 items-center justify-center text-foreground"
           >
-            <span className="font-mono text-[0.7rem] leading-none">
+            <span className="font-mono text-sm font-semibold leading-none">
               &lt;/&gt;
             </span>
           </span>
-          <span className="truncate text-sm font-semibold text-foreground/90">
+          <span className="truncate text-sm font-semibold text-foreground">
             {label}
           </span>
         </div>
@@ -6241,42 +6233,30 @@ const AgentChatCodeBlock = memo(function AgentChatCodeBlock({
             size="icon-sm"
             aria-label={`Copy ${label} code`}
             onClick={handleCopyCode}
-            className="rounded-full text-muted-foreground hover:text-foreground"
           >
             {hasCopied ? (
               <CheckIcon data-icon="inline-start" aria-hidden="true" />
             ) : (
-              <ClipboardIcon data-icon="inline-start" aria-hidden="true" />
+              <CopyIcon data-icon="inline-start" aria-hidden="true" />
             )}
           </Button>
         ) : null}
       </div>
-      <div className="relative">
+      <div className="min-w-0">
         <pre
-          className="max-h-72 min-w-0 max-w-full overflow-auto whitespace-pre px-3 font-mono text-[0.82rem] leading-6 text-foreground/90 [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-width:thin]"
+          className="min-w-0 max-w-full overflow-x-auto overflow-y-visible whitespace-pre pb-4 font-mono text-[0.82rem] leading-6 text-foreground [scrollbar-color:hsl(var(--muted-foreground)/0.35)_transparent] [scrollbar-gutter:stable] [scrollbar-width:thin]"
           data-code-block-id={id}
         >
-          {visibleHighlightedLines ? (
+          {highlighted ? (
             <AgentChatHighlightedCodeLines
-              lines={visibleHighlightedLines}
+              lines={highlighted.lines}
               lineKeyPrefix={`${id}-line`}
             />
           ) : (
-            visibleLines.join("\n")
+            code
           )}
         </pre>
-        {hiddenLines.length > 0 ? (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-background/95 to-transparent"
-          />
-        ) : null}
       </div>
-      {hiddenLines.length > 0 ? (
-        <p className="px-3 text-xs text-muted-foreground">
-          … +{hiddenLines.length} more line(s)
-        </p>
-      ) : null}
     </div>
   );
 });
