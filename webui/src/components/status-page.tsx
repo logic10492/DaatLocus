@@ -4727,7 +4727,6 @@ function AgentChatActivityCellView({
   if (render.kind === "thinking") {
     return (
       <AgentChatThinkingCollapsibleCell
-        id={bubbleId}
         title={render.title}
         bodyLines={render.bodyLines}
         fullBody={render.fullBody}
@@ -5183,20 +5182,18 @@ function AgentChatStatusLineCell({
 }
 
 function AgentChatThinkingCollapsibleCell({
-  id,
   title,
   bodyLines,
   fullBody,
   bodyLimit,
 }: {
-  id: string;
   title: string;
   bodyLines: string[];
   fullBody?: string | null;
   bodyLimit: number;
 }) {
   const { open, toggle } = useCollapsibleState(false);
-  const contentLines: string[] = fullBody ? fullBody.split("\n") : bodyLines;
+  const contentText = (fullBody ?? bodyLines.join("\n")).trimEnd();
   const isTruncatable = Boolean(fullBody) || bodyLines.length > bodyLimit;
 
   return (
@@ -5215,21 +5212,18 @@ function AgentChatThinkingCollapsibleCell({
           </CollapsibleTrigger>
         ) : null}
       </div>
-      {contentLines.length > 0 ? (
+      {contentText.trim() ? (
         <div
           className={cn(
             "relative min-w-0 max-w-full text-muted-foreground",
             !open && isTruncatable && "max-h-[4.5rem] overflow-hidden",
           )}
         >
-          {contentLines.map((line, index) => (
-            <p
-              key={`${id}-thinking-line-${index}`}
-              className="min-w-0 break-words"
-            >
-              <AgentChatMarkdownInline text={line} />
-            </p>
-          ))}
+          <AgentChatMarkdownText
+            text={contentText}
+            limit={AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT}
+            tone="muted"
+          />
           {!open && isTruncatable ? (
             <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-background to-transparent pointer-events-none" />
           ) : null}
@@ -5585,6 +5579,7 @@ function AgentChatMessageActivityLine({
   const hiddenDetailCount = detailLines.length - visibleDetailLines.length;
   const visibleMessageLines = messageLines.slice(0, messageLimit);
   const hiddenMessageCount = messageLines.length - visibleMessageLines.length;
+  const visibleMessageText = visibleMessageLines.join("\n").trimEnd();
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-1 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]">
@@ -5606,13 +5601,14 @@ function AgentChatMessageActivityLine({
           ) : null}
         </div>
       ) : null}
-      {visibleMessageLines.length > 0 || hiddenMessageCount > 0 ? (
+      {visibleMessageText || hiddenMessageCount > 0 ? (
         <div className="flex min-w-0 max-w-full flex-col gap-0.5 px-2 text-foreground/90 sm:px-3">
-          {visibleMessageLines.map((line, index) => (
-            <p key={`${id}-message-${index}`} className="min-w-0 break-words">
-              <AgentChatMarkdownInline text={line} />
-            </p>
-          ))}
+          {visibleMessageText ? (
+            <AgentChatMarkdownText
+              text={visibleMessageText}
+              limit={AGENT_CHAT_FULL_MESSAGE_LINE_LIMIT}
+            />
+          ) : null}
           {hiddenMessageCount > 0 ? (
             <p className="text-xs text-muted-foreground">
               … {hiddenMessageCount} more line(s)
@@ -5880,7 +5876,7 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
 }: {
   text: string;
   limit: number;
-  tone?: "default" | "error";
+  tone?: "default" | "error" | "muted";
 }) {
   const limitedText = limitMarkdownInput(text, limit);
   const markdownId = useId();
@@ -5894,6 +5890,7 @@ const AgentChatMarkdownText = memo(function AgentChatMarkdownText({
       className={cn(
         "flex min-w-0 max-w-full flex-col gap-2 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]",
         tone === "error" && "text-destructive",
+        tone === "muted" && "text-muted-foreground",
       )}
     >
       <ReactMarkdown
