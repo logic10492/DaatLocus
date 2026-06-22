@@ -130,6 +130,8 @@ mod tests {
         assert!(help.contains("Start the foreground runtime flow"));
         assert!(help.contains("code"));
         assert!(help.contains("Open a coding session tied to a project directory"));
+        assert!(help.contains("ls"));
+        assert!(help.contains("List sessions known to the daemon"));
         assert!(help.contains("WebUI"));
         assert!(help.contains("http://localhost:"));
         assert!(help.contains("\x1b[38;5;87m"));
@@ -189,10 +191,16 @@ enum DaatLocusCommand {
         /// Project directory path.
         project_dir: PathBuf,
     },
+    /// List sessions known to the daemon.
+    #[command(name = "ls", visible_alias = "list")]
+    Ls,
     /// Attach to an already-running daemon.
     Attach,
     /// Send a one-shot message to the running agent and wait for its reply.
     Send {
+        /// Match the target session by session id prefix; defaults to the general CLI session.
+        #[arg(short = 's', long = "session", value_name = "SESSION_ID_PREFIX")]
+        session: Option<String>,
         /// Print the raw final reply instead of terminal-rendered Markdown.
         #[arg(long)]
         raw: bool,
@@ -440,8 +448,17 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
             run_session_selector(client, None).await?;
             return Ok(());
         }
-        Some(DaatLocusCommand::Send { raw, json, prompt }) => {
-            run_send_command(prompt, *raw, *json).await?;
+        Some(DaatLocusCommand::Ls) => {
+            run_list_sessions_command().await?;
+            return Ok(());
+        }
+        Some(DaatLocusCommand::Send {
+            session,
+            raw,
+            json,
+            prompt,
+        }) => {
+            run_send_command(prompt, session.as_deref(), *raw, *json).await?;
             return Ok(());
         }
         _ => {}
@@ -573,10 +590,19 @@ async fn run_code_command(project_dir: PathBuf) -> Result<()> {
     run_session_selector(client, Some(project_dir_abs)).await
 }
 
-async fn run_send_command(prompt: &[String], raw: bool, json: bool) -> Result<()> {
+async fn run_send_command(
+    prompt: &[String],
+    session_prefix: Option<&str>,
+    raw: bool,
+    json: bool,
+) -> Result<()> {
     let message = read_send_message(prompt)?;
     let client = connect_or_start_daemon().await?;
-    let client = default_general_session_client(client).await?;
+    let client = if let Some(session_prefix) = session_prefix {
+        session_prefix_client(client, session_prefix).await?
+    } else {
+        default_general_session_client(client).await?
+    };
     let response = client.send_message(&message).await?;
 
     if json {
@@ -608,6 +634,94 @@ async fn default_general_session_client(client: DaemonClient) -> Result<DaemonCl
 
     let session = client.create_session(None, Some("CLI Send")).await?;
     Ok(client.with_session(session.session_id.as_str().to_string()))
+}
+
+async fn session_prefix_client(client: DaemonClient, prefix: &str) -> Result<DaemonClient> {
+    let sessions = client.list_sessions().await?;
+    let session_id = resolve_session_id_prefix(&sessions, prefix)?;
+    Ok(client.with_session(session_id))
+}
+
+fn resolve_session_id_prefix(
+    sessions: &[crate::daemon::session::SessionSummary],
+    prefix: &str,
+) -> Result<String> {
+    let prefix = prefix.trim();
+    if prefix.is_empty() {
+        return Err(miette!("session prefix cannot be empty"));
+    }
+
+    let mut matches = sessions
+        .iter()
+        .filter(|session| session.session_id.as_str().starts_with(prefix))
+        .collect::<Vec<_>>();
+
+    match matches.len() {
+        0 => Err(miette!(
+            "no session id starts with '{prefix}'; run `daat-locus ls` to list sessions"
+        )),
+        1 => Ok(matches[0].session_id.as_str().to_string()),
+        _ => {
+            matches.sort_by_key(|session| session.session_id.as_str().to_string());
+            let candidates = matches
+                .iter()
+                .map(|session| format!("  {}  {}", session.session_id, session_title(session)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(miette!(
+                "session prefix '{prefix}' is ambiguous:\n{candidates}\nUse a longer prefix from `daat-locus ls`."
+            ))
+        }
+    }
+}
+
+async fn run_list_sessions_command() -> Result<()> {
+    let client = connect_or_start_daemon().await?;
+    let mut sessions = client.list_sessions().await?;
+    sort_selector_sessions(&mut sessions);
+    print!("{}", session_list_text(&sessions));
+    Ok(())
+}
+
+fn session_list_text(sessions: &[crate::daemon::session::SessionSummary]) -> String {
+    if sessions.is_empty() {
+        return "No sessions.\n".to_string();
+    }
+
+    let mut output = String::from(format!(
+        "{:<36}  {:<7}  {:<24}  {}\n",
+        "SESSION ID", "SCOPE", "TITLE", "PROJECT"
+    ));
+    for session in sessions {
+        output.push_str(&format!(
+            "{:<36}  {:<7}  {:<24}  {}\n",
+            session.session_id,
+            session_scope_label(&session.scope),
+            session_title_for_table(session),
+            session_project_for_table(session)
+        ));
+    }
+    output
+}
+
+fn session_scope_label(scope: &crate::daemon::session::SessionScope) -> &'static str {
+    match scope {
+        crate::daemon::session::SessionScope::General => "general",
+        crate::daemon::session::SessionScope::Project { .. } => "project",
+    }
+}
+
+fn session_title_for_table(session: &crate::daemon::session::SessionSummary) -> String {
+    session_title(session).replace('\r', " ").replace('\n', " ")
+}
+
+fn session_project_for_table(session: &crate::daemon::session::SessionSummary) -> String {
+    match &session.scope {
+        crate::daemon::session::SessionScope::General => "-".to_string(),
+        crate::daemon::session::SessionScope::Project { project_dir } => {
+            project_dir.display().to_string()
+        }
+    }
 }
 
 fn read_send_message(prompt: &[String]) -> Result<String> {
@@ -1494,6 +1608,58 @@ mod session_selector_tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn session_prefix_resolution_requires_unique_match() {
+        let sessions = vec![
+            summary("abcdef01-general", SessionScope::General, "First"),
+            summary("abcdef02-general", SessionScope::General, "Second"),
+            summary("12345678-general", SessionScope::General, "Third"),
+        ];
+
+        assert_eq!(
+            resolve_session_id_prefix(&sessions, "1234").expect("unique match"),
+            "12345678-general"
+        );
+        assert!(
+            resolve_session_id_prefix(&sessions, "abcdef")
+                .expect_err("ambiguous prefix")
+                .to_string()
+                .contains("ambiguous")
+        );
+        assert!(
+            resolve_session_id_prefix(&sessions, "missing")
+                .expect_err("missing prefix")
+                .to_string()
+                .contains("no session id starts")
+        );
+    }
+
+    #[test]
+    fn session_list_text_includes_ids_scopes_titles_and_projects() {
+        let project = PathBuf::from("/tmp/project-a");
+        let sessions = vec![
+            summary("general-session", SessionScope::General, "General"),
+            summary(
+                "project-session",
+                SessionScope::Project {
+                    project_dir: project.clone(),
+                },
+                "Project A",
+            ),
+        ];
+
+        let output = session_list_text(&sessions);
+
+        assert!(output.contains("SESSION ID"));
+        assert!(output.contains("general-session"));
+        assert!(output.contains("general"));
+        assert!(output.contains("General"));
+        assert!(output.contains("project-session"));
+        assert!(output.contains("project"));
+        assert!(output.contains("Project A"));
+        assert!(output.contains(project.to_string_lossy().as_ref()));
     }
 
     fn summary(id: &str, scope: SessionScope, title: &str) -> SessionSummary {
