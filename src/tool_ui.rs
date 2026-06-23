@@ -256,7 +256,7 @@ pub struct ReplyUiData {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanUiData {
-    #[serde(default)]
+    #[serde(default, rename = "plan_kind", alias = "kind")]
     pub kind: PlanUiKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
@@ -496,4 +496,75 @@ pub fn compact_body_lines(text: &str, max_lines: usize) -> Vec<String> {
         .take(max_lines)
         .map(ToString::to_string)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn sample_plan() -> PlanUiData {
+        PlanUiData {
+            kind: PlanUiKind::Proposed,
+            explanation: Some("check the route".to_string()),
+            steps: vec![PlanStepUiData {
+                status: PlanStepUiStatus::InProgress,
+                text: "inspect code".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn tool_ui_plan_uses_distinct_wire_field_for_plan_kind() {
+        let event = ToolUiEvent::Plan(sample_plan());
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value = serde_json::to_value(event).unwrap();
+
+        assert_eq!(encoded.matches("\"kind\"").count(), 1);
+        assert!(encoded.contains("\"plan_kind\""));
+        assert_eq!(value["kind"], json!("Plan"));
+        assert_eq!(value["plan_kind"], json!("proposed"));
+
+        let decoded: ToolUiEvent = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            decoded,
+            ToolUiEvent::Plan(PlanUiData {
+                kind: PlanUiKind::Proposed,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn tool_call_ui_plan_uses_distinct_wire_field_for_plan_kind() {
+        let event = ToolCallUiEvent::Plan(sample_plan());
+        let encoded = serde_json::to_string(&event).unwrap();
+        let value = serde_json::to_value(event).unwrap();
+
+        assert_eq!(encoded.matches("\"kind\"").count(), 1);
+        assert!(encoded.contains("\"plan_kind\""));
+        assert_eq!(value["kind"], json!("Plan"));
+        assert_eq!(value["plan_kind"], json!("proposed"));
+
+        let decoded: ToolCallUiEvent = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            decoded,
+            ToolCallUiEvent::Plan(PlanUiData {
+                kind: PlanUiKind::Proposed,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn plan_ui_data_accepts_legacy_standalone_kind_field() {
+        let decoded: PlanUiData = serde_json::from_value(json!({
+            "kind": "proposed",
+            "steps": []
+        }))
+        .unwrap();
+
+        assert_eq!(decoded.kind, PlanUiKind::Proposed);
+    }
 }
