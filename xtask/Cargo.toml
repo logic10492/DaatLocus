@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
+clap = { version = "4.5.38", features = ["derive"] }
+ico = "0.5.0"
+resvg = { version = "0.47.0", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 tar = "0.4"
 toml = "1.0.6"

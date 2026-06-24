@@ -1,0 +1,19 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle
+    Name="{{product_name}} Setup"
+    Manufacturer="{{manufacturer}}"
+    Version="{{version}}"
+    UpgradeCode="{{bundle_upgrade_code}}"
+    IconSourceFile="{{icon_path}}">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="none" />
+    </BootstrapperApplication>
+
+    <Chain>
+      <MsiPackage
+        SourceFile="{{msi_path}}"
+        Compressed="yes"
+        bal:DisplayInternalUICondition="1" />
+    </Chain>
+  </Bundle>
+</Wix>

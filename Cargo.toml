@@ -19,6 +19,7 @@ include = [
     "/assets/preview-tui.png",
     "/assets/preview-webui.png",
     "/assets/icon.png",
+    "/assets/icon.svg",
     "/assets/models-dev-api.json",
     "/build.rs",
     "/docs/**",
