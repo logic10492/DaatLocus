@@ -13,7 +13,7 @@ use crate::{
     daemon_tray::{DaemonTrayHandle, DaemonTrayStartup},
     dashboard::{
         DashboardControlCommand, DashboardRuntimeActivity, DashboardRuntimeActivityStatus,
-        DashboardRuntimeStatusLevel, DashboardState, dashboard_agent_name, sync_web_activity_state,
+        DashboardRuntimeStatusLevel, DashboardState, dashboard_agent_name,
     },
     events::{EventStatus, TelegramIncomingEvent},
     runtime::bootstrap::{bootstrap_telegram_transport_state_from_acl, emit_startup_progress},
@@ -708,7 +708,7 @@ async fn hydrate_session_tokens(
 }
 
 fn manager_dashboard_state(telegram_acl: &TelegramAclHandle) -> DashboardState {
-    let mut state = DashboardState {
+    let state = DashboardState {
         agent_name: dashboard_agent_name(),
         status_output:
             "Manager daemon is running.\nSelect or create a session to view runtime state."
@@ -727,7 +727,6 @@ fn manager_dashboard_state(telegram_acl: &TelegramAclHandle) -> DashboardState {
                 .to_string(),
         ..DashboardState::default()
     };
-    sync_web_activity_state(&mut state);
     state
 }
 

@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     daat_locus_paths::{DaatLocusPaths, daat_locus_paths},
-    dashboard::{
-        ActivityCell, WebActivityActor, WebActivityItem, WebActivityKind,
-        default_web_activity_version, web_activity_item_from_cell,
-    },
+    dashboard::SessionActivityEvent,
 };
 
 const DASHBOARD_ACTIVITY_HISTORY_DB_FILE: &str = "dashboard_activity.sqlite3";
@@ -27,14 +24,14 @@ pub struct DashboardActivityHistoryStore {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct DashboardActivityHistoryWindow {
-    pub items: Vec<WebActivityItem>,
+    pub items: Vec<DashboardActivityHistoryItem>,
     pub oldest_cursor: Option<i64>,
     pub newest_cursor: Option<i64>,
     pub has_more_before: bool,
 }
 
 impl DashboardActivityHistoryWindow {
-    pub fn merge_new_items(&mut self, incoming: Vec<WebActivityItem>) {
+    pub fn merge_new_items(&mut self, incoming: Vec<DashboardActivityHistoryItem>) {
         if incoming.is_empty() {
             return;
         }
@@ -62,11 +59,31 @@ pub struct DashboardActivityHistoryCount {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DashboardActivityHistoryPage {
-    pub items: Vec<WebActivityItem>,
+    pub items: Vec<DashboardActivityHistoryItem>,
     pub oldest_cursor: Option<i64>,
     pub newest_cursor: Option<i64>,
     pub has_more_before: bool,
     pub has_more_after: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DashboardActivityHistoryItem {
+    pub id: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub event: SessionActivityEvent,
+}
+
+impl DashboardActivityHistoryItem {
+    pub fn from_event_with_id(event: &SessionActivityEvent, id: &str) -> Self {
+        let now = chrono::Utc::now().timestamp_millis();
+        Self {
+            id: id.to_string(),
+            created_at: now,
+            updated_at: now,
+            event: event.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,7 +131,7 @@ impl DashboardActivityHistoryStore {
         }
     }
 
-    pub fn append_items(&self, items: &[WebActivityItem]) -> Result<()> {
+    pub fn append_items(&self, items: &[DashboardActivityHistoryItem]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
@@ -215,7 +232,7 @@ impl DashboardActivityHistoryStore {
         let rows = statement
             .query_map([], |row| {
                 let item_json: String = row.get(0)?;
-                Ok(serde_json::from_str::<WebActivityItem>(&item_json).ok())
+                Ok(serde_json::from_str::<DashboardActivityHistoryItem>(&item_json).ok())
             })
             .into_diagnostic()
             .wrap_err("query dashboard activity history count failed")?;
@@ -259,7 +276,8 @@ impl DashboardActivityHistoryStore {
                 .get(0)
                 .into_diagnostic()
                 .wrap_err("read dashboard input history item json failed")?;
-            let Some(item) = serde_json::from_str::<WebActivityItem>(&item_json).ok() else {
+            let Some(item) = serde_json::from_str::<DashboardActivityHistoryItem>(&item_json).ok()
+            else {
                 continue;
             };
             let Some(text) = history_item_user_input_text(&item) else {
@@ -310,7 +328,7 @@ impl DashboardActivityHistoryStore {
         Ok(())
     }
 
-    fn try_append_items(&self, items: &[WebActivityItem]) -> Result<()> {
+    fn try_append_items(&self, items: &[DashboardActivityHistoryItem]) -> Result<()> {
         let _guard = self
             .write_lock
             .lock()
@@ -379,7 +397,7 @@ impl DashboardActivityHistoryStore {
 
     fn page_from_rows(
         &self,
-        rows: Vec<(i64, WebActivityItem)>,
+        rows: Vec<(i64, DashboardActivityHistoryItem)>,
     ) -> Result<DashboardActivityHistoryPage> {
         let oldest_cursor = rows.first().map(|(seq, _)| *seq);
         let newest_cursor = rows.last().map(|(seq, _)| *seq);
@@ -439,75 +457,32 @@ fn clamp_history_limit(limit: usize) -> usize {
     limit.clamp(1, DASHBOARD_ACTIVITY_HISTORY_LIMIT_MAX)
 }
 
-fn history_item_is_user_input(item: &WebActivityItem) -> bool {
-    item.kind == WebActivityKind::Message
-        && matches!(
-            item.actor,
-            Some(WebActivityActor::User | WebActivityActor::Telegram)
-        )
-        && !matches!(
-            item.cell,
-            Some(
-                ActivityCell::Assistant(_)
-                    | ActivityCell::Reply(_)
-                    | ActivityCell::Thinking(_)
-                    | ActivityCell::FinalMessageSeparator(_)
-            )
-        )
-        && item.ui_hint.as_deref() != Some("final-message-separator")
+fn history_item_is_user_input(item: &DashboardActivityHistoryItem) -> bool {
+    matches!(item.event, SessionActivityEvent::User(_))
 }
 
-fn history_item_user_input_text(item: &WebActivityItem) -> Option<String> {
-    if item.kind != WebActivityKind::Message
-        || !matches!(item.actor.as_ref(), Some(WebActivityActor::User))
-    {
-        return None;
-    }
-    let Some(ActivityCell::User(cell)) = item.cell.as_ref() else {
+fn history_item_user_input_text(item: &DashboardActivityHistoryItem) -> Option<String> {
+    let SessionActivityEvent::User(cell) = &item.event else {
         return None;
     };
-    let text = cell
-        .full_body
-        .clone()
-        .unwrap_or_else(|| {
-            std::iter::once(cell.title.as_str())
-                .chain(cell.body_lines.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .trim()
-        .to_string();
+    let text = cell.content.trim().to_string();
     (!text.is_empty()).then_some(text)
 }
 
-fn decode_history_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, WebActivityItem)> {
+fn decode_history_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(i64, DashboardActivityHistoryItem)> {
     let seq: i64 = row.get(0)?;
     let item_json: String = row.get(1)?;
-    let item = serde_json::from_str::<WebActivityItem>(&item_json).unwrap_or_else(|err| {
-        tracing::warn!("decode dashboard activity item {seq} failed: {err}");
-        WebActivityItem {
-            web_activity_version: default_web_activity_version(),
-            id: format!("history-{seq}"),
-            kind: crate::dashboard::cells::WebActivityKind::Unknown,
-            status: crate::dashboard::cells::WebActivityStatus::Unknown,
-            ui_hint: None,
-            title: "Activity".to_string(),
-            actor: None,
-            created_at: 0,
-            updated_at: 0,
-            source: None,
-            tool: None,
-            blocks: Vec::new(),
-            detail_blocks: Vec::new(),
-            error: None,
-            metadata: None,
-            cell: None,
-        }
-    });
+    let item = serde_json::from_str::<DashboardActivityHistoryItem>(&item_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))
+    })?;
     Ok((seq, item))
 }
 
-fn load_all_history_items(transaction: &rusqlite::Transaction<'_>) -> Result<Vec<WebActivityItem>> {
+fn load_all_history_items(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<Vec<DashboardActivityHistoryItem>> {
     let mut statement = transaction
         .prepare("SELECT item_json FROM dashboard_activity ORDER BY seq ASC")
         .into_diagnostic()
@@ -515,7 +490,7 @@ fn load_all_history_items(transaction: &rusqlite::Transaction<'_>) -> Result<Vec
     let rows = statement
         .query_map([], |row| {
             let item_json: String = row.get(0)?;
-            Ok(serde_json::from_str::<WebActivityItem>(&item_json).ok())
+            Ok(serde_json::from_str::<DashboardActivityHistoryItem>(&item_json).ok())
         })
         .into_diagnostic()
         .wrap_err("query dashboard activity history scan failed")?;
@@ -526,7 +501,10 @@ fn load_all_history_items(transaction: &rusqlite::Transaction<'_>) -> Result<Vec
         .map(|items| items.into_iter().flatten().collect())
 }
 
-fn normalize_window_explored_item(item: &mut WebActivityItem, existing_items: &[WebActivityItem]) {
+fn normalize_window_explored_item(
+    item: &mut DashboardActivityHistoryItem,
+    existing_items: &[DashboardActivityHistoryItem],
+) {
     let Some(group_stable_id) = explored_stable_id(item).map(str::to_owned) else {
         return;
     };
@@ -536,14 +514,13 @@ fn normalize_window_explored_item(item: &mut WebActivityItem, existing_items: &[
     }) {
         item.id = active_group_item.id.clone();
         if let (
-            Some(ActivityCell::Explored(active_group)),
-            Some(ActivityCell::Explored(incoming_group)),
-        ) = (active_group_item.cell.as_ref(), item.cell.as_mut())
+            SessionActivityEvent::Explored(active_group),
+            SessionActivityEvent::Explored(incoming_group),
+        ) = (&active_group_item.event, &mut item.event)
         {
             let mut calls = active_group.calls.clone();
             calls.extend(incoming_group.calls.clone());
             incoming_group.calls = calls;
-            refresh_web_activity_item_from_cell(item);
         }
         return;
     }
@@ -565,29 +542,9 @@ fn normalize_window_explored_item(item: &mut WebActivityItem, existing_items: &[
     item.id = format!("{}-segment-{segment}", item.id);
 }
 
-fn refresh_web_activity_item_from_cell(item: &mut WebActivityItem) {
-    let Some(cell) = item.cell.clone() else {
-        return;
-    };
-    let id = item.id.clone();
-    let status = item.status.clone();
-    let created_at = item.created_at;
-    let updated_at = item.updated_at;
-    let source = item.source.clone();
-    let metadata = item.metadata.clone();
-
-    let mut refreshed = web_activity_item_from_cell(&cell, &id, false);
-    refreshed.status = status;
-    refreshed.created_at = created_at;
-    refreshed.updated_at = updated_at;
-    refreshed.source = source;
-    refreshed.metadata = metadata;
-    *item = refreshed;
-}
-
-fn explored_stable_id(item: &WebActivityItem) -> Option<&str> {
-    match item.cell.as_ref()? {
-        crate::dashboard::ActivityCell::Explored(group) => Some(group.stable_id.as_str()),
+fn explored_stable_id(item: &DashboardActivityHistoryItem) -> Option<&str> {
+    match &item.event {
+        SessionActivityEvent::Explored(group) => Some(group.stable_id.as_str()),
         _ => None,
     }
 }
@@ -598,8 +555,10 @@ fn explored_segment(item_id: &str) -> Option<usize> {
         .and_then(|(_, segment)| segment.parse::<usize>().ok())
 }
 
-fn dedupe_activity_items_keep_latest(items: Vec<WebActivityItem>) -> Vec<WebActivityItem> {
-    let mut deduped: Vec<WebActivityItem> = Vec::new();
+fn dedupe_activity_items_keep_latest(
+    items: Vec<DashboardActivityHistoryItem>,
+) -> Vec<DashboardActivityHistoryItem> {
+    let mut deduped: Vec<DashboardActivityHistoryItem> = Vec::new();
     for item in items {
         if let Some(existing) = deduped.iter_mut().find(|existing| existing.id == item.id) {
             *existing = item;
@@ -613,53 +572,43 @@ fn dedupe_activity_items_keep_latest(items: Vec<WebActivityItem>) -> Vec<WebActi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dashboard::cells::{ActivityCell, WebActivityKind, WebActivityStatus};
+    use crate::activity_event::{ExploredActivityDescriptor, ExploredCallActivityDescriptor};
+    use crate::dashboard::cells::SessionActivityEvent;
     use crate::reasoning::runtime::HistoryMessage;
-    use crate::tool_ui::{ExploredCallUiData, ExploredUiData};
 
-    fn activity_item(id: &str, cell: Option<ActivityCell>) -> WebActivityItem {
-        WebActivityItem {
-            web_activity_version: default_web_activity_version(),
-            id: id.to_string(),
-            kind: WebActivityKind::Unknown,
-            status: WebActivityStatus::Completed,
-            ui_hint: None,
-            title: "Activity".to_string(),
-            actor: None,
-            created_at: 0,
-            updated_at: 0,
-            source: None,
-            tool: None,
-            blocks: Vec::new(),
-            detail_blocks: Vec::new(),
-            error: None,
-            metadata: None,
-            cell,
-        }
+    fn activity_item(id: &str, cell: SessionActivityEvent) -> DashboardActivityHistoryItem {
+        DashboardActivityHistoryItem::from_event_with_id(&cell, id)
     }
 
-    fn user_input_item(id: &str, text: &str) -> WebActivityItem {
+    fn non_user_item(id: &str) -> DashboardActivityHistoryItem {
+        activity_item(
+            id,
+            crate::dashboard::assistant_activity_cell("non-user").expect("assistant activity cell"),
+        )
+    }
+
+    fn user_input_item(id: &str, text: &str) -> DashboardActivityHistoryItem {
         let cell = crate::dashboard::render_activity_from_messages(vec![HistoryMessage::user(
             text.to_string(),
         )])
         .into_iter()
         .next()
         .expect("user activity cell");
-        web_activity_item_from_cell(&cell, id, false)
+        activity_item(id, cell)
     }
 
-    fn explored_group(stable_id: &str, summary: &str) -> ActivityCell {
+    fn explored_group(stable_id: &str, summary: &str) -> SessionActivityEvent {
         explored_group_with_summaries(stable_id, &[summary])
     }
 
-    fn explored_group_with_summaries(stable_id: &str, summaries: &[&str]) -> ActivityCell {
-        ActivityCell::Explored(
-            ExploredUiData {
+    fn explored_group_with_summaries(stable_id: &str, summaries: &[&str]) -> SessionActivityEvent {
+        SessionActivityEvent::Explored(
+            ExploredActivityDescriptor {
                 stable_id: stable_id.to_string(),
                 title: "Explored".to_string(),
                 calls: summaries
                     .iter()
-                    .map(|summary| ExploredCallUiData {
+                    .map(|summary| ExploredCallActivityDescriptor {
                         tool_name: "grep".to_string(),
                         action: None,
                         target: None,
@@ -681,7 +630,7 @@ mod tests {
                 .expect("history store");
         let items = vec![
             user_input_item("user-1", "first"),
-            activity_item("non-user", None),
+            non_user_item("non-user"),
             user_input_item("user-2", "second"),
             user_input_item("user-2-duplicate", "second"),
             user_input_item("user-3", "third"),
@@ -700,16 +649,16 @@ mod tests {
         let mut window = DashboardActivityHistoryWindow::default();
         window.merge_new_items(vec![activity_item(
             "activity-explored",
-            Some(explored_group("explored", "first")),
+            explored_group("explored", "first"),
         )]);
         window.merge_new_items(vec![activity_item(
             "activity-explored",
-            Some(explored_group("explored", "second")),
+            explored_group("explored", "second"),
         )]);
 
         assert_eq!(window.items.len(), 1);
         assert_eq!(window.items[0].id, "activity-explored");
-        let ActivityCell::Explored(group) = window.items[0].cell.as_ref().unwrap() else {
+        let SessionActivityEvent::Explored(group) = &window.items[0].event else {
             panic!("expected explored group");
         };
         assert_eq!(
@@ -721,10 +670,10 @@ mod tests {
             vec!["first", "second"]
         );
 
-        window.merge_new_items(vec![activity_item("activity-boundary", None)]);
+        window.merge_new_items(vec![non_user_item("activity-boundary")]);
         window.merge_new_items(vec![activity_item(
             "activity-explored",
-            Some(explored_group("explored", "third")),
+            explored_group("explored", "third"),
         )]);
 
         assert_eq!(window.items.len(), 3);
@@ -734,36 +683,27 @@ mod tests {
     }
 
     #[test]
-    fn explored_active_segment_appends_calls_and_refreshes_preview() {
+    fn explored_active_segment_appends_calls() {
         let stable_id = "explored";
         let item_id = "activity-explored";
         let mut window = DashboardActivityHistoryWindow::default();
-        window.merge_new_items(vec![web_activity_item_from_cell(
-            &explored_group(stable_id, "first"),
+        window.merge_new_items(vec![activity_item(
             item_id,
-            false,
+            explored_group(stable_id, "first"),
         )]);
-        window.merge_new_items(vec![web_activity_item_from_cell(
-            &explored_group(stable_id, "second"),
+        window.merge_new_items(vec![activity_item(
             item_id,
-            false,
+            explored_group(stable_id, "second"),
         )]);
 
         assert_eq!(window.items.len(), 1);
         assert_eq!(window.items[0].id, item_id);
-        let ActivityCell::Explored(group) = window.items[0].cell.as_ref().unwrap() else {
+        let SessionActivityEvent::Explored(group) = &window.items[0].event else {
             panic!("expected explored group");
         };
         assert_eq!(group.calls.len(), 2);
         assert_eq!(group.calls[0].summary, "first");
         assert_eq!(group.calls[1].summary, "second");
-        assert_eq!(
-            window.items[0]
-                .tool
-                .as_ref()
-                .and_then(|tool| tool.input_preview.as_deref()),
-            Some("2 call(s)")
-        );
     }
 
     #[test]
@@ -780,30 +720,21 @@ mod tests {
         let second_refs = second_batch.iter().map(String::as_str).collect::<Vec<_>>();
         let mut window = DashboardActivityHistoryWindow::default();
 
-        window.merge_new_items(vec![web_activity_item_from_cell(
-            &explored_group_with_summaries(stable_id, &first_refs),
+        window.merge_new_items(vec![activity_item(
             item_id,
-            false,
+            explored_group_with_summaries(stable_id, &first_refs),
         )]);
-        window.merge_new_items(vec![web_activity_item_from_cell(
-            &explored_group_with_summaries(stable_id, &second_refs),
+        window.merge_new_items(vec![activity_item(
             item_id,
-            false,
+            explored_group_with_summaries(stable_id, &second_refs),
         )]);
 
         assert_eq!(window.items.len(), 1);
-        let ActivityCell::Explored(group) = window.items[0].cell.as_ref().unwrap() else {
+        let SessionActivityEvent::Explored(group) = &window.items[0].event else {
             panic!("expected explored group");
         };
         assert_eq!(group.calls.len(), 32);
         assert_eq!(group.calls[0].summary, "call-00");
         assert_eq!(group.calls[31].summary, "call-31");
-        assert_eq!(
-            window.items[0]
-                .tool
-                .as_ref()
-                .and_then(|tool| tool.input_preview.as_deref()),
-            Some("32 call(s)")
-        );
     }
 }

@@ -256,11 +256,13 @@ impl TelegramLiveDraftState {
 }
 
 fn is_sticky_workflow_status(status: &TelegramLiveStatus) -> bool {
-    status.icon == crate::tool_ui::glyph::WORKFLOW && status.text.starts_with("Workflow Active:")
+    status.icon == crate::activity_event::glyph::WORKFLOW
+        && status.text.starts_with("Workflow Active:")
 }
 
 fn is_workflow_created_status(status: &TelegramLiveStatus) -> bool {
-    status.icon == crate::tool_ui::glyph::WORKFLOW && status.text.starts_with("Workflow Created:")
+    status.icon == crate::activity_event::glyph::WORKFLOW
+        && status.text.starts_with("Workflow Created:")
 }
 
 fn render_statuses_markdown_v2(statuses: &[&TelegramLiveStatus]) -> String {
@@ -359,7 +361,7 @@ mod tests {
         assert_eq!(state.render_markdown_v2(), "Working\\.\\.\\.");
 
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::PLAN,
+            crate::activity_event::glyph::PLAN,
             "Plan Updated",
         )));
 
@@ -401,7 +403,7 @@ mod tests {
     fn live_draft_generation_started_preserves_last_status() {
         let mut state = TelegramLiveDraftState::working();
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::EXEC,
+            crate::activity_event::glyph::EXEC,
             "Command Ran",
         )));
         assert!(!state.apply(LiveProgressEvent::GenerationStarted));
@@ -418,7 +420,7 @@ mod tests {
             &mut state,
             &mut dirty,
             LiveProgressEvent::TelegramStatus(status(
-                crate::tool_ui::glyph::WORKFLOW,
+                crate::activity_event::glyph::WORKFLOW,
                 "Workflow Active: repo-analysis",
             )),
         );
@@ -441,7 +443,10 @@ mod tests {
         apply_live_progress_event(
             &mut state,
             &mut dirty,
-            LiveProgressEvent::TelegramStatus(status(crate::tool_ui::glyph::PLAN, "Plan Updated")),
+            LiveProgressEvent::TelegramStatus(status(
+                crate::activity_event::glyph::PLAN,
+                "Plan Updated",
+            )),
         );
         apply_live_progress_event(&mut state, &mut dirty, LiveProgressEvent::GenerationStarted);
 
@@ -459,7 +464,7 @@ mod tests {
         assert_eq!(state.render_markdown_v2(), "∷ Plan Updated");
 
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::EXEC,
+            crate::activity_event::glyph::EXEC,
             "Command Ran",
         )));
         assert_eq!(state.render_markdown_v2(), "∷ Plan Updated\n• Command Ran");
@@ -469,11 +474,11 @@ mod tests {
     fn live_draft_keeps_recent_statuses() {
         let mut state = TelegramLiveDraftState::working();
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::PLAN,
+            crate::activity_event::glyph::PLAN,
             "Plan Updated",
         )));
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::EXEC,
+            crate::activity_event::glyph::EXEC,
             "Command Ran",
         )));
 
@@ -485,7 +490,7 @@ mod tests {
         let mut state = TelegramLiveDraftState::working();
         for index in 1..=6 {
             state.apply(LiveProgressEvent::TelegramStatus(status(
-                crate::tool_ui::glyph::EXEC,
+                crate::activity_event::glyph::EXEC,
                 &format!("Step {index}"),
             )));
         }
@@ -500,12 +505,12 @@ mod tests {
     fn live_draft_keeps_workflow_active_sticky_above_four_recent_statuses() {
         let mut state = TelegramLiveDraftState::working();
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::WORKFLOW,
+            crate::activity_event::glyph::WORKFLOW,
             "Workflow Active: repo-analysis",
         )));
         for index in 1..=5 {
             state.apply(LiveProgressEvent::TelegramStatus(status(
-                crate::tool_ui::glyph::EXEC,
+                crate::activity_event::glyph::EXEC,
                 &format!("Step {index}"),
             )));
         }
@@ -520,15 +525,15 @@ mod tests {
     fn live_draft_consumes_created_workflow_when_workflow_becomes_active() {
         let mut state = TelegramLiveDraftState::working();
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::WORKFLOW,
+            crate::activity_event::glyph::WORKFLOW,
             "Workflow Created: repo-analysis",
         )));
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::PLAN,
+            crate::activity_event::glyph::PLAN,
             "Plan Updated",
         )));
         state.apply(LiveProgressEvent::TelegramStatus(status(
-            crate::tool_ui::glyph::WORKFLOW,
+            crate::activity_event::glyph::WORKFLOW,
             "Workflow Active: repo-analysis",
         )));
 

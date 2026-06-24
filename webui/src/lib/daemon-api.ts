@@ -162,163 +162,50 @@ export type DashboardPendingUserInput = {
   attachment_count: number;
 };
 
-export type WebActivityKind =
-  | "message"
-  | "tool"
-  | "app"
-  | "plan"
-  | "primitive"
-  | "memory"
-  | "patch"
-  | "error"
-  | "unknown"
-  | (string & {});
-
-export type WebActivityStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "dismissed"
-  | "unknown"
-  | (string & {});
-
-export type WebActivityActor =
-  | "user"
-  | "assistant"
-  | "telegram"
-  | "tool"
-  | "system"
-  | (string & {});
-
-export type WebActivitySource = {
-  source_type: string;
-  label?: string | null;
-};
-
-export type WebActivityTool = {
-  name: string;
-  app?: string | null;
-  input_preview?: string | null;
-  output_preview?: string | null;
-  output_ref?: string | null;
-  duration_ms?: number | null;
-  exit_code?: number | null;
-  affected_files?: string[];
-};
-
-export type WebActivityTextBlock = {
-  type: "text";
-  text: string;
-};
-
-export type WebActivityCodeBlock = {
-  type: "code";
-  code: string;
-  language?: string | null;
-};
-
-export type WebActivityKvBlock = {
-  type: "kv";
-  entries: Array<{
-    key: string;
-    value: string;
-  }>;
-};
-
-export type WebActivityListBlock = {
-  type: "list";
-  items: string[];
-};
-
-export type WebActivityDiffBlock = {
-  type: "diff";
-  files: Array<{
-    path: string;
-    operation: string;
-    added_lines: number;
-    removed_lines: number;
-    lines: Array<{
-      kind: "context" | "delete" | "add" | "hunk_break" | (string & {});
-      old_lineno?: number | null;
-      new_lineno?: number | null;
-      text: string;
-    }>;
-  }>;
-};
-
-export type WebActivityLinkBlock = {
-  type: "link";
-  label: string;
-  url: string;
-};
-
-export type WebActivityArtifactBlock = {
-  type: "artifact";
-  label: string;
-  uri?: string | null;
-  mime_type?: string | null;
-};
-
-export type WebActivityImageBlock = {
-  type: "image";
-  label: string;
-  uri: string;
-  mime_type?: string | null;
-};
-
-export type WebActivityImageAttachment = {
+export type ActivityImageAttachment = {
   label: string;
   uri: string;
   mime_type: string;
   description?: string | null;
 };
 
-export type WebActivityUnknownBlock = {
-  type: string;
-  [key: string]: unknown;
-};
-
-export type WebActivityBlock =
-  | WebActivityTextBlock
-  | WebActivityCodeBlock
-  | WebActivityKvBlock
-  | WebActivityListBlock
-  | WebActivityDiffBlock
-  | WebActivityLinkBlock
-  | WebActivityArtifactBlock
-  | WebActivityImageBlock
-  | WebActivityUnknownBlock;
-
-export type ActivityCellCommon = {
+export type SessionActivityCommon = {
   title: string;
   body_lines?: string[];
   full_body?: string | null;
 };
 
-export type ActivityCellUser = ActivityCellCommon & {
-  image_attachments?: WebActivityImageAttachment[];
+export type SessionActivityMessage = {
+  content: string;
 };
 
-export type ActivityCellBrowser = ActivityCellCommon & {
+export type SessionActivityFinalMessageSeparator = {
+  elapsed_seconds?: number | null;
+};
+
+export type SessionActivityUser = SessionActivityMessage & {
+  image_attachments?: ActivityImageAttachment[];
+};
+
+export type SessionActivityBrowser = SessionActivityCommon & {
   url?: string | null;
   line_count?: number | null;
   ref_count?: number | null;
 };
 
-export type ActivityCellWebSearch = {
+export type SessionActivityWebSearch = {
   action: "searching" | "searched" | (string & {});
   query: string;
   url?: string | null;
   body_lines?: string[];
 };
 
-export type ActivityCellCodingOpenProject = {
+export type SessionActivityCodingOpenProject = {
   project_root: string;
   detail_lines?: string[];
 };
 
-export type ActivityCellLiveExec = {
+export type SessionActivityLiveExec = {
   title: string;
   call_lines?: string[];
   meta?: string | null;
@@ -326,33 +213,33 @@ export type ActivityCellLiveExec = {
   started_at_ms?: number | null;
 };
 
-export type ActivityCellExecResult = {
+export type SessionActivityExecResult = {
   title: string;
   meta?: string | null;
   output_lines?: string[];
 };
 
-export type ActivityCellPatchDiffLine = {
+export type SessionActivityPatchDiffLine = {
   kind: "context" | "delete" | "add" | "hunk_break" | (string & {});
   old_lineno?: number | null;
   new_lineno?: number | null;
   text: string;
 };
 
-export type ActivityCellPatchFile = {
+export type SessionActivityPatchFile = {
   path: string;
   operation: "add" | "delete" | "update" | (string & {});
   added_lines: number;
   removed_lines: number;
-  diff_lines?: ActivityCellPatchDiffLine[];
+  diff_lines?: SessionActivityPatchDiffLine[];
 };
 
-export type ActivityCellPatch = {
+export type SessionActivityPatch = {
   summary_line: string;
-  files?: ActivityCellPatchFile[];
+  files?: SessionActivityPatchFile[];
 };
 
-export type ActivityCellCodingEdit = {
+export type SessionActivityCodingEdit = {
   stable_id: string;
   title: string;
   tool_name?: string | null;
@@ -363,107 +250,91 @@ export type ActivityCellCodingEdit = {
   removed_lines: number;
   propagation_count: number;
   impact_lines?: string[];
-  diff_files?: ActivityCellPatchFile[];
+  diff_files?: SessionActivityPatchFile[];
 };
 
-export type ActivityCellCodingReview = {
+export type SessionActivityCodingReview = {
   title: string;
   summary: string;
   review_pending: boolean;
 };
 
-export type ActivityCellTelegram = {
+export type SessionActivityTelegram = {
   title: string;
   detail_lines?: string[];
   message_lines?: string[];
 };
 
-export type ActivityCellReply = {
+export type SessionActivityReply = {
   disposition: "resolved" | "dismissed" | "failed" | (string & {});
   subject?: "message" | "notice" | (string & {});
   message_lines?: string[];
 };
 
-export type ActivityCellPlan = {
+export type SessionActivityPlan = {
   steps?: Array<{
     status: "Pending" | "InProgress" | "Completed" | (string & {});
     text: string;
   }>;
 };
 
-export type ActivityCellRuntimeStatus = {
+export type SessionActivityRuntimeStatus = {
   label: string;
   detail?: string | null;
   active_runtime_started_at_ms?: number | null;
   reduced_motion?: "Full" | "Reduced" | (string & {});
 };
 
-export type ActivityCellPrimitive = {
+export type SessionActivityThinking = {
+  content: string;
+};
+
+export type SessionActivityPrimitive = {
   primitive_id: string;
 };
 
-export type ActivityCellVariant =
-  | { Assistant: ActivityCellCommon }
-  | { User: ActivityCellUser }
-  | { Browser: ActivityCellBrowser }
-  | { LiveBrowser: ActivityCellBrowser }
-  | { WebSearch: ActivityCellWebSearch }
-  | { GenericApp: ActivityCellCommon }
-  | { ToolResult: ActivityCellCommon }
-  | { CodingOpenProject: ActivityCellCodingOpenProject }
-  | { PlanResult: ActivityCellPlan }
-  | { CreatePrimitiveSpecResult: ActivityCellPrimitive }
-  | { ActivatePrimitiveResult: ActivityCellPrimitive }
-  | { ExecResult: ActivityCellExecResult }
-  | { LiveExec: ActivityCellLiveExec }
-  | { CodingEdit: ActivityCellCodingEdit }
-  | { CodingReview: ActivityCellCodingReview }
-  | { Patch: ActivityCellPatch }
-  | { Telegram: ActivityCellTelegram }
-  | { Reply: ActivityCellReply }
-  | { TerminalWait: ActivityCellCommon }
-  | { Warning: ActivityCellCommon }
-  | { Error: ActivityCellCommon }
-  | { Thinking: ActivityCellCommon & { full_body?: string | null } }
-  | { RuntimeStatus: ActivityCellRuntimeStatus }
+export type SessionActivityEvent =
+  | { Assistant: SessionActivityMessage }
+  | { FinalMessageSeparator: SessionActivityFinalMessageSeparator }
+  | { User: SessionActivityUser }
+  | { Browser: SessionActivityBrowser }
+  | { LiveBrowser: SessionActivityBrowser }
+  | { WebSearch: SessionActivityWebSearch }
+  | { GenericApp: SessionActivityCommon }
+  | { CodingOpenProject: SessionActivityCodingOpenProject }
+  | { PlanResult: SessionActivityPlan }
+  | { CreatePrimitiveSpecResult: SessionActivityPrimitive }
+  | { ActivatePrimitiveResult: SessionActivityPrimitive }
+  | { ExecResult: SessionActivityExecResult }
+  | { LiveExec: SessionActivityLiveExec }
+  | { CodingEdit: SessionActivityCodingEdit }
+  | { CodingReview: SessionActivityCodingReview }
+  | { Patch: SessionActivityPatch }
+  | { Telegram: SessionActivityTelegram }
+  | { Reply: SessionActivityReply }
+  | { TerminalWait: SessionActivityCommon }
+  | { Warning: SessionActivityCommon }
+  | { Error: SessionActivityCommon }
+  | { Thinking: SessionActivityThinking }
+  | { RuntimeStatus: SessionActivityRuntimeStatus }
   | Record<string, unknown>;
 
-export type WebActivityItem = {
-  web_activity_version: number;
+export type DashboardActivityHistoryItem = {
   id: string;
-  kind: WebActivityKind;
-  status: WebActivityStatus;
-  ui_hint?: string | null;
-  title: string;
-  actor?: WebActivityActor | null;
   created_at: number;
   updated_at: number;
-  source?: WebActivitySource | null;
-  tool?: WebActivityTool | null;
-  blocks?: WebActivityBlock[];
-  detail_blocks?: WebActivityBlock[];
-  error?: {
-    message: string;
-    details?: string[];
-  } | null;
-  metadata?: unknown;
-  cell?: ActivityCellVariant | null;
-};
-
-export type LiveWebActivityItem = {
-  key: string;
-  item: WebActivityItem;
+  event: SessionActivityEvent;
 };
 
 export type DashboardActivityHistoryWindow = {
-  items: WebActivityItem[];
+  items: DashboardActivityHistoryItem[];
   oldest_cursor: number | null;
   newest_cursor: number | null;
   has_more_before: boolean;
 };
 
 export type DashboardActivityHistoryPage = {
-  items: WebActivityItem[];
+  items: DashboardActivityHistoryItem[];
   oldest_cursor: number | null;
   newest_cursor: number | null;
   has_more_before: boolean;
@@ -504,14 +375,11 @@ export type DashboardSnapshot = {
   skill_errors?: DashboardSkillError[];
   pending_access_requests: DashboardPendingAccessRequest[];
   pending_user_inputs?: DashboardPendingUserInput[];
-  activity_cells: unknown[];
-  live_activity_cells: Array<{
+  activity_events: SessionActivityEvent[];
+  live_activity_events: Array<{
     key: string;
-    cell: unknown;
+    event: SessionActivityEvent;
   }>;
-  web_activity_version?: number;
-  web_activity_items?: WebActivityItem[];
-  live_web_activity_items?: LiveWebActivityItem[];
   activity_history?: DashboardActivityHistoryWindow;
   last_cycle_elapsed_ms: number | null;
   runtime_status: string | null;

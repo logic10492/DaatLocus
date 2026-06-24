@@ -504,254 +504,133 @@ const MOCK_DASHBOARD_SNAPSHOT: DashboardSnapshot = {
       last_seen_at_ms: MOCK_ACTIVITY_STARTED_AT - 30_000,
     },
   ],
-  activity_cells: [],
-  live_activity_cells: [],
-  web_activity_version: 1,
-  web_activity_items: [
+  activity_events: [
     {
-      web_activity_version: 1,
-      id: "mock-user",
-      kind: "message",
-      status: "completed",
-      title: "Align the WebUI with the new TUI direction.",
-      actor: "user",
-      created_at: MOCK_ACTIVITY_STARTED_AT,
-      updated_at: MOCK_ACTIVITY_STARTED_AT,
-      blocks: [],
-      cell: {
-        User: {
-          title: "Align the WebUI with the new TUI direction.",
-          body_lines: [],
-          full_body:
-            "Align the WebUI with the new TUI direction.\nUse shadcn components where the web has a native control.",
-        },
+      User: {
+        title: "Align the WebUI with the new TUI direction.",
+        body_lines: [],
+        full_body:
+          "Align the WebUI with the new TUI direction.\nUse shadcn components where the web has a native control.",
       },
     },
     {
-      web_activity_version: 1,
-      id: "mock-plan",
-      kind: "plan",
-      status: "completed",
-      title: "Updated Plan",
-      actor: "system",
-      created_at: MOCK_ACTIVITY_STARTED_AT + 1_000,
-      updated_at: MOCK_ACTIVITY_STARTED_AT + 1_000,
-      blocks: [],
-      cell: {
-        PlanResult: {
-          steps: [
-            { status: "Completed", text: "Read current WebUI and TUI data flow" },
-            { status: "InProgress", text: "Reshape Agent page into activity workbench" },
-            { status: "Pending", text: "Verify responsive desktop and mobile layouts" },
-          ],
-        },
+      PlanResult: {
+        steps: [
+          { status: "Completed", text: "Read current WebUI and TUI data flow" },
+          { status: "InProgress", text: "Reshape Agent page into activity workbench" },
+          { status: "Pending", text: "Verify responsive desktop and mobile layouts" },
+        ],
       },
     },
     {
-      web_activity_version: 1,
-      id: "mock-explored",
-      kind: "tool",
-      status: "completed",
-      title: "Explored",
-      actor: "tool",
-      created_at: MOCK_ACTIVITY_STARTED_AT + 1_500,
-      updated_at: MOCK_ACTIVITY_STARTED_AT + 1_800,
-      tool: {
-        name: "explored",
-        app: "Coding",
-        duration_ms: null,
-        exit_code: null,
-      },
-      blocks: [],
-      cell: {
-        Explored: {
-          stable_id: "mock-explored",
-          title: "Explored",
-          calls: [
-            {
-              tool_name: "Read",
-              action: "read",
-              target: "webui/src/components/status-page.tsx",
-              secondary_target: null,
-              summary: "webui/src/components/status-page.tsx",
-              detail_lines: [],
-              detail_title: null,
-            },
-            {
-              tool_name: "Read",
-              action: "read",
-              target: "src/dashboard/cells/tui.rs",
-              secondary_target: null,
-              summary: "src/dashboard/cells/tui.rs",
-              detail_lines: [],
-              detail_title: null,
-            },
-            {
-              tool_name: "Search",
-              action: "search",
-              target: "render_explored_cell_lines",
-              secondary_target: "src/dashboard/cells/tui.rs",
-              summary:
-                "render_explored_cell_lines — 1 target in src/dashboard/cells/tui.rs",
-              detail_lines: [],
-              detail_title: null,
-            },
-          ],
-        },
+      Explored: {
+        stable_id: "mock-explored",
+        title: "Explored",
+        calls: [
+          {
+            tool_name: "Read",
+            action: "read",
+            target: "webui/src/components/status-page.tsx",
+            secondary_target: null,
+            summary: "webui/src/components/status-page.tsx",
+            detail_lines: [],
+            detail_title: null,
+          },
+          {
+            tool_name: "Read",
+            action: "read",
+            target: "src/dashboard/cells/tui.rs",
+            secondary_target: null,
+            summary: "src/dashboard/cells/tui.rs",
+            detail_lines: [],
+            detail_title: null,
+          },
+          {
+            tool_name: "Search",
+            action: "search",
+            target: "render_explored_cell_lines",
+            secondary_target: "src/dashboard/cells/tui.rs",
+            summary:
+              "render_explored_cell_lines — 1 target in src/dashboard/cells/tui.rs",
+            detail_lines: [],
+            detail_title: null,
+          },
+        ],
       },
     },
     {
-      web_activity_version: 1,
-      id: "mock-exec",
-      kind: "tool",
-      status: "completed",
-      title: "Ran bun run typecheck",
-      actor: "tool",
-      created_at: MOCK_ACTIVITY_STARTED_AT + 2_000,
-      updated_at: MOCK_ACTIVITY_STARTED_AT + 4_000,
-      tool: {
-        name: "terminal",
-        app: "Terminal",
-        duration_ms: 2_000,
-        exit_code: 0,
-      },
-      blocks: [],
-      cell: {
-        ExecResult: {
-          title: "bun run typecheck",
-          meta: "exit=0",
-          output_lines: ["$ tsc -p tsconfig.json --noEmit", "Finished in 1.2s"],
-        },
+      ExecResult: {
+        title: "bun run typecheck",
+        meta: "exit=0",
+        output_lines: ["$ tsc -p tsconfig.json --noEmit", "Finished in 1.2s"],
       },
     },
     {
-      web_activity_version: 1,
-      id: "mock-patch",
-      kind: "patch",
-      status: "completed",
-      title: "Edited WebUI Agent surface",
-      actor: "tool",
-      created_at: MOCK_ACTIVITY_STARTED_AT + 5_000,
-      updated_at: MOCK_ACTIVITY_STARTED_AT + 6_500,
-      blocks: [],
-      cell: {
-        Patch: {
-          summary_line: "updated Agent page layout",
-          files: [
-            {
-              path: "webui/src/components/status-page.tsx",
-              operation: "update",
-              added_lines: 42,
-              removed_lines: 36,
-              diff_lines: [
-                {
-                  kind: "context",
-                  old_lineno: 120,
-                  new_lineno: 120,
-                  text: "return (",
-                },
-                {
-                  kind: "delete",
-                  old_lineno: 121,
-                  new_lineno: null,
-                  text: "<AgentStatusAnimation />",
-                },
-                {
-                  kind: "add",
-                  old_lineno: null,
-                  new_lineno: 121,
-                  text: "<AgentWorkspaceHeader />",
-                },
-              ],
-            },
-          ],
-        },
+      Patch: {
+        summary_line: "updated Agent page layout",
+        files: [
+          {
+            path: "webui/src/components/status-page.tsx",
+            operation: "update",
+            added_lines: 42,
+            removed_lines: 36,
+            diff_lines: [
+              {
+                kind: "context",
+                old_lineno: 120,
+                new_lineno: 120,
+                text: "return (",
+              },
+              {
+                kind: "delete",
+                old_lineno: 121,
+                new_lineno: null,
+                text: "<AgentStatusAnimation />",
+              },
+              {
+                kind: "add",
+                old_lineno: null,
+                new_lineno: 121,
+                text: "<AgentWorkspaceHeader />",
+              },
+            ],
+          },
+        ],
+      },
+    },
+    { FinalMessageSeparator: { elapsed_seconds: 154 } },
+    {
+      Reply: {
+        disposition: "resolved",
+        subject: "message",
+        message_lines: [
+          "Agent reply should use the activity marker.",
+          "It must not be rendered as a user prompt.",
+        ],
       },
     },
     {
-      web_activity_version: 1,
-      id: "mock-worked",
-      kind: "message",
-      status: "completed",
-      ui_hint: "final-message-separator",
-      title: "Worked for 2m 34s",
-      actor: "system",
-      created_at: MOCK_ACTIVITY_STARTED_AT + 9_000,
-      updated_at: MOCK_ACTIVITY_STARTED_AT + 9_000,
-      blocks: [],
-      cell: null,
-    },
-    {
-      web_activity_version: 1,
-      id: "mock-reply",
-      kind: "message",
-      status: "completed",
-      title: "Agent reply",
-      actor: "assistant",
-      created_at: MOCK_ACTIVITY_STARTED_AT + 9_500,
-      updated_at: MOCK_ACTIVITY_STARTED_AT + 9_500,
-      blocks: [],
-      cell: {
-        Reply: {
-          disposition: "resolved",
-          subject: "message",
-          message_lines: [
-            "Agent reply should use the activity marker.",
-            "It must not be rendered as a user prompt.",
-          ],
-        },
-      },
-    },
-    {
-      web_activity_version: 1,
-      id: "mock-assistant",
-      kind: "message",
-      status: "completed",
-      title: "The Agent page now behaves like a web workbench.",
-      actor: "assistant",
-      created_at: MOCK_ACTIVITY_STARTED_AT + 10_000,
-      updated_at: MOCK_ACTIVITY_STARTED_AT + 10_000,
-      blocks: [],
-      cell: {
-        Assistant: {
-          title: "The Agent page now behaves like a web workbench.",
-          body_lines: [
-            "Activity is the primary surface.",
-            "Composer status mirrors the TUI command bar without copying terminal text.",
-          ],
-          full_body:
-            "The Agent page now behaves like a web workbench.\n\n- Activity is the primary surface.\n- Composer status mirrors the TUI command bar without copying terminal text.",
-        },
+      Assistant: {
+        title: "The Agent page now behaves like a web workbench.",
+        body_lines: [
+          "Activity is the primary surface.",
+          "Composer status mirrors the TUI command bar without copying terminal text.",
+        ],
+        full_body:
+          "The Agent page now behaves like a web workbench.\n\n- Activity is the primary surface.\n- Composer status mirrors the TUI command bar without copying terminal text.",
       },
     },
   ],
-  live_web_activity_items: [
+  live_activity_events: [
     {
       key: "mock-live-exec",
-      item: {
-        web_activity_version: 1,
-        id: "mock-live-exec",
-        kind: "tool",
-        status: "running",
-        title: "Running cargo check",
-        actor: "tool",
-        created_at: MOCK_ACTIVITY_STARTED_AT + 12_000,
-        updated_at: MOCK_ACTIVITY_STARTED_AT + 13_000,
-        tool: {
-          name: "terminal",
-          app: "Terminal",
-          duration_ms: null,
-          exit_code: null,
-        },
-        blocks: [],
-        cell: {
-          LiveExec: {
-            title: "cargo check",
-            call_lines: ["cargo check"],
-            meta: null,
-            output_lines: ["Checking daat-locus v0.1.1"],
-            started_at_ms: MOCK_ACTIVITY_STARTED_AT + 12_000,
-          },
+      event: {
+        LiveExec: {
+          title: "cargo check",
+          call_lines: ["cargo check"],
+          meta: null,
+          output_lines: ["Checking daat-locus v0.1.1"],
+          started_at_ms: MOCK_ACTIVITY_STARTED_AT + 12_000,
         },
       },
     },

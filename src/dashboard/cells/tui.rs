@@ -9,32 +9,34 @@ use unicode_width::UnicodeWidthChar;
 
 use super::markdown::render_markdown_with_width;
 use super::{
-    ActivityCell, LiveActivityCell,
-    apps::{BrowserActivityCell, LiveBrowserActivityCell, WebSearchActivityCell},
+    LiveActivityEvent, SessionActivityEvent,
+    apps::{BrowserActivityData, LiveBrowserActivityData, WebSearchActivityData},
     common::{
-        AssistantActivityCell, CodingEditActivityCell, CodingOpenProjectActivityCell,
-        CodingReviewActivityCell, ErrorActivityCell, ExploredActivityCell,
-        ExploredCallActivityCell, FinalMessageSeparatorActivityCell, GenericAppActivityCell,
-        MessageImageAttachment, ReducedMotion, RuntimeStatusActivityCell, TerminalWaitActivityCell,
-        ThinkingActivityCell, UserActivityCell,
+        AssistantActivityData, CodingEditActivityData, CodingOpenProjectActivityData,
+        CodingReviewActivityData, ErrorActivityData, ExploredActivityData,
+        ExploredCallActivityData, FinalMessageSeparatorActivityData, GenericAppActivityData,
+        MessageImageAttachment, ReducedMotion, RuntimeStatusActivityData, TerminalWaitActivityData,
+        ThinkingActivityData, UserActivityData,
     },
-    exec::{ExecResultActivityCell, LiveExecActivityCell, TerminalExecutionMeta},
+    exec::{ExecResultActivityData, LiveExecActivityData, TerminalExecutionMeta},
     highlight::{
         DiffScopeBackgrounds, diff_scope_backgrounds, highlight_patch_lines,
         highlight_shell_command,
     },
-    messages::{PatchActivityCell, ReplyActivityCell, TelegramActivityCell},
-    plan::{PlanActivityCell, PlanStepDisplayStatus},
-    primitive::{ActivatePrimitiveActivityCell, CreatePrimitiveSpecActivityCell},
+    messages::{PatchActivityData, ReplyActivityData, TelegramActivityData},
+    plan::{PlanActivityData, PlanStepDisplayStatus},
+    primitive::{ActivatePrimitiveActivityData, CreatePrimitiveSpecActivityData},
+};
+use crate::activity_event::{
+    ExploredCallActivityAction, PatchDiffLineActivityDescriptor, PatchDiffLineKind,
+    PatchFileActivityDescriptor, PlanActivityKind, TerminalActivityAction, TerminalActivityOrigin,
+    WebSearchActivityAction,
 };
 use crate::dashboard::renderable::{FlexRenderable, Renderable, ViewportCulledColumn};
 use crate::dashboard::selection::{
     SelectableId, SelectableRegion, SelectionRegistry, line_plain_text,
 };
-use crate::tool_ui::{
-    ExploredCallUiAction, PatchDiffLineKind, PatchDiffLineUiData, PatchFileUiData, PlanUiKind,
-    TerminalUiAction, TerminalUiOrigin, WebSearchUiAction,
-};
+use std::collections::HashSet;
 
 const ACTIVITY_TITLE_GAP: &str = " ";
 const ACTIVITY_BODY_INDENT: &str = "  ";
@@ -66,9 +68,15 @@ pub struct CachedActivityLines {
 
 struct CacheEntry {
     width: u16,
-    cell: ActivityCell,
+    options: ActivityDataRenderOptions,
+    cell: SessionActivityEvent,
     lines: Vec<Line<'static>>,
     height: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ActivityDataRenderOptions {
+    thinking_expanded: bool,
 }
 
 #[cfg(feature = "tui-perf-cmd")]
@@ -118,10 +126,16 @@ impl CachedActivityLines {
 
     /// Return cached lines for cell `index` at `width`, if the
     /// cached cell matches the current one.
-    fn get(&mut self, index: usize, width: u16, cell: &ActivityCell) -> Option<CachedCellLines> {
+    fn get(
+        &mut self,
+        index: usize,
+        width: u16,
+        cell: &SessionActivityEvent,
+        options: ActivityDataRenderOptions,
+    ) -> Option<CachedCellLines> {
         let cached = self.entries.get(index).and_then(|e| {
             e.as_ref().and_then(|entry| {
-                if entry.width == width && entry.cell == *cell {
+                if entry.width == width && entry.options == options && entry.cell == *cell {
                     Some(CachedCellLines {
                         lines: entry.lines.clone(),
                         height: entry.height,
@@ -147,7 +161,8 @@ impl CachedActivityLines {
         &mut self,
         index: usize,
         width: u16,
-        cell: ActivityCell,
+        options: ActivityDataRenderOptions,
+        cell: SessionActivityEvent,
         lines: Vec<Line<'static>>,
     ) -> CachedCellLines {
         if index >= self.entries.len() {
@@ -156,6 +171,7 @@ impl CachedActivityLines {
         let height = cached_lines_height(&lines, width);
         self.entries[index] = Some(CacheEntry {
             width,
+            options,
             cell,
             lines: lines.clone(),
             height,
@@ -222,8 +238,9 @@ fn cached_lines_height(lines: &[Line<'static>], width: u16) -> u16 {
 /// `scroll_offset` of `u16::MAX` means auto-scroll (pin to bottom).
 /// Returns `max_scroll`.
 pub struct ActivityFeedRenderArgs<'a> {
-    pub cells: &'a [ActivityCell],
-    pub live_cells: &'a [LiveActivityCell],
+    pub cells: &'a [SessionActivityEvent],
+    pub live_cells: &'a [LiveActivityEvent],
+    pub expanded_thinking: &'a HashSet<usize>,
     pub scroll_offset: u16,
     pub cache: &'a mut CachedActivityLines,
     pub user_hyperlink_areas: &'a mut Vec<Rect>,
@@ -239,6 +256,7 @@ pub fn render_activity_feed_cached(
     let ActivityFeedRenderArgs {
         cells,
         live_cells,
+        expanded_thinking,
         scroll_offset,
         cache,
         user_hyperlink_areas,
@@ -276,17 +294,21 @@ pub fn render_activity_feed_cached(
 
     // Committed cells: use cache to skip markdown re-render.
     for (i, cell) in cells.iter().enumerate() {
-        let cached = if let Some(cached) = cache.get(i, inner.width, cell) {
+        let options = ActivityDataRenderOptions {
+            thinking_expanded: matches!(cell, SessionActivityEvent::Thinking(_))
+                && expanded_thinking.contains(&i),
+        };
+        let cached = if let Some(cached) = cache.get(i, inner.width, cell, options) {
             cached
         } else {
-            let lines = render_activity_cell_lines(cell, inner.width);
-            cache.set(i, inner.width, cell.clone(), lines)
+            let lines = render_activity_cell_lines_with_options(cell, inner.width, options);
+            cache.set(i, inner.width, options, cell.clone(), lines)
         };
         let cached_height = cached.height;
-        if matches!(cell, ActivityCell::User(_)) {
+        if matches!(cell, SessionActivityEvent::User(_)) {
             user_cell_rows.push((column_rows, cached_height));
         }
-        selectable_cell_rows.push(SelectableActivityCellRows {
+        selectable_cell_rows.push(SelectableActivityDataRows {
             id: committed_activity_selectable_id(cell),
             start: column_rows,
             height: cached_height,
@@ -304,13 +326,14 @@ pub fn render_activity_feed_cached(
     // Live cells are always re-rendered (they change every frame).
     for (i, lc) in live_cells.iter().enumerate() {
         let idx = cells.len() + i;
-        let lines = render_activity_cell_lines(&lc.cell, inner.width);
-        let cached = cache.set(idx, inner.width, lc.cell.clone(), lines);
+        let options = ActivityDataRenderOptions::default();
+        let lines = render_activity_cell_lines_with_options(&lc.event, inner.width, options);
+        let cached = cache.set(idx, inner.width, options, lc.event.clone(), lines);
         let cached_height = cached.height;
-        if matches!(&lc.cell, ActivityCell::User(_)) {
+        if matches!(&lc.event, SessionActivityEvent::User(_)) {
             user_cell_rows.push((column_rows, cached_height));
         }
-        selectable_cell_rows.push(SelectableActivityCellRows {
+        selectable_cell_rows.push(SelectableActivityDataRows {
             id: SelectableId::new(format!("activity-live:{}", lc.key)),
             start: column_rows,
             height: cached_height,
@@ -368,7 +391,7 @@ pub fn render_activity_feed_cached(
     max_scroll
 }
 
-struct SelectableActivityCellRows {
+struct SelectableActivityDataRows {
     id: SelectableId,
     start: u16,
     height: u16,
@@ -379,7 +402,7 @@ fn visible_activity_selectable_regions(
     area: Rect,
     scroll: u16,
     viewport_height: u16,
-    cells: &[SelectableActivityCellRows],
+    cells: &[SelectableActivityDataRows],
 ) -> Vec<SelectableRegion> {
     if area.width == 0 || viewport_height == 0 {
         return Vec::new();
@@ -414,7 +437,7 @@ fn visible_activity_selectable_regions(
     regions
 }
 
-fn committed_activity_selectable_id(cell: &ActivityCell) -> SelectableId {
+fn committed_activity_selectable_id(cell: &SessionActivityEvent) -> SelectableId {
     use sha2::{Digest as _, Sha256};
     use std::fmt::Write as _;
 
@@ -457,10 +480,10 @@ fn push_visible_user_hyperlink_areas(
 }
 
 // ---------------------------------------------------------------------------
-// Renderable impl for ActivityCell
+// Renderable impl for SessionActivityEvent
 // ---------------------------------------------------------------------------
 
-impl Renderable for ActivityCell {
+impl Renderable for SessionActivityEvent {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let lines = render_activity_cell_lines(self, area.width);
         if lines.is_empty() {
@@ -478,45 +501,61 @@ impl Renderable for ActivityCell {
     }
 }
 
-fn render_activity_cell_lines(cell: &ActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_activity_cell_lines(cell: &SessionActivityEvent, max_width: u16) -> Vec<Line<'static>> {
+    render_activity_cell_lines_with_options(cell, max_width, ActivityDataRenderOptions::default())
+}
+
+fn render_activity_cell_lines_with_options(
+    cell: &SessionActivityEvent,
+    max_width: u16,
+    options: ActivityDataRenderOptions,
+) -> Vec<Line<'static>> {
     match cell {
-        ActivityCell::Assistant(cell) => render_assistant_cell_lines(cell, max_width),
-        ActivityCell::FinalMessageSeparator(cell) => {
+        SessionActivityEvent::Assistant(cell) => render_assistant_cell_lines(cell, max_width),
+        SessionActivityEvent::FinalMessageSeparator(cell) => {
             render_final_message_separator_cell_lines(cell, max_width)
         }
-        ActivityCell::User(cell) => render_user_cell_lines(cell, max_width),
-        ActivityCell::Browser(cell) => render_browser_cell_lines(cell, max_width),
-        ActivityCell::LiveBrowser(cell) => render_live_browser_cell_lines(cell, max_width),
-        ActivityCell::WebSearch(cell) => render_web_search_cell_lines(cell, max_width),
-        ActivityCell::CodingOpenProject(cell) => {
+        SessionActivityEvent::User(cell) => render_user_cell_lines(cell, max_width),
+        SessionActivityEvent::Browser(cell) => render_browser_cell_lines(cell, max_width),
+        SessionActivityEvent::LiveBrowser(cell) => render_live_browser_cell_lines(cell, max_width),
+        SessionActivityEvent::WebSearch(cell) => render_web_search_cell_lines(cell, max_width),
+        SessionActivityEvent::CodingOpenProject(cell) => {
             render_coding_open_project_cell_lines(cell, max_width)
         }
-        ActivityCell::Explored(cell) => render_explored_cell_lines(cell, max_width),
-        ActivityCell::CodingEdit(cell) => render_coding_edit_cell_lines(cell, max_width),
-        ActivityCell::CodingReview(cell) => render_coding_review_cell_lines(cell),
-        ActivityCell::GenericApp(cell) => render_generic_app_cell_lines(cell),
-        ActivityCell::PlanResult(cell) => render_plan_cell_lines(cell, max_width),
-        ActivityCell::CreatePrimitiveSpecResult(cell) => {
+        SessionActivityEvent::Explored(cell) => render_explored_cell_lines(cell, max_width),
+        SessionActivityEvent::CodingEdit(cell) => render_coding_edit_cell_lines(cell, max_width),
+        SessionActivityEvent::CodingReview(cell) => render_coding_review_cell_lines(cell),
+        SessionActivityEvent::GenericApp(cell) => render_generic_app_cell_lines(cell),
+        SessionActivityEvent::PlanResult(cell) => render_plan_cell_lines(cell, max_width),
+        SessionActivityEvent::CreatePrimitiveSpecResult(cell) => {
             render_create_primitive_spec_cell_lines(cell)
         }
-        ActivityCell::ActivatePrimitiveResult(cell) => render_activate_primitive_cell_lines(cell),
-        ActivityCell::ExecResult(cell) => render_exec_cell_lines(cell, max_width),
-        ActivityCell::LiveExec(cell) => render_live_exec_cell_lines(cell, max_width),
-        ActivityCell::Patch(cell) => render_patch_cell_lines(cell, max_width),
-        ActivityCell::Telegram(cell) => render_telegram_cell_lines(cell, max_width),
-        ActivityCell::Reply(cell) => render_reply_cell_lines(cell, max_width),
-        ActivityCell::TerminalWait(cell) => render_terminal_wait_cell_lines(cell, max_width),
-        ActivityCell::Warning(cell) => render_warning_cell_lines(cell, max_width),
-        ActivityCell::Error(cell) => render_error_cell_lines(cell, max_width),
-        ActivityCell::Thinking(cell) => render_thinking_cell_lines(cell, max_width),
-        ActivityCell::RuntimeStatus(cell) => render_runtime_status_cell_lines(cell, max_width),
+        SessionActivityEvent::ActivatePrimitiveResult(cell) => {
+            render_activate_primitive_cell_lines(cell)
+        }
+        SessionActivityEvent::ExecResult(cell) => render_exec_cell_lines(cell, max_width),
+        SessionActivityEvent::LiveExec(cell) => render_live_exec_cell_lines(cell, max_width),
+        SessionActivityEvent::Patch(cell) => render_patch_cell_lines(cell, max_width),
+        SessionActivityEvent::Telegram(cell) => render_telegram_cell_lines(cell, max_width),
+        SessionActivityEvent::Reply(cell) => render_reply_cell_lines(cell, max_width),
+        SessionActivityEvent::TerminalWait(cell) => {
+            render_terminal_wait_cell_lines(cell, max_width)
+        }
+        SessionActivityEvent::Warning(cell) => render_warning_cell_lines(cell, max_width),
+        SessionActivityEvent::Error(cell) => render_error_cell_lines(cell, max_width),
+        SessionActivityEvent::Thinking(cell) => {
+            render_thinking_cell_lines(cell, max_width, options.thinking_expanded)
+        }
+        SessionActivityEvent::RuntimeStatus(cell) => {
+            render_runtime_status_cell_lines(cell, max_width)
+        }
     }
 }
 
 #[cfg(test)]
 pub(in crate::dashboard) fn activity_transcript_text(
-    cells: &[ActivityCell],
-    live_cells: &[LiveActivityCell],
+    cells: &[SessionActivityEvent],
+    live_cells: &[LiveActivityEvent],
 ) -> String {
     activity_transcript_lines(cells, live_cells, u16::MAX)
         .into_iter()
@@ -526,8 +565,8 @@ pub(in crate::dashboard) fn activity_transcript_text(
 }
 
 pub(in crate::dashboard) fn activity_transcript_lines(
-    cells: &[ActivityCell],
-    live_cells: &[LiveActivityCell],
+    cells: &[SessionActivityEvent],
+    live_cells: &[LiveActivityEvent],
     width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -537,7 +576,7 @@ pub(in crate::dashboard) fn activity_transcript_lines(
     for live_cell in live_cells {
         append_transcript_cell_lines(
             &mut lines,
-            activity_cell_transcript_lines(&live_cell.cell, width),
+            activity_cell_transcript_lines(&live_cell.event, width),
         );
     }
     if lines.is_empty() {
@@ -557,37 +596,29 @@ fn append_transcript_cell_lines(target: &mut Vec<Line<'static>>, mut lines: Vec<
     target.append(&mut lines);
 }
 
-fn activity_cell_transcript_lines(cell: &ActivityCell, width: u16) -> Vec<Line<'static>> {
+fn activity_cell_transcript_lines(cell: &SessionActivityEvent, width: u16) -> Vec<Line<'static>> {
     match cell {
-        ActivityCell::Assistant(cell) => {
-            let body = cell
-                .full_body
-                .clone()
-                .unwrap_or_else(|| cell.body_lines.join("\n"));
-            transcript_markdown_section("ASSISTANT", &body, Color::White, width)
+        SessionActivityEvent::Assistant(cell) => {
+            transcript_markdown_section("ASSISTANT", &cell.content, Color::White, width)
         }
-        ActivityCell::FinalMessageSeparator(cell) => {
+        SessionActivityEvent::FinalMessageSeparator(cell) => {
             render_final_message_separator_cell_lines(cell, width)
         }
-        ActivityCell::User(cell) => transcript_user_lines(cell, width),
-        ActivityCell::Thinking(cell) => {
-            let body = cell
-                .full_body
-                .clone()
-                .unwrap_or_else(|| cell.body_lines.join("\n"));
-            transcript_markdown_section("THINKING", &body, Color::Gray, width)
+        SessionActivityEvent::User(cell) => transcript_user_lines(cell, width),
+        SessionActivityEvent::Thinking(cell) => {
+            transcript_markdown_section("THINKING", &cell.content, Color::Gray, width)
         }
-        ActivityCell::PlanResult(cell) => transcript_plan_lines(cell, width),
-        ActivityCell::ExecResult(cell) => exec_transcript_lines(cell, width),
-        ActivityCell::LiveExec(cell) => live_exec_transcript_lines(cell, width),
-        ActivityCell::Patch(cell) => {
+        SessionActivityEvent::PlanResult(cell) => transcript_plan_lines(cell, width),
+        SessionActivityEvent::ExecResult(cell) => exec_transcript_lines(cell, width),
+        SessionActivityEvent::LiveExec(cell) => live_exec_transcript_lines(cell, width),
+        SessionActivityEvent::Patch(cell) => {
             patch_transcript_styled_lines("PATCH", &cell.summary_line, &cell.files, width)
         }
-        ActivityCell::WebSearch(cell) => render_web_search_cell_lines(cell, width),
-        ActivityCell::Warning(cell) => {
+        SessionActivityEvent::WebSearch(cell) => render_web_search_cell_lines(cell, width),
+        SessionActivityEvent::Warning(cell) => {
             transcript_text_section("WARNING", &cell.title, &cell.body_lines, width)
         }
-        ActivityCell::Error(cell) => {
+        SessionActivityEvent::Error(cell) => {
             transcript_text_section("ERROR", &cell.title, &cell.body_lines, width)
         }
         _ => transcript_plain_block(activity_cell_transcript_block(cell)),
@@ -641,7 +672,7 @@ fn transcript_markdown_section(
     lines
 }
 
-fn transcript_user_lines(cell: &UserActivityCell, width: u16) -> Vec<Line<'static>> {
+fn transcript_user_lines(cell: &UserActivityData, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![transcript_header("USER")];
     let mut source_lines = user_source_lines(cell);
     source_lines.extend(
@@ -672,10 +703,10 @@ fn transcript_text_section(
     lines
 }
 
-fn transcript_plan_lines(cell: &PlanActivityCell, width: u16) -> Vec<Line<'static>> {
+fn transcript_plan_lines(cell: &PlanActivityData, width: u16) -> Vec<Line<'static>> {
     let title = match cell.kind {
-        PlanUiKind::Proposed => "PROPOSED PLAN",
-        PlanUiKind::Updated => "PLAN",
+        PlanActivityKind::Proposed => "PROPOSED PLAN",
+        PlanActivityKind::Updated => "PLAN",
     };
     let mut lines = vec![transcript_header(title)];
     if let Some(explanation) = cell.explanation.as_deref()
@@ -738,7 +769,7 @@ fn transcript_plan_lines(cell: &PlanActivityCell, width: u16) -> Vec<Line<'stati
     lines
 }
 
-fn exec_transcript_lines(cell: &ExecResultActivityCell, width: u16) -> Vec<Line<'static>> {
+fn exec_transcript_lines(cell: &ExecResultActivityData, width: u16) -> Vec<Line<'static>> {
     let output = cell.command_output();
     let mut lines = vec![transcript_header("COMMAND")];
     let mut command = highlighted_shell_command_line(&output.command);
@@ -781,7 +812,7 @@ fn exec_transcript_lines(cell: &ExecResultActivityCell, width: u16) -> Vec<Line<
     lines
 }
 
-fn live_exec_transcript_lines(cell: &LiveExecActivityCell, width: u16) -> Vec<Line<'static>> {
+fn live_exec_transcript_lines(cell: &LiveExecActivityData, width: u16) -> Vec<Line<'static>> {
     let output = cell.command_output();
     let mut lines = vec![transcript_header("COMMAND")];
     let mut command = highlighted_shell_command_line(&output.command);
@@ -808,7 +839,7 @@ fn live_exec_transcript_lines(cell: &LiveExecActivityCell, width: u16) -> Vec<Li
 fn patch_transcript_styled_lines(
     title: &str,
     summary: &str,
-    files: &[PatchFileUiData],
+    files: &[PatchFileActivityDescriptor],
     width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![transcript_header(title)];
@@ -848,26 +879,20 @@ fn patch_transcript_styled_lines(
     lines
 }
 
-fn activity_cell_transcript_block(cell: &ActivityCell) -> String {
+fn activity_cell_transcript_block(cell: &SessionActivityEvent) -> String {
     match cell {
-        ActivityCell::Assistant(cell) => transcript_section(
-            "ASSISTANT",
-            cell.full_body
-                .clone()
-                .unwrap_or_else(|| primary_transcript_text(&cell.title, &cell.body_lines)),
-        ),
-        ActivityCell::FinalMessageSeparator(cell) => cell
+        SessionActivityEvent::Assistant(cell) => {
+            transcript_section("ASSISTANT", cell.content.clone())
+        }
+        SessionActivityEvent::FinalMessageSeparator(cell) => cell
             .elapsed_seconds
             .map(|seconds| format!("Worked for {}", format_elapsed_seconds_compact(seconds)))
             .unwrap_or_else(|| "Worked".to_string()),
-        ActivityCell::User(cell) => transcript_section("USER", user_transcript_text(cell)),
-        ActivityCell::Thinking(cell) => transcript_section(
-            "THINKING",
-            cell.full_body
-                .clone()
-                .unwrap_or_else(|| primary_transcript_text(&cell.title, &cell.body_lines)),
-        ),
-        ActivityCell::Browser(cell) => {
+        SessionActivityEvent::User(cell) => transcript_section("USER", user_transcript_text(cell)),
+        SessionActivityEvent::Thinking(cell) => {
+            transcript_section("THINKING", cell.content.clone())
+        }
+        SessionActivityEvent::Browser(cell) => {
             let mut lines = vec![format!(
                 "Captured URL: {}",
                 cell.url.as_deref().unwrap_or("unknown")
@@ -880,7 +905,7 @@ fn activity_cell_transcript_block(cell: &ActivityCell) -> String {
             }
             transcript_section("BROWSER", lines.join("\n"))
         }
-        ActivityCell::LiveBrowser(cell) => {
+        SessionActivityEvent::LiveBrowser(cell) => {
             let mut lines = vec![format!(
                 "Opening URL: {}",
                 cell.url.as_deref().unwrap_or(cell.title.as_str())
@@ -888,23 +913,23 @@ fn activity_cell_transcript_block(cell: &ActivityCell) -> String {
             lines.extend(cell.body_lines.clone());
             transcript_section("BROWSER", lines.join("\n"))
         }
-        ActivityCell::WebSearch(cell) => {
+        SessionActivityEvent::WebSearch(cell) => {
             let mut lines = vec![format!("query: {}", cell.query)];
             if let Some(url) = cell.url.as_deref() {
                 lines.push(format!("url: {url}"));
             }
             lines.extend(cell.body_lines.clone());
             let title = match cell.action {
-                WebSearchUiAction::Searching => "SEARCHING THE WEB",
-                WebSearchUiAction::Searched => "SEARCHED THE WEB",
+                WebSearchActivityAction::Searching => "SEARCHING THE WEB",
+                WebSearchActivityAction::Searched => "SEARCHED THE WEB",
             };
             transcript_section(title, lines.join("\n"))
         }
-        ActivityCell::CodingOpenProject(cell) => transcript_section(
+        SessionActivityEvent::CodingOpenProject(cell) => transcript_section(
             "OPENED PROJECT",
             primary_transcript_text(&cell.project_root, &cell.detail_lines),
         ),
-        ActivityCell::Explored(cell) => {
+        SessionActivityEvent::Explored(cell) => {
             let lines = cell
                 .calls
                 .iter()
@@ -916,7 +941,7 @@ fn activity_cell_transcript_block(cell: &ActivityCell) -> String {
                 .collect::<Vec<_>>();
             transcript_section(&cell.title, lines.join("\n"))
         }
-        ActivityCell::CodingEdit(cell) => {
+        SessionActivityEvent::CodingEdit(cell) => {
             let mut lines = vec![
                 cell.selector.clone(),
                 format!("+{} -{}", cell.added_lines, cell.removed_lines),
@@ -932,7 +957,7 @@ fn activity_cell_transcript_block(cell: &ActivityCell) -> String {
             lines.extend(patch_files_transcript_lines(&cell.diff_files));
             transcript_section(&cell.title, lines.join("\n"))
         }
-        ActivityCell::CodingReview(cell) => {
+        SessionActivityEvent::CodingReview(cell) => {
             let mut lines = Vec::new();
             if !cell.title.trim().is_empty() {
                 lines.push(cell.title.clone());
@@ -945,10 +970,10 @@ fn activity_cell_transcript_block(cell: &ActivityCell) -> String {
             }
             transcript_section("REVIEW", lines.join("\n"))
         }
-        ActivityCell::GenericApp(cell) => {
+        SessionActivityEvent::GenericApp(cell) => {
             transcript_section(&cell.title, cell.body_lines.join("\n"))
         }
-        ActivityCell::PlanResult(cell) => {
+        SessionActivityEvent::PlanResult(cell) => {
             let mut lines = Vec::new();
             if let Some(explanation) = cell.explanation.as_deref()
                 && !explanation.trim().is_empty()
@@ -968,53 +993,53 @@ fn activity_cell_transcript_block(cell: &ActivityCell) -> String {
                 }));
             }
             let title = match cell.kind {
-                PlanUiKind::Proposed => "PROPOSED PLAN",
-                PlanUiKind::Updated => "PLAN",
+                PlanActivityKind::Proposed => "PROPOSED PLAN",
+                PlanActivityKind::Updated => "PLAN",
             };
             transcript_section(title, lines.join("\n"))
         }
-        ActivityCell::CreatePrimitiveSpecResult(cell) => {
+        SessionActivityEvent::CreatePrimitiveSpecResult(cell) => {
             transcript_section("CREATED PRIMITIVE SPEC", cell.primitive_id.clone())
         }
-        ActivityCell::ActivatePrimitiveResult(cell) => {
+        SessionActivityEvent::ActivatePrimitiveResult(cell) => {
             transcript_section("ACTIVATED PRIMITIVE", cell.primitive_id.clone())
         }
-        ActivityCell::ExecResult(cell) => exec_transcript_block(
+        SessionActivityEvent::ExecResult(cell) => exec_transcript_block(
             "COMMAND",
             &cell.title,
             cell.meta.as_deref(),
             &cell.output_lines,
         ),
-        ActivityCell::LiveExec(cell) => live_exec_transcript_block(cell),
-        ActivityCell::Patch(cell) => {
+        SessionActivityEvent::LiveExec(cell) => live_exec_transcript_block(cell),
+        SessionActivityEvent::Patch(cell) => {
             let mut lines = vec![cell.summary_line.clone()];
             lines.extend(patch_files_transcript_lines(&cell.files));
             transcript_section("PATCH", lines.join("\n"))
         }
-        ActivityCell::Telegram(cell) => {
+        SessionActivityEvent::Telegram(cell) => {
             let mut lines = cell.detail_lines.clone();
             lines.extend(cell.message_lines.clone());
             transcript_section(&cell.title, lines.join("\n"))
         }
-        ActivityCell::Reply(cell) => {
+        SessionActivityEvent::Reply(cell) => {
             let title = match cell.disposition {
-                crate::tool_ui::ReplyDisposition::Resolved => "REPLY RESOLVED",
-                crate::tool_ui::ReplyDisposition::Dismissed => "REPLY DISMISSED",
-                crate::tool_ui::ReplyDisposition::Failed => "REPLY FAILED",
+                crate::activity_event::ReplyDisposition::Resolved => "REPLY RESOLVED",
+                crate::activity_event::ReplyDisposition::Dismissed => "REPLY DISMISSED",
+                crate::activity_event::ReplyDisposition::Failed => "REPLY FAILED",
             };
             transcript_section(title, cell.message_lines.join("\n"))
         }
-        ActivityCell::TerminalWait(cell) => {
+        SessionActivityEvent::TerminalWait(cell) => {
             transcript_section(&cell.title, terminal_wait_transcript_text(cell))
         }
-        ActivityCell::RuntimeStatus(cell) => {
+        SessionActivityEvent::RuntimeStatus(cell) => {
             transcript_section(&cell.label, cell.detail.clone().unwrap_or_default())
         }
-        ActivityCell::Warning(cell) => transcript_section(
+        SessionActivityEvent::Warning(cell) => transcript_section(
             "WARNING",
             primary_transcript_text(&cell.title, &cell.body_lines),
         ),
-        ActivityCell::Error(cell) => transcript_section(
+        SessionActivityEvent::Error(cell) => transcript_section(
             "ERROR",
             primary_transcript_text(&cell.title, &cell.body_lines),
         ),
@@ -1036,7 +1061,7 @@ fn primary_transcript_text(title: &str, body_lines: &[String]) -> String {
     lines.join("\n")
 }
 
-fn terminal_wait_transcript_text(cell: &TerminalWaitActivityCell) -> String {
+fn terminal_wait_transcript_text(cell: &TerminalWaitActivityData) -> String {
     let mut lines = Vec::new();
     if let Some(meta) = cell.meta.as_deref().filter(|meta| !meta.trim().is_empty()) {
         lines.push(format!("meta: {meta}"));
@@ -1045,17 +1070,13 @@ fn terminal_wait_transcript_text(cell: &TerminalWaitActivityCell) -> String {
     lines.join("\n")
 }
 
-fn user_transcript_text(cell: &UserActivityCell) -> String {
-    let mut lines = if let Some(full) = cell.full_body.as_deref() {
-        full.trim_end_matches(['\r', '\n'])
-            .lines()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-    } else {
-        let mut lines = vec![cell.title.clone()];
-        lines.extend(cell.body_lines.iter().cloned());
-        lines
-    };
+fn user_transcript_text(cell: &UserActivityData) -> String {
+    let mut lines = cell
+        .content
+        .trim_end_matches(['\r', '\n'])
+        .lines()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
     lines.extend(
         cell.image_attachments
             .iter()
@@ -1094,7 +1115,7 @@ fn exec_transcript_block(
     transcript_section(title, lines.join("\n"))
 }
 
-fn live_exec_transcript_block(cell: &LiveExecActivityCell) -> String {
+fn live_exec_transcript_block(cell: &LiveExecActivityData) -> String {
     let mut lines = vec![format!("$ {}", cell.title)];
     if let Some(started_at_ms) = cell.started_at_ms
         && let Some(elapsed_ms) = elapsed_since_ms(started_at_ms)
@@ -1125,7 +1146,7 @@ fn format_elapsed_ms(ms: u64) -> String {
     }
 }
 
-fn patch_files_transcript_lines(files: &[PatchFileUiData]) -> Vec<String> {
+fn patch_files_transcript_lines(files: &[PatchFileActivityDescriptor]) -> Vec<String> {
     files
         .iter()
         .flat_map(|file| {
@@ -1139,7 +1160,7 @@ fn patch_files_transcript_lines(files: &[PatchFileUiData]) -> Vec<String> {
         .collect()
 }
 
-fn patch_diff_line_transcript_text(line: &PatchDiffLineUiData) -> String {
+fn patch_diff_line_transcript_text(line: &PatchDiffLineActivityDescriptor) -> String {
     let gutter = match line.kind {
         PatchDiffLineKind::Context => " ",
         PatchDiffLineKind::Delete => "-",
@@ -1476,7 +1497,7 @@ fn spans_display_width(spans: &[Span<'static>]) -> usize {
 }
 
 fn render_final_message_separator_cell_lines(
-    cell: &FinalMessageSeparatorActivityCell,
+    cell: &FinalMessageSeparatorActivityData,
     max_width: u16,
 ) -> Vec<Line<'static>> {
     let width = usize::from(max_width);
@@ -1532,48 +1553,65 @@ fn truncate_display_width(text: &str, max_width: usize) -> String {
     out
 }
 
-fn render_assistant_cell_lines(cell: &AssistantActivityCell, max_width: u16) -> Vec<Line<'static>> {
-    // When rich (markdown) mode is on and full_body is available,
-    // render markdown from the complete text.  Using truncated
-    // body_lines breaks multi-line constructs (fenced code blocks,
-    // tables) because the closing fences / separators are cut off,
-    // causing the markdown parser to treat following text as part of
-    // the truncated construct.
-    if cell.rich_mode
-        && let Some(ref full) = cell.full_body
-    {
-        let body_text = full
-            .lines()
-            .skip(1) // first line is the title, already rendered above
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut lines = vec![activity_header(cell.title.clone())];
+fn render_assistant_cell_lines(cell: &AssistantActivityData, max_width: u16) -> Vec<Line<'static>> {
+    let title = source_title_or(&cell.content, "assistant");
+    let body_text = source_body_text(&cell.content);
+    let mut lines = vec![activity_header(title)];
+    if !body_text.trim().is_empty() {
         let md_lines =
             render_markdown_with_width(&body_text, Color::White, body_markdown_width(max_width));
         lines.extend(prefixed_body_lines(md_lines, max_width));
-        return lines;
     }
-    render_text_activity_lines(&cell.title, &cell.body_lines, 8, true, max_width)
+    lines
 }
 
-fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn source_title_or(content: &str, fallback: &str) -> String {
+    content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn source_body_text(content: &str) -> String {
+    let mut lines = content.lines().collect::<Vec<_>>();
+    if !lines.is_empty() {
+        lines.remove(0);
+    }
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+fn thinking_collapsed_preview(content: &str) -> String {
+    let mut lines: Vec<&str> = content.lines().collect();
+    if lines.len() > 3 {
+        lines.truncate(2);
+        lines.push("...");
+    }
+    lines.join("\n")
+}
+
+fn render_thinking_cell_lines(
+    cell: &ThinkingActivityData,
+    max_width: u16,
+    expanded: bool,
+) -> Vec<Line<'static>> {
     let mut lines = vec![activity_header_with_styles(
-        cell.title.clone(),
+        "Thinking".to_string(),
         dim_style(),
         Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
     )];
 
-    let body_text = if cell.expanded {
-        cell.full_body
-            .clone()
-            .unwrap_or_else(|| cell.body_lines.join("\n"))
+    let body_text = if expanded {
+        cell.content.clone()
     } else {
-        cell.body_lines
-            .iter()
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
+        thinking_collapsed_preview(&cell.content)
     };
     let md_lines =
         render_markdown_with_width(&body_text, Color::Gray, body_markdown_width(max_width))
@@ -1596,7 +1634,7 @@ fn render_thinking_cell_lines(cell: &ThinkingActivityCell, max_width: u16) -> Ve
     lines
 }
 
-fn render_user_cell_lines(cell: &UserActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_user_cell_lines(cell: &UserActivityData, max_width: u16) -> Vec<Line<'static>> {
     let mut source_lines = user_source_lines(cell);
     source_lines.extend(
         cell.image_attachments
@@ -1612,19 +1650,12 @@ fn render_user_cell_lines(cell: &UserActivityCell, max_width: u16) -> Vec<Line<'
     rendered
 }
 
-fn user_source_lines(cell: &UserActivityCell) -> Vec<Line<'static>> {
-    let mut source_lines = Vec::new();
-    if let Some(ref full) = cell.full_body {
-        source_lines.extend(
-            full.trim_end_matches(['\r', '\n'])
-                .lines()
-                .map(|line| Line::from(line.to_string())),
-        );
-    } else {
-        source_lines.push(Line::from(cell.title.clone()));
-        source_lines.extend(cell.body_lines.iter().cloned().map(Line::from));
-    }
-    source_lines
+fn user_source_lines(cell: &UserActivityData) -> Vec<Line<'static>> {
+    cell.content
+        .trim_end_matches(['\r', '\n'])
+        .lines()
+        .map(|line| Line::from(line.to_string()))
+        .collect()
 }
 
 fn image_attachment_line(index: usize, attachment: &MessageImageAttachment) -> Line<'static> {
@@ -1691,12 +1722,12 @@ fn image_attachment_kind(uri: &str) -> &'static str {
     }
 }
 
-fn render_generic_app_cell_lines(cell: &GenericAppActivityCell) -> Vec<Line<'static>> {
+fn render_generic_app_cell_lines(cell: &GenericAppActivityData) -> Vec<Line<'static>> {
     vec![activity_header(format!("App: {}", cell.title))]
 }
 
 fn render_coding_open_project_cell_lines(
-    cell: &CodingOpenProjectActivityCell,
+    cell: &CodingOpenProjectActivityData,
     max_width: u16,
 ) -> Vec<Line<'static>> {
     let title = format!("Opened Project: {}", cell.project_root);
@@ -1712,19 +1743,22 @@ fn render_coding_open_project_cell_lines(
     lines
 }
 
-fn render_explored_cell_lines(cell: &ExploredActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_explored_cell_lines(cell: &ExploredActivityData, max_width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![activity_header(cell.title.clone())];
     let mut detail = Vec::new();
     let mut index = 0;
     while index < cell.calls.len() {
         let call = &cell.calls[index];
-        if matches!(explored_call_action(call), Some(ExploredCallUiAction::Read)) {
+        if matches!(
+            explored_call_action(call),
+            Some(ExploredCallActivityAction::Read)
+        ) {
             let mut names = vec![explored_read_target(call)];
             index += 1;
             while index < cell.calls.len()
                 && matches!(
                     explored_call_action(&cell.calls[index]),
-                    Some(ExploredCallUiAction::Read)
+                    Some(ExploredCallActivityAction::Read)
                 )
             {
                 names.push(explored_read_target(&cell.calls[index]));
@@ -1742,22 +1776,24 @@ fn render_explored_cell_lines(cell: &ExploredActivityCell, max_width: u16) -> Ve
     lines
 }
 
-fn explored_call_line(call: &ExploredCallActivityCell) -> Line<'static> {
+fn explored_call_line(call: &ExploredCallActivityData) -> Line<'static> {
     let tool_name = call.tool_name.trim();
     let summary = call.summary.trim();
     match explored_call_action(call) {
-        Some(ExploredCallUiAction::Read) => coding_action_line("Read", explored_read_target(call)),
-        Some(ExploredCallUiAction::Search) => {
+        Some(ExploredCallActivityAction::Read) => {
+            coding_action_line("Read", explored_read_target(call))
+        }
+        Some(ExploredCallActivityAction::Search) => {
             coding_action_line("Search", explored_search_target(call))
         }
-        Some(ExploredCallUiAction::List) => coding_action_line(
+        Some(ExploredCallActivityAction::List) => coding_action_line(
             "List",
             call.target
                 .as_deref()
                 .map(compact_coding_summary_path)
                 .unwrap_or_else(|| summary.to_string()),
         ),
-        Some(ExploredCallUiAction::Run) => coding_action_line(
+        Some(ExploredCallActivityAction::Run) => coding_action_line(
             "Run",
             call.target
                 .as_deref()
@@ -1775,24 +1811,24 @@ fn explored_call_line(call: &ExploredCallActivityCell) -> Line<'static> {
     }
 }
 
-fn explored_call_action(call: &ExploredCallActivityCell) -> Option<ExploredCallUiAction> {
+fn explored_call_action(call: &ExploredCallActivityData) -> Option<ExploredCallActivityAction> {
     call.action.clone().or_else(|| match call.tool_name.trim() {
-        "Read" => Some(ExploredCallUiAction::Read),
-        "Search" => Some(ExploredCallUiAction::Search),
-        "List" => Some(ExploredCallUiAction::List),
-        "Run" => Some(ExploredCallUiAction::Run),
+        "Read" => Some(ExploredCallActivityAction::Read),
+        "Search" => Some(ExploredCallActivityAction::Search),
+        "List" => Some(ExploredCallActivityAction::List),
+        "Run" => Some(ExploredCallActivityAction::Run),
         _ => None,
     })
 }
 
-fn explored_read_target(call: &ExploredCallActivityCell) -> String {
+fn explored_read_target(call: &ExploredCallActivityData) -> String {
     call.target
         .as_deref()
         .map(compact_coding_summary_path)
         .unwrap_or_else(|| compact_coding_summary_path(&call.summary))
 }
 
-fn explored_search_target(call: &ExploredCallActivityCell) -> String {
+fn explored_search_target(call: &ExploredCallActivityData) -> String {
     if let Some(query) = call.target.as_deref() {
         return match call.secondary_target.as_deref() {
             Some(path) if !path.trim().is_empty() => {
@@ -1859,7 +1895,7 @@ fn compact_coding_summary_path(summary: &str) -> String {
 }
 
 fn render_coding_edit_cell_lines(
-    cell: &CodingEditActivityCell,
+    cell: &CodingEditActivityData,
     max_width: u16,
 ) -> Vec<Line<'static>> {
     let diff_files = cell.diff_files.as_slice();
@@ -1904,7 +1940,7 @@ fn render_coding_edit_cell_lines(
     lines
 }
 
-fn coding_edit_title(cell: &CodingEditActivityCell) -> String {
+fn coding_edit_title(cell: &CodingEditActivityData) -> String {
     if let [file] = cell.diff_files.as_slice() {
         return patch_single_file_title(file);
     }
@@ -1932,7 +1968,7 @@ fn coding_edit_title(cell: &CodingEditActivityCell) -> String {
 }
 
 fn render_runtime_status_cell_lines(
-    cell: &RuntimeStatusActivityCell,
+    cell: &RuntimeStatusActivityData,
     max_width: u16,
 ) -> Vec<Line<'static>> {
     let elapsed_seconds = cell
@@ -1949,7 +1985,7 @@ fn render_runtime_status_cell_lines(
 }
 
 fn runtime_status_cell_lines_at(
-    cell: &RuntimeStatusActivityCell,
+    cell: &RuntimeStatusActivityData,
     elapsed_seconds: u64,
     max_width: u16,
 ) -> Vec<Line<'static>> {
@@ -1993,17 +2029,17 @@ fn runtime_status_cell_lines_at(
 }
 
 fn render_terminal_wait_cell_lines(
-    cell: &TerminalWaitActivityCell,
+    cell: &TerminalWaitActivityData,
     max_width: u16,
 ) -> Vec<Line<'static>> {
     render_wait_activity_lines(&cell.title, &cell.body_lines, 6, max_width)
 }
 
-fn render_error_cell_lines(cell: &ErrorActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_error_cell_lines(cell: &ErrorActivityData, max_width: u16) -> Vec<Line<'static>> {
     render_error_lines(&cell.title, &cell.body_lines, 12, max_width)
 }
 
-fn render_warning_cell_lines(cell: &ErrorActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_warning_cell_lines(cell: &ErrorActivityData, max_width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled(
             "⚠",
@@ -2035,7 +2071,7 @@ fn render_warning_cell_lines(cell: &ErrorActivityCell, max_width: u16) -> Vec<Li
     lines
 }
 
-fn render_browser_cell_lines(cell: &BrowserActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_browser_cell_lines(cell: &BrowserActivityData, max_width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![activity_header(format!(
         "Captured URL: {}",
         cell.url
@@ -2063,7 +2099,7 @@ fn render_browser_cell_lines(cell: &BrowserActivityCell, max_width: u16) -> Vec<
 }
 
 fn render_live_browser_cell_lines(
-    cell: &LiveBrowserActivityCell,
+    cell: &LiveBrowserActivityData,
     max_width: u16,
 ) -> Vec<Line<'static>> {
     let title = cell
@@ -2089,16 +2125,16 @@ fn render_live_browser_cell_lines(
 }
 
 fn render_web_search_cell_lines(
-    cell: &WebSearchActivityCell,
+    cell: &WebSearchActivityData,
     max_width: u16,
 ) -> Vec<Line<'static>> {
     let title = match cell.action {
-        WebSearchUiAction::Searching => format!("Searching the web: {}", cell.query),
-        WebSearchUiAction::Searched => format!("Searched the web: {}", cell.query),
+        WebSearchActivityAction::Searching => format!("Searching the web: {}", cell.query),
+        WebSearchActivityAction::Searched => format!("Searched the web: {}", cell.query),
     };
     let marker = match cell.action {
-        WebSearchUiAction::Searching => activity_marker(None),
-        WebSearchUiAction::Searched => Span::styled(ACTIVITY_BULLET, dim_style()),
+        WebSearchActivityAction::Searching => activity_marker(None),
+        WebSearchActivityAction::Searched => Span::styled(ACTIVITY_BULLET, dim_style()),
     };
     let mut lines = vec![activity_header_with_marker(marker, title, bold_style())];
     let mut detail = Vec::new();
@@ -2120,7 +2156,7 @@ fn render_web_search_cell_lines(
     lines
 }
 
-fn render_exec_cell_lines(cell: &ExecResultActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_exec_cell_lines(cell: &ExecResultActivityData, max_width: u16) -> Vec<Line<'static>> {
     let output = cell.command_output();
     let exit_code = output.meta.exit_code;
     let running = output.meta.is_running();
@@ -2153,18 +2189,20 @@ fn render_exec_cell_lines(cell: &ExecResultActivityCell, max_width: u16) -> Vec<
     lines
 }
 
-fn exec_header_title(cell: &ExecResultActivityCell, meta: &TerminalExecutionMeta) -> &'static str {
+fn exec_header_title(cell: &ExecResultActivityData, meta: &TerminalExecutionMeta) -> &'static str {
     if meta.is_running() {
         return "Running";
     }
     match cell.terminal_action {
-        Some(TerminalUiAction::Execute) if cell.terminal_origin == Some(TerminalUiOrigin::User) => {
+        Some(TerminalActivityAction::Execute)
+            if cell.terminal_origin == Some(TerminalActivityOrigin::User) =>
+        {
             "You ran"
         }
-        Some(TerminalUiAction::Continue) => "Continued",
-        Some(TerminalUiAction::Poll) => "Checked",
-        Some(TerminalUiAction::Terminate) => "Terminated",
-        Some(TerminalUiAction::Execute) | None => "Ran",
+        Some(TerminalActivityAction::Continue) => "Continued",
+        Some(TerminalActivityAction::Poll) => "Checked",
+        Some(TerminalActivityAction::Terminate) => "Terminated",
+        Some(TerminalActivityAction::Execute) | None => "Ran",
     }
 }
 
@@ -2188,7 +2226,7 @@ fn exit_marker_line(exit_code: i32) -> Line<'static> {
     ])
 }
 
-fn render_live_exec_cell_lines(cell: &LiveExecActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_live_exec_cell_lines(cell: &LiveExecActivityData, max_width: u16) -> Vec<Line<'static>> {
     let mut lines = command_header_lines_with_marker(
         activity_marker(cell.started_at_ms),
         "Running",
@@ -2209,7 +2247,7 @@ fn highlighted_shell_command_line(command: &str) -> Line<'static> {
         .unwrap_or_else(|| Line::from(Span::raw(command.to_string())))
 }
 
-fn render_patch_cell_lines(cell: &PatchActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_patch_cell_lines(cell: &PatchActivityData, max_width: u16) -> Vec<Line<'static>> {
     let files = cell.files.as_slice();
     let diff_backgrounds = diff_scope_backgrounds();
     let old_lineno_width = files
@@ -2262,7 +2300,7 @@ fn render_patch_cell_lines(cell: &PatchActivityCell, max_width: u16) -> Vec<Line
     lines
 }
 
-fn render_telegram_cell_lines(cell: &TelegramActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_telegram_cell_lines(cell: &TelegramActivityData, max_width: u16) -> Vec<Line<'static>> {
     render_message_activity_lines(
         &cell.title,
         &cell.detail_lines,
@@ -2274,19 +2312,19 @@ fn render_telegram_cell_lines(cell: &TelegramActivityCell, max_width: u16) -> Ve
     )
 }
 
-fn render_reply_cell_lines(cell: &ReplyActivityCell, max_width: u16) -> Vec<Line<'static>> {
-    if cell.disposition == crate::tool_ui::ReplyDisposition::Resolved
-        && cell.subject == crate::tool_ui::ReplySubject::Message
+fn render_reply_cell_lines(cell: &ReplyActivityData, max_width: u16) -> Vec<Line<'static>> {
+    if cell.disposition == crate::activity_event::ReplyDisposition::Resolved
+        && cell.subject == crate::activity_event::ReplySubject::Message
     {
         return render_agent_message_reply_lines(&cell.message_lines, max_width);
     }
 
     let (title, color) = match cell.disposition {
-        crate::tool_ui::ReplyDisposition::Resolved => {
+        crate::activity_event::ReplyDisposition::Resolved => {
             (resolved_reply_title(cell), Color::LightGreen)
         }
-        crate::tool_ui::ReplyDisposition::Dismissed => ("Dismissed", Color::DarkGray),
-        crate::tool_ui::ReplyDisposition::Failed => ("Failed", Color::Red),
+        crate::activity_event::ReplyDisposition::Dismissed => ("Dismissed", Color::DarkGray),
+        crate::activity_event::ReplyDisposition::Failed => ("Failed", Color::Red),
     };
     let mut lines = vec![activity_header_with_styles(
         title,
@@ -2323,14 +2361,14 @@ fn render_agent_message_reply_lines(
     lines
 }
 
-fn resolved_reply_title(cell: &ReplyActivityCell) -> &'static str {
+fn resolved_reply_title(cell: &ReplyActivityData) -> &'static str {
     match cell.subject {
-        crate::tool_ui::ReplySubject::Message => "Resolved Message",
-        crate::tool_ui::ReplySubject::Notice => "Resolved Notice",
+        crate::activity_event::ReplySubject::Message => "Resolved Message",
+        crate::activity_event::ReplySubject::Notice => "Resolved Notice",
     }
 }
 
-fn render_plan_cell_lines(cell: &PlanActivityCell, max_width: u16) -> Vec<Line<'static>> {
+fn render_plan_cell_lines(cell: &PlanActivityData, max_width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![plan_header_line(cell.kind)];
     if let Some(explanation) = cell.explanation.as_deref()
         && !explanation.trim().is_empty()
@@ -2393,68 +2431,31 @@ fn render_plan_cell_lines(cell: &PlanActivityCell, max_width: u16) -> Vec<Line<'
     lines
 }
 
-fn plan_header_line(kind: PlanUiKind) -> Line<'static> {
+fn plan_header_line(kind: PlanActivityKind) -> Line<'static> {
     match kind {
-        PlanUiKind::Proposed => activity_header_with_styles(
+        PlanActivityKind::Proposed => activity_header_with_styles(
             "Proposed Plan",
             dim_style().bg(Color::Rgb(42, 47, 55)),
             bold_style().bg(Color::Rgb(42, 47, 55)),
         ),
-        PlanUiKind::Updated => activity_header("Updated Plan"),
+        PlanActivityKind::Updated => activity_header("Updated Plan"),
     }
 }
 
 fn render_create_primitive_spec_cell_lines(
-    cell: &CreatePrimitiveSpecActivityCell,
+    cell: &CreatePrimitiveSpecActivityData,
 ) -> Vec<Line<'static>> {
     render_primitive_line(format!("Created Primitive Spec: {}", cell.primitive_id))
 }
 
 fn render_activate_primitive_cell_lines(
-    cell: &ActivatePrimitiveActivityCell,
+    cell: &ActivatePrimitiveActivityData,
 ) -> Vec<Line<'static>> {
     render_primitive_line(format!("Activated Primitive: {}", cell.primitive_id))
 }
 
 fn render_primitive_line(title: String) -> Vec<Line<'static>> {
     vec![activity_header(title)]
-}
-
-fn render_text_activity_lines(
-    title: &str,
-    body_lines: &[String],
-    limit: usize,
-    markdown: bool,
-    max_width: u16,
-) -> Vec<Line<'static>> {
-    let mut lines = vec![activity_header(title.to_string())];
-
-    if markdown && !body_lines.is_empty() {
-        let joined = body_lines
-            .iter()
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let md_lines =
-            render_markdown_with_width(&joined, Color::Gray, body_markdown_width(max_width));
-        lines.extend(prefixed_body_lines(md_lines, max_width));
-    } else {
-        lines.extend(prefixed_body_lines(
-            body_lines
-                .iter()
-                .take(limit)
-                .map(|line| {
-                    Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(Color::Gray),
-                    ))
-                })
-                .collect(),
-            max_width,
-        ));
-    }
-    lines
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2566,7 +2567,7 @@ fn render_error_lines(
     lines
 }
 
-fn render_coding_review_cell_lines(cell: &CodingReviewActivityCell) -> Vec<Line<'static>> {
+fn render_coding_review_cell_lines(cell: &CodingReviewActivityData) -> Vec<Line<'static>> {
     let title = if cell.title.trim().is_empty() {
         "Review".to_string()
     } else {
@@ -2575,7 +2576,7 @@ fn render_coding_review_cell_lines(cell: &CodingReviewActivityCell) -> Vec<Line<
     vec![activity_header(title)]
 }
 
-fn render_patch_file_header(file: &PatchFileUiData) -> Line<'static> {
+fn render_patch_file_header(file: &PatchFileActivityDescriptor) -> Line<'static> {
     let mut spans = Vec::new();
     spans.push(Span::styled(
         file.path.clone(),
@@ -2596,7 +2597,7 @@ fn render_patch_file_header(file: &PatchFileUiData) -> Line<'static> {
     Line::from(spans)
 }
 
-fn patch_single_file_title(file: &PatchFileUiData) -> String {
+fn patch_single_file_title(file: &PatchFileActivityDescriptor) -> String {
     format!(
         "Edited {} (+{} -{})",
         file.path, file.added_lines, file.removed_lines
@@ -2604,7 +2605,7 @@ fn patch_single_file_title(file: &PatchFileUiData) -> String {
 }
 
 fn render_patch_file_diff_lines(
-    file: &PatchFileUiData,
+    file: &PatchFileActivityDescriptor,
     diff_backgrounds: DiffScopeBackgrounds,
     old_lineno_width: usize,
     new_lineno_width: usize,
@@ -2629,7 +2630,7 @@ fn render_patch_file_diff_lines(
 }
 
 fn render_patch_diff_line(
-    line: &PatchDiffLineUiData,
+    line: &PatchDiffLineActivityDescriptor,
     highlighted_spans: Option<Vec<Span<'static>>>,
     _diff_backgrounds: DiffScopeBackgrounds,
     old_lineno_width: usize,
@@ -2773,8 +2774,10 @@ fn truncate_prefixed_lines_middle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::activity_event::{
+        PatchDiffLineKind, PatchFileOperation, ReplyDisposition, ReplySubject,
+    };
     use crate::dashboard::assistant_activity_cell;
-    use crate::tool_ui::{PatchDiffLineKind, PatchFileOperation, ReplyDisposition, ReplySubject};
 
     /// Verify that fenced code blocks inside an assistant cell hide their
     /// delimiters while preserving syntax-highlighted code spans.
@@ -2790,16 +2793,8 @@ fn main() {
 ```
 
 That's it.";
-        let cell = AssistantActivityCell {
-            title: "Here is some code:".to_string(),
-            body_lines: body
-                .lines()
-                .skip(1)
-                .take(8)
-                .map(|s| s.to_string())
-                .collect(),
-            full_body: Some(body.to_string()),
-            rich_mode: true,
+        let cell = AssistantActivityData {
+            content: body.to_string(),
         };
         let lines = render_assistant_cell_lines(&cell, 80);
 
@@ -2864,13 +2859,10 @@ That's it.";
 
     #[test]
     fn thinking_cell_renders_body_as_markdown() {
-        let collapsed = ThinkingActivityCell {
-            title: "Thinking".to_string(),
-            body_lines: vec!["Some `code` and **bold** text".to_string()],
-            full_body: Some("Full body with `details`".to_string()),
-            expanded: false,
+        let collapsed = ThinkingActivityData {
+            content: "Some `code` and **bold** text".to_string(),
         };
-        let collapsed_lines = render_thinking_cell_lines(&collapsed, 80);
+        let collapsed_lines = render_thinking_cell_lines(&collapsed, 80, false);
         let code_span = collapsed_lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -2883,13 +2875,10 @@ That's it.";
                 .is_some_and(|span| span.content.as_ref() == ACTIVITY_BODY_INDENT)
         }));
 
-        let expanded = ThinkingActivityCell {
-            title: "Thinking".to_string(),
-            body_lines: vec!["Preview only".to_string()],
-            full_body: Some("Expanded body with `details`".to_string()),
-            expanded: true,
+        let expanded = ThinkingActivityData {
+            content: "Preview only\nExpanded body with `details`".to_string(),
         };
-        let expanded_rendered = render_thinking_cell_lines(&expanded, 80)
+        let expanded_rendered = render_thinking_cell_lines(&expanded, 80, true)
             .iter()
             .map(line_text)
             .collect::<Vec<_>>();
@@ -2899,7 +2888,7 @@ That's it.";
                 .any(|line| line.contains("Expanded body with details"))
         );
         assert!(
-            !expanded_rendered
+            expanded_rendered
                 .iter()
                 .any(|line| line.contains("Preview only"))
         );
@@ -2907,18 +2896,16 @@ That's it.";
 
     #[test]
     fn thinking_cell_wraps_multiline_body_with_bar_prefix() {
-        let cell = ThinkingActivityCell {
-            title: "Thinking".to_string(),
-            body_lines: vec![
-                "Planning code reviews".to_string(),
-                String::new(),
-                "I need to keep going and review the events before finalizing everything. I should probably run git status, and then commit and push.".to_string(),
-            ],
-            full_body: None,
-            expanded: false,
+        let cell = ThinkingActivityData {
+            content: [
+                "Planning code reviews",
+                "",
+                "I need to keep going and review the events before finalizing everything. I should probably run git status, and then commit and push.",
+            ]
+            .join("\n"),
         };
 
-        let rendered = render_thinking_cell_lines(&cell, 34)
+        let rendered = render_thinking_cell_lines(&cell, 34, false)
             .iter()
             .map(line_text)
             .collect::<Vec<_>>();
@@ -2945,17 +2932,15 @@ That's it.";
 
     #[test]
     fn thinking_cell_wraps_wide_unicode_with_aligned_prefix() {
-        let cell = ThinkingActivityCell {
-            title: "Thinking".to_string(),
-            body_lines: vec![
-                "处理中文对齐问题需要按终端显示宽度换行，否则左侧边线会错位".to_string(),
-                "English text followed by 中文字符 should still align".to_string(),
-            ],
-            full_body: None,
-            expanded: false,
+        let cell = ThinkingActivityData {
+            content: [
+                "处理中文对齐问题需要按终端显示宽度换行，否则左侧边线会错位",
+                "English text followed by 中文字符 should still align",
+            ]
+            .join("\n"),
         };
 
-        let rendered = render_thinking_cell_lines(&cell, 34)
+        let rendered = render_thinking_cell_lines(&cell, 34, false)
             .iter()
             .map(line_text)
             .collect::<Vec<_>>();
@@ -2982,31 +2967,31 @@ That's it.";
 
     #[test]
     fn explored_renders_activity_exploration_lines() {
-        let cell = ExploredActivityCell {
+        let cell = ExploredActivityData {
             stable_id: "explored".to_string(),
             title: "Explored".to_string(),
             calls: vec![
-                ExploredCallActivityCell {
+                ExploredCallActivityData {
                     tool_name: "Read".to_string(),
-                    action: Some(ExploredCallUiAction::Read),
+                    action: Some(ExploredCallActivityAction::Read),
                     target: Some("src/dashboard/mod.rs".to_string()),
                     secondary_target: None,
                     summary: "src/dashboard/mod.rs:L1268+83".to_string(),
                     detail_lines: vec!["83 lines".to_string()],
                     detail_title: None,
                 },
-                ExploredCallActivityCell {
+                ExploredCallActivityData {
                     tool_name: "Read".to_string(),
-                    action: Some(ExploredCallUiAction::Read),
+                    action: Some(ExploredCallActivityAction::Read),
                     target: Some("src/dashboard/mod.rs".to_string()),
                     secondary_target: None,
                     summary: "src/dashboard/mod.rs:L286+25".to_string(),
                     detail_lines: vec!["25 lines".to_string()],
                     detail_title: None,
                 },
-                ExploredCallActivityCell {
+                ExploredCallActivityData {
                     tool_name: "Search".to_string(),
-                    action: Some(ExploredCallUiAction::Search),
+                    action: Some(ExploredCallActivityAction::Search),
                     target: Some(
                         "push_command_input_display_text|command_input_display_text|display_text"
                             .to_string(),
@@ -3016,9 +3001,9 @@ That's it.";
                     detail_lines: Vec::new(),
                     detail_title: None,
                 },
-                ExploredCallActivityCell {
+                ExploredCallActivityData {
                     tool_name: "Read".to_string(),
-                    action: Some(ExploredCallUiAction::Read),
+                    action: Some(ExploredCallActivityAction::Read),
                     target: Some("src/dashboard/mod.rs".to_string()),
                     secondary_target: None,
                     summary: "src/dashboard/mod.rs".to_string(),
@@ -3055,13 +3040,13 @@ That's it.";
 
     #[test]
     fn explored_renders_all_calls_without_preview_truncation() {
-        let cell = ExploredActivityCell {
+        let cell = ExploredActivityData {
             stable_id: "explored".to_string(),
             title: "Explored".to_string(),
             calls: (0..14)
-                .map(|index| ExploredCallActivityCell {
+                .map(|index| ExploredCallActivityData {
                     tool_name: "Search".to_string(),
-                    action: Some(ExploredCallUiAction::Search),
+                    action: Some(ExploredCallActivityAction::Search),
                     target: Some(format!("needle-{index:02}")),
                     secondary_target: Some("src/dashboard".to_string()),
                     summary: format!("needle-{index:02} — 1 target in src/dashboard"),
@@ -3095,7 +3080,7 @@ That's it.";
 
     #[test]
     fn runtime_status_cell_full_motion_applies_working_shimmer() {
-        let cell = RuntimeStatusActivityCell {
+        let cell = RuntimeStatusActivityData {
             label: String::new(),
             detail: None,
             active_runtime_started_at_ms: Some(unix_time_millis()),
@@ -3137,7 +3122,7 @@ That's it.";
 
     #[test]
     fn runtime_status_cell_renders_working_tail_indicator() {
-        let cell = RuntimeStatusActivityCell {
+        let cell = RuntimeStatusActivityData {
             label: String::new(),
             detail: Some("model request".to_string()),
             active_runtime_started_at_ms: Some(1_000),
@@ -3162,27 +3147,27 @@ That's it.";
 
     #[test]
     fn patch_activity_cell_renders_diff_lines() {
-        let cell = PatchActivityCell {
+        let cell = PatchActivityData {
             summary_line: "1 file(s) changed (+1 -1)".to_string(),
-            files: vec![PatchFileUiData {
+            files: vec![PatchFileActivityDescriptor {
                 path: "src/app.rs".to_string(),
                 operation: PatchFileOperation::Update,
                 added_lines: 1,
                 removed_lines: 1,
                 diff_lines: vec![
-                    PatchDiffLineUiData {
+                    PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Context,
                         old_lineno: Some(1),
                         new_lineno: Some(1),
                         text: "fn main() {".to_string(),
                     },
-                    PatchDiffLineUiData {
+                    PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Delete,
                         old_lineno: Some(2),
                         new_lineno: None,
                         text: "    println!(\"old\");".to_string(),
                     },
-                    PatchDiffLineUiData {
+                    PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Add,
                         old_lineno: None,
                         new_lineno: Some(2),
@@ -3214,25 +3199,25 @@ That's it.";
     #[test]
     fn patch_and_coding_edit_cells_render_all_diff_lines() {
         let diff_lines = (1..=24)
-            .map(|line_no| PatchDiffLineUiData {
+            .map(|line_no| PatchDiffLineActivityDescriptor {
                 kind: PatchDiffLineKind::Add,
                 old_lineno: None,
                 new_lineno: Some(line_no),
                 text: format!("added_line_{line_no}();"),
             })
             .collect::<Vec<_>>();
-        let file = PatchFileUiData {
+        let file = PatchFileActivityDescriptor {
             path: "src/large.rs".to_string(),
             operation: PatchFileOperation::Update,
             added_lines: diff_lines.len(),
             removed_lines: 0,
             diff_lines,
         };
-        let patch_cell = PatchActivityCell {
+        let patch_cell = PatchActivityData {
             summary_line: "1 file changed".to_string(),
             files: vec![file.clone()],
         };
-        let coding_cell = CodingEditActivityCell {
+        let coding_cell = CodingEditActivityData {
             stable_id: "edit-large".to_string(),
             title: "Code Edit".to_string(),
             tool_name: Some("edit_code".to_string()),
@@ -3269,12 +3254,12 @@ That's it.";
     #[test]
     fn patch_and_coding_edit_cells_render_all_files() {
         let files = (1..=5)
-            .map(|file_no| PatchFileUiData {
+            .map(|file_no| PatchFileActivityDescriptor {
                 path: format!("src/file_{file_no}.rs"),
                 operation: PatchFileOperation::Update,
                 added_lines: 1,
                 removed_lines: 0,
-                diff_lines: vec![PatchDiffLineUiData {
+                diff_lines: vec![PatchDiffLineActivityDescriptor {
                     kind: PatchDiffLineKind::Add,
                     old_lineno: None,
                     new_lineno: Some(1),
@@ -3282,11 +3267,11 @@ That's it.";
                 }],
             })
             .collect::<Vec<_>>();
-        let patch_cell = PatchActivityCell {
+        let patch_cell = PatchActivityData {
             summary_line: "5 files changed".to_string(),
             files: files.clone(),
         };
-        let coding_cell = CodingEditActivityCell {
+        let coding_cell = CodingEditActivityData {
             stable_id: "edit-many-files".to_string(),
             title: "Code Edit".to_string(),
             tool_name: Some("edit_code".to_string()),
@@ -3320,7 +3305,7 @@ That's it.";
 
     #[test]
     fn coding_edit_cell_renders_compact_diff_without_internal_details() {
-        let cell = CodingEditActivityCell {
+        let cell = CodingEditActivityData {
             stable_id: "edit-1".to_string(),
             title: "Code Edit".to_string(),
             tool_name: None,
@@ -3331,19 +3316,19 @@ That's it.";
             removed_lines: 1,
             propagation_count: 7,
             impact_lines: vec!["src/app.rs::run - propagation review".to_string()],
-            diff_files: vec![PatchFileUiData {
+            diff_files: vec![PatchFileActivityDescriptor {
                 path: "src/app.rs".to_string(),
                 operation: PatchFileOperation::Update,
                 added_lines: 1,
                 removed_lines: 1,
                 diff_lines: vec![
-                    PatchDiffLineUiData {
+                    PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Delete,
                         old_lineno: Some(1),
                         new_lineno: None,
                         text: "old();".to_string(),
                     },
-                    PatchDiffLineUiData {
+                    PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Add,
                         old_lineno: None,
                         new_lineno: Some(1),
@@ -3395,8 +3380,9 @@ That's it.";
             &mut buffer,
             Rect::new(0, 0, 80, 12),
             ActivityFeedRenderArgs {
-                cells: &[ActivityCell::CodingEdit(cell)],
+                cells: &[SessionActivityEvent::CodingEdit(cell)],
                 live_cells: &[],
+                expanded_thinking: &HashSet::new(),
                 scroll_offset: 0,
                 cache: &mut cache,
                 user_hyperlink_areas: &mut user_hyperlink_areas,
@@ -3446,6 +3432,7 @@ That's it.";
             ActivityFeedRenderArgs {
                 cells: &[cell],
                 live_cells: &[],
+                expanded_thinking: &HashSet::new(),
                 scroll_offset: 0,
                 cache: &mut cache,
                 user_hyperlink_areas: &mut user_hyperlink_areas,
@@ -3480,6 +3467,7 @@ That's it.";
             ActivityFeedRenderArgs {
                 cells: std::slice::from_ref(&cell),
                 live_cells: &[],
+                expanded_thinking: &HashSet::new(),
                 scroll_offset: 0,
                 cache: &mut cache,
                 user_hyperlink_areas: &mut Vec::new(),
@@ -3495,6 +3483,7 @@ That's it.";
             ActivityFeedRenderArgs {
                 cells: &[cell],
                 live_cells: &[],
+                expanded_thinking: &HashSet::new(),
                 scroll_offset: 1,
                 cache: &mut cache,
                 user_hyperlink_areas: &mut Vec::new(),
@@ -3518,6 +3507,7 @@ That's it.";
             ActivityFeedRenderArgs {
                 cells: std::slice::from_ref(&cell),
                 live_cells: &[],
+                expanded_thinking: &HashSet::new(),
                 scroll_offset: 0,
                 cache: &mut cache,
                 user_hyperlink_areas: &mut Vec::new(),
@@ -3539,6 +3529,7 @@ That's it.";
             ActivityFeedRenderArgs {
                 cells: &[cell],
                 live_cells: &[],
+                expanded_thinking: &HashSet::new(),
                 scroll_offset: 0,
                 cache: &mut cache,
                 user_hyperlink_areas: &mut Vec::new(),
@@ -3575,9 +3566,9 @@ That's it.";
     #[test]
     fn transcript_includes_exec_command_output_and_exit_marker() {
         let transcript = activity_transcript_text(
-            &[ActivityCell::ExecResult(ExecResultActivityCell {
+            &[SessionActivityEvent::ExecResult(ExecResultActivityData {
                 title: "cargo check".to_string(),
-                terminal_action: Some(TerminalUiAction::Execute),
+                terminal_action: Some(TerminalActivityAction::Execute),
                 terminal_origin: None,
                 meta: Some("exit=0 cwd=C:/repo".to_string()),
                 output_lines: vec!["Finished dev profile".to_string()],
@@ -3593,9 +3584,9 @@ That's it.";
     #[test]
     fn transcript_lines_preserve_styled_exec_content() {
         let lines = activity_transcript_lines(
-            &[ActivityCell::ExecResult(ExecResultActivityCell {
+            &[SessionActivityEvent::ExecResult(ExecResultActivityData {
                 title: "cargo check".to_string(),
-                terminal_action: Some(TerminalUiAction::Execute),
+                terminal_action: Some(TerminalActivityAction::Execute),
                 terminal_origin: None,
                 meta: Some("exit=0 cwd=C:/repo".to_string()),
                 output_lines: vec!["Finished dev profile".to_string()],
@@ -3626,9 +3617,9 @@ That's it.";
     #[test]
     fn exec_header_reflects_terminal_action_and_running_status() {
         let continued = render_exec_cell_lines(
-            &ExecResultActivityCell {
+            &ExecResultActivityData {
                 title: "stdin".to_string(),
-                terminal_action: Some(TerminalUiAction::Continue),
+                terminal_action: Some(TerminalActivityAction::Continue),
                 terminal_origin: None,
                 meta: Some("main  exited  exit=0  cwd=C:/repo".to_string()),
                 output_lines: Vec::new(),
@@ -3644,9 +3635,9 @@ That's it.";
         );
 
         let running = render_exec_cell_lines(
-            &ExecResultActivityCell {
+            &ExecResultActivityData {
                 title: "cargo test".to_string(),
-                terminal_action: Some(TerminalUiAction::Execute),
+                terminal_action: Some(TerminalActivityAction::Execute),
                 terminal_origin: None,
                 meta: Some("main  running  exit=-  cwd=C:/repo".to_string()),
                 output_lines: Vec::new(),
@@ -3662,10 +3653,10 @@ That's it.";
         );
 
         let user_command = render_exec_cell_lines(
-            &ExecResultActivityCell {
+            &ExecResultActivityData {
                 title: "ls -la".to_string(),
-                terminal_action: Some(TerminalUiAction::Execute),
-                terminal_origin: Some(TerminalUiOrigin::User),
+                terminal_action: Some(TerminalActivityAction::Execute),
+                terminal_origin: Some(TerminalActivityOrigin::User),
                 meta: Some("main  exited  exit=0  cwd=C:/repo".to_string()),
                 output_lines: Vec::new(),
             },
@@ -3683,7 +3674,7 @@ That's it.";
     #[test]
     fn error_activity_cell_uses_error_marker() {
         let rendered = render_error_cell_lines(
-            &ErrorActivityCell {
+            &ErrorActivityData {
                 title: "Command failed".to_string(),
                 body_lines: vec!["exit=1".to_string()],
             },
@@ -3702,7 +3693,7 @@ That's it.";
     #[test]
     fn warning_activity_cell_uses_warning_marker() {
         let rendered = render_warning_cell_lines(
-            &ErrorActivityCell {
+            &ErrorActivityData {
                 title: "Config drift detected".to_string(),
                 body_lines: vec!["using fallback".to_string()],
             },
@@ -3721,8 +3712,8 @@ That's it.";
     #[test]
     fn web_search_activity_cell_renders_searching_and_searched_states() {
         let searching = render_web_search_cell_lines(
-            &WebSearchActivityCell {
-                action: WebSearchUiAction::Searching,
+            &WebSearchActivityData {
+                action: WebSearchActivityAction::Searching,
                 query: "ratatui hyperlinks".to_string(),
                 url: None,
                 body_lines: Vec::new(),
@@ -3740,8 +3731,8 @@ That's it.";
         );
 
         let searched = render_web_search_cell_lines(
-            &WebSearchActivityCell {
-                action: WebSearchUiAction::Searched,
+            &WebSearchActivityData {
+                action: WebSearchActivityAction::Searched,
                 query: "ratatui hyperlinks".to_string(),
                 url: Some("https://docs.rs/ratatui".to_string()),
                 body_lines: vec!["found docs".to_string()],
@@ -3762,7 +3753,7 @@ That's it.";
     #[test]
     fn final_message_separator_renders_worked_duration() {
         let rendered = render_activity_cell_lines(
-            &ActivityCell::FinalMessageSeparator(FinalMessageSeparatorActivityCell {
+            &SessionActivityEvent::FinalMessageSeparator(FinalMessageSeparatorActivityData {
                 elapsed_seconds: Some(17 * 60 + 44),
             }),
             80,
@@ -3779,8 +3770,8 @@ That's it.";
     #[test]
     fn plan_activity_cell_renders_explanation_and_empty_state() {
         let rendered = render_plan_cell_lines(
-            &PlanActivityCell {
-                kind: PlanUiKind::Updated,
+            &PlanActivityData {
+                kind: PlanActivityKind::Updated,
                 explanation: Some("Need to finish the setup first.".to_string()),
                 steps: Vec::new(),
             },
@@ -3794,8 +3785,8 @@ That's it.";
         assert!(rendered.iter().any(|line| line.contains("No active plan.")));
 
         let transcript = activity_transcript_text(
-            &[ActivityCell::PlanResult(PlanActivityCell {
-                kind: PlanUiKind::Updated,
+            &[SessionActivityEvent::PlanResult(PlanActivityData {
+                kind: PlanActivityKind::Updated,
                 explanation: Some("Need to finish the setup first.".to_string()),
                 steps: Vec::new(),
             })],
@@ -3805,8 +3796,8 @@ That's it.";
         assert!(transcript.contains("(empty plan)"));
 
         let proposed = render_plan_cell_lines(
-            &PlanActivityCell {
-                kind: PlanUiKind::Proposed,
+            &PlanActivityData {
+                kind: PlanActivityKind::Proposed,
                 explanation: None,
                 steps: Vec::new(),
             },
@@ -3824,7 +3815,7 @@ That's it.";
     #[test]
     fn reply_activity_cell_labels_notice_subjects() {
         let notice = render_reply_cell_lines(
-            &ReplyActivityCell {
+            &ReplyActivityData {
                 disposition: ReplyDisposition::Resolved,
                 subject: ReplySubject::Notice,
                 message_lines: Vec::new(),
@@ -3847,11 +3838,8 @@ That's it.";
             .map(|index| format!("[定位段 {index:03}] marker-{index:03}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let full_body = format!("Title\n{body}");
-        let cell = UserActivityCell {
-            title: "Title".to_string(),
-            body_lines: body.lines().take(6).map(ToString::to_string).collect(),
-            full_body: Some(full_body),
+        let cell = UserActivityData {
+            content: format!("Title\n{body}"),
             image_attachments: Vec::new(),
         };
 
@@ -3867,10 +3855,8 @@ That's it.";
 
     #[test]
     fn user_activity_cell_renders_image_labels() {
-        let cell = UserActivityCell {
-            title: "inspect this".to_string(),
-            body_lines: Vec::new(),
-            full_body: None,
+        let cell = UserActivityData {
+            content: "inspect this".to_string(),
             image_attachments: vec![MessageImageAttachment {
                 label: "dashboard screenshot".to_string(),
                 uri: "C:/tmp/dashboard.png".to_string(),
@@ -3891,7 +3877,7 @@ That's it.";
             "user image attachments should be visible in TUI user cells: {rendered:?}"
         );
 
-        let transcript = activity_transcript_text(&[ActivityCell::User(cell)], &[]);
+        let transcript = activity_transcript_text(&[SessionActivityEvent::User(cell)], &[]);
         assert!(transcript.contains("[1: local image] dashboard screenshot C:/tmp/dashboard.png"));
     }
 
@@ -3902,7 +3888,7 @@ That's it.";
             .collect::<Vec<_>>();
 
         let rendered = render_reply_cell_lines(
-            &ReplyActivityCell {
+            &ReplyActivityData {
                 disposition: ReplyDisposition::Resolved,
                 subject: ReplySubject::Message,
                 message_lines,

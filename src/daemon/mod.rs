@@ -3217,6 +3217,9 @@ fn observe_daemon_shutdown_status(
 pub async fn spawn_detached_daemon_process() -> Result<()> {
     let current_exe = std::env::current_exe()
         .map_err(|err| miette!("resolve current executable failed: {err}"))?;
+    let startup_mode = DetachedDaemonStartupMode::from_tray_enabled(
+        crate::daemon_tray::should_attempt_daemon_tray(),
+    );
 
     // Redirect stderr to the log file to simplify daemon startup failure diagnosis.
     // stdout is still discarded because emit_startup_progress println! output is
@@ -3230,29 +3233,74 @@ pub async fn spawn_detached_daemon_process() -> Result<()> {
         .map_err(|err| miette!("open daemon stderr log {}: {err}", log_path.display()))?;
 
     let mut command = std::process::Command::new(current_exe);
-    command
-        .arg("daemon")
-        .arg("serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(stderr_file);
-    if !crate::daemon_tray::should_attempt_daemon_tray() {
-        command.env(DAEMONIZE_ENV, "1");
-    }
-    #[cfg(windows)]
-    {
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-
-        crate::process_spawn::apply_no_window_with_flags(
-            &mut command,
-            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-        );
-    }
+    configure_detached_daemon_command(&mut command, startup_mode);
+    command.stderr(stderr_file);
     command
         .spawn()
         .map_err(|err| miette!("spawn daemon process failed: {err}"))?;
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DetachedDaemonStartupMode {
+    WithTray,
+    Headless,
+}
+
+impl DetachedDaemonStartupMode {
+    fn from_tray_enabled(enabled: bool) -> Self {
+        if enabled {
+            Self::WithTray
+        } else {
+            Self::Headless
+        }
+    }
+}
+
+fn configure_detached_daemon_command(
+    command: &mut std::process::Command,
+    startup_mode: DetachedDaemonStartupMode,
+) {
+    command
+        .arg("daemon")
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+
+    match startup_mode {
+        DetachedDaemonStartupMode::WithTray => {
+            command.env(crate::daemon_tray::ENABLE_TRAY_ENV, "1");
+            command.env_remove(DAEMONIZE_ENV);
+        }
+        DetachedDaemonStartupMode::Headless => {
+            command.env(DAEMONIZE_ENV, "1");
+            command.env_remove(crate::daemon_tray::ENABLE_TRAY_ENV);
+        }
+    }
+
+    apply_detached_daemon_creation_flags(command, startup_mode);
+}
+
+#[cfg(windows)]
+fn apply_detached_daemon_creation_flags(
+    command: &mut std::process::Command,
+    startup_mode: DetachedDaemonStartupMode,
+) {
+    const DETACHED_PROCESS: u32 = 0x00000008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+
+    let mut flags = CREATE_NEW_PROCESS_GROUP;
+    if matches!(startup_mode, DetachedDaemonStartupMode::Headless) {
+        flags |= DETACHED_PROCESS;
+    }
+    crate::process_spawn::apply_no_window_with_flags(command, flags);
+}
+
+#[cfg(not(windows))]
+fn apply_detached_daemon_creation_flags(
+    _command: &mut std::process::Command,
+    _startup_mode: DetachedDaemonStartupMode,
+) {
 }
 
 async fn daemon_stderr_log_path() -> PathBuf {
@@ -3437,6 +3485,58 @@ mod tests {
         assert_eq!(client.base_url(), "http://localhost:53825");
         assert_eq!(client.ws_url(), "ws://localhost:53825/dashboard/stream");
     }
+
+    #[test]
+    fn detached_daemon_command_with_tray_marks_child_startup_intent() {
+        let mut command = std::process::Command::new("daat-locus");
+
+        configure_detached_daemon_command(&mut command, DetachedDaemonStartupMode::WithTray);
+
+        assert_eq!(
+            command_args(&command),
+            vec!["daemon".to_string(), "serve".to_string()]
+        );
+        assert_eq!(
+            command_env(&command, crate::daemon_tray::ENABLE_TRAY_ENV),
+            Some(Some("1".to_string()))
+        );
+        assert_eq!(command_env(&command, DAEMONIZE_ENV), Some(None));
+    }
+
+    #[test]
+    fn detached_daemon_command_headless_marks_daemonize_intent() {
+        let mut command = std::process::Command::new("daat-locus");
+
+        configure_detached_daemon_command(&mut command, DetachedDaemonStartupMode::Headless);
+
+        assert_eq!(
+            command_args(&command),
+            vec!["daemon".to_string(), "serve".to_string()]
+        );
+        assert_eq!(
+            command_env(&command, DAEMONIZE_ENV),
+            Some(Some("1".to_string()))
+        );
+        assert_eq!(
+            command_env(&command, crate::daemon_tray::ENABLE_TRAY_ENV),
+            Some(None)
+        );
+    }
+
+    fn command_args(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn command_env(command: &std::process::Command, key: &str) -> Option<Option<String>> {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+            .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
     #[test]
     fn command_request_defaults_to_webui_origin_for_compatibility() {
         let request: CommandRequest = serde_json::from_value(serde_json::json!({

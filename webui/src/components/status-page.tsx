@@ -83,20 +83,20 @@ import {
   runDashboardCommand,
   type DashboardAction,
   type DashboardActionResult,
+  type DashboardActivityHistoryItem,
   type DashboardActivityHistoryPage,
   type DashboardCommandAttachment,
   type DashboardPendingUserInput,
   type DashboardSnapshot,
   type DashboardPlanStep,
   type TokenUsageInfo,
-  type ActivityCellVariant,
-  type WebActivityBlock,
-  type WebActivityItem,
+  type SessionActivityEvent,
 } from "@/lib/daemon-api";
 import {
   foldCompletedAgentChatActivity,
   type AgentChatFoldDisplayItem,
 } from "@/lib/agent-chat-folding";
+import { normalizeThinkingMarkdown } from "@/lib/agent-chat-markdown";
 import {
   highlightCodeWithShiki,
   type ShikiColorScheme,
@@ -205,6 +205,82 @@ type AgentChatBubbleRole =
   | "telegram"
   | "system";
 
+type AgentChatTextBlock = {
+  type: "text";
+  text: string;
+};
+
+type AgentChatCodeBlock = {
+  type: "code";
+  code: string;
+  language?: string | null;
+};
+
+type AgentChatKvBlock = {
+  type: "kv";
+  entries: Array<{
+    key: string;
+    value: string;
+  }>;
+};
+
+type AgentChatListBlock = {
+  type: "list";
+  items: string[];
+};
+
+type AgentChatDiffBlock = {
+  type: "diff";
+  files: Array<{
+    path: string;
+    operation: string;
+    added_lines: number;
+    removed_lines: number;
+    lines: Array<{
+      kind: "context" | "delete" | "add" | "hunk_break" | (string & {});
+      old_lineno?: number | null;
+      new_lineno?: number | null;
+      text: string;
+    }>;
+  }>;
+};
+
+type AgentChatLinkBlock = {
+  type: "link";
+  label: string;
+  url: string;
+};
+
+type AgentChatArtifactBlock = {
+  type: "artifact";
+  label: string;
+  uri?: string | null;
+  mime_type?: string | null;
+};
+
+type AgentChatImageBlock = {
+  type: "image";
+  label: string;
+  uri: string;
+  mime_type?: string | null;
+};
+
+type AgentChatUnknownBlock = {
+  type: string;
+  [key: string]: unknown;
+};
+
+type AgentChatBlock =
+  | AgentChatTextBlock
+  | AgentChatCodeBlock
+  | AgentChatKvBlock
+  | AgentChatListBlock
+  | AgentChatDiffBlock
+  | AgentChatLinkBlock
+  | AgentChatArtifactBlock
+  | AgentChatImageBlock
+  | AgentChatUnknownBlock;
+
 type AgentChatBubble = {
   id: string;
   role: AgentChatBubbleRole;
@@ -214,13 +290,34 @@ type AgentChatBubble = {
   title: string;
   createdAt: number;
   updatedAt: number;
-  blocks: WebActivityBlock[];
+  blocks: AgentChatBlock[];
   planSteps: AgentChatPlanStep[];
   live?: boolean;
   toolName?: string;
   appName?: string;
   sourceLabel?: string;
-  cell?: ActivityCellVariant | null;
+  activityEvent?: SessionActivityEvent | null;
+};
+
+type AgentChatActivityItem = {
+  id: string;
+  kind: string;
+  status: string;
+  ui_hint?: string | null;
+  title: string;
+  actor?: string | null;
+  created_at: number;
+  updated_at: number;
+  source?: Record<string, unknown> | null;
+  tool?: Record<string, unknown> | null;
+  blocks?: AgentChatBlock[];
+  detail_blocks?: AgentChatBlock[];
+  error?: {
+    message: string;
+    details?: string[];
+  } | null;
+  metadata?: unknown;
+  activityEvent?: SessionActivityEvent | null;
 };
 
 type AgentChatQuickNavItem = {
@@ -365,7 +462,7 @@ const WEB_SLASH_COMMANDS: WebSlashCommandDefinition[] = [
   },
 ];
 
-type AgentChatActivityCellRender =
+type AgentChatSessionActivityRender =
   | {
       kind: "text";
       icon: AgentChatActivityMarkerKind;
@@ -434,9 +531,7 @@ type AgentChatActivityCellRender =
     }
   | {
       kind: "thinking";
-      title: string;
-      bodyLines: string[];
-      fullBody?: string | null;
+      content: string;
       bodyLimit: number;
     }
   | {
@@ -460,9 +555,9 @@ type AgentChatExploredCall = {
   detailTitle: string | null;
 };
 
-type AgentChatActivityCellViewProps = {
+type AgentChatSessionActivityViewProps = {
   bubbleId: string;
-  render: AgentChatActivityCellRender;
+  render: AgentChatSessionActivityRender;
 };
 
 function AgentChatComposer({
@@ -4490,16 +4585,16 @@ function AgentChatBubbleItem({
   }
 
   const isConversationMessage = agentChatBubbleIsConversationMessage(bubble);
-  const activityCellRender = agentChatActivityCellRenderForBubble(bubble);
-  const useCanonicalActivityCell = Boolean(activityCellRender);
-  const primaryBlocks = useCanonicalActivityCell
+  const SessionActivityRender = agentChatSessionActivityRenderForBubble(bubble);
+  const useCanonicalSessionActivity = Boolean(SessionActivityRender);
+  const primaryBlocks = useCanonicalSessionActivity
     ? []
     : agentChatDisplayBlocksForBubble(
         bubble,
         bubble.blocks.length > 0
           ? bubble.blocks
           : isConversationMessage
-            ? ([{ type: "text", text: bubble.title }] as WebActivityBlock[])
+            ? ([{ type: "text", text: bubble.title }] as AgentChatBlock[])
             : [],
       );
   const visibleBlockLimit =
@@ -4521,13 +4616,13 @@ function AgentChatBubbleItem({
       )}
     >
       <div className="flex min-w-0 max-w-full flex-col gap-2 text-sm leading-6 text-foreground">
-        {!isConversationMessage && !useCanonicalActivityCell ? (
+        {!isConversationMessage && !useCanonicalSessionActivity ? (
           <AgentChatActivityHeader bubble={bubble} isFocused={isFocused} />
         ) : null}
-        {activityCellRender ? (
-          <AgentChatActivityCellView
+        {SessionActivityRender ? (
+          <AgentChatSessionActivityView
             bubbleId={bubble.id}
-            render={activityCellRender}
+            render={SessionActivityRender}
           />
         ) : (
           <div className="flex min-w-0 max-w-full flex-col gap-2 text-foreground/90">
@@ -4692,10 +4787,10 @@ function AgentChatActivityHeader({
   );
 }
 
-function AgentChatActivityCellView({
+function AgentChatSessionActivityView({
   bubbleId,
   render,
-}: AgentChatActivityCellViewProps) {
+}: AgentChatSessionActivityViewProps) {
   if (render.kind === "text") {
     if (render.icon === "user") {
       return (
@@ -4727,9 +4822,7 @@ function AgentChatActivityCellView({
   if (render.kind === "thinking") {
     return (
       <AgentChatThinkingCollapsibleCell
-        title={render.title}
-        bodyLines={render.bodyLines}
-        fullBody={render.fullBody}
+        content={render.content}
         bodyLimit={render.bodyLimit}
       />
     );
@@ -5182,25 +5275,21 @@ function AgentChatStatusLineCell({
 }
 
 function AgentChatThinkingCollapsibleCell({
-  title,
-  bodyLines,
-  fullBody,
+  content,
   bodyLimit,
 }: {
-  title: string;
-  bodyLines: string[];
-  fullBody?: string | null;
+  content: string;
   bodyLimit: number;
 }) {
   const { open, toggle } = useCollapsibleState(false);
-  const contentText = (fullBody ?? bodyLines.join("\n")).trimEnd();
-  const isTruncatable = Boolean(fullBody) || bodyLines.length > bodyLimit;
+  const contentText = normalizeThinkingMarkdown(content.trimEnd());
+  const isTruncatable = contentText.split(/\r?\n/).length > bodyLimit;
 
   return (
     <div className="ml-3 flex min-w-0 max-w-full flex-col gap-0.5 border-l-2 border-muted pl-3 text-sm leading-6 text-foreground/90 [overflow-wrap:anywhere]">
       <div className="flex items-center gap-1.5 min-w-0">
         <p className="min-w-0 break-words font-semibold text-foreground">
-          <AgentChatMarkdownInline text={title} />
+          <AgentChatMarkdownInline text="Thinking" />
         </p>
         {isTruncatable ? (
           <CollapsibleTrigger
@@ -5697,7 +5786,7 @@ function AgentChatBlock({
   isFocused,
   messageMode = false,
 }: {
-  block: WebActivityBlock;
+  block: AgentChatBlock;
   blockId: string;
   isFocused: boolean;
   messageMode?: boolean;
@@ -6448,13 +6537,9 @@ function agentChatBubblesFromSnapshot(
   }
 
   const committed = agentChatCommittedBubblesFromSnapshot(snapshot);
-  const live = (snapshot.live_web_activity_items ?? [])
+  const live = (snapshot.live_activity_events ?? [])
     .map((entry, index) =>
-      agentChatBubbleFromWebActivityItem(
-        entry.item,
-        `live-${entry.key || index}`,
-        true,
-      ),
+      agentChatBubbleFromLiveSessionActivity(entry, `live-${entry.key || index}`),
     )
     .filter((bubble): bubble is AgentChatBubble => Boolean(bubble));
 
@@ -6468,27 +6553,221 @@ function agentChatCommittedBubblesFromSnapshot(
     return [];
   }
 
-  return agentChatBubblesFromWebActivityItems(
-    snapshot.activity_history?.items ?? snapshot.web_activity_items ?? [],
-    "activity",
-  );
+  const historyItems = snapshot.activity_history?.items ?? [];
+  if (historyItems.length > 0) {
+    return agentChatBubblesFromActivityHistoryItems(historyItems, "activity");
+  }
+  return agentChatBubblesFromSessionActivities(snapshot.activity_events ?? [], "activity");
 }
 
 function agentChatBubblesFromHistoryPage(
   page: DashboardActivityHistoryPage,
 ): AgentChatBubble[] {
-  return agentChatBubblesFromWebActivityItems(page.items ?? [], "history-page");
+  return agentChatBubblesFromActivityHistoryItems(page.items ?? [], "history-page");
 }
 
-function agentChatBubblesFromWebActivityItems(
-  items: WebActivityItem[],
+function agentChatBubblesFromActivityHistoryItems(
+  items: DashboardActivityHistoryItem[],
   fallbackPrefix: string,
 ): AgentChatBubble[] {
   return items
     .map((item, index) =>
-      agentChatBubbleFromWebActivityItem(item, `${fallbackPrefix}-${index}`),
+      agentChatBubbleFromActivityHistoryItem(item, `${fallbackPrefix}-${index}`),
     )
     .filter((bubble): bubble is AgentChatBubble => Boolean(bubble));
+}
+
+function agentChatBubblesFromSessionActivities(
+  events: SessionActivityEvent[],
+  fallbackPrefix: string,
+): AgentChatBubble[] {
+  return events
+    .map((event, index) =>
+      agentChatBubbleFromSessionActivity(event, `${fallbackPrefix}-${index}`),
+    )
+    .filter((bubble): bubble is AgentChatBubble => Boolean(bubble));
+}
+
+function agentChatBubbleFromLiveSessionActivity(
+  entry: { key: string; event: SessionActivityEvent } | unknown,
+  fallbackId: string,
+): AgentChatBubble | null {
+  const record = asRecord(entry);
+  if (!record) {
+    return null;
+  }
+  const event = asSessionActivityEvent(record.event);
+  if (!event) {
+    return null;
+  }
+  const key = stringValue(record.key, fallbackId);
+  return agentChatBubbleFromSessionActivity(event, `live-${key}`, true);
+}
+
+function agentChatBubbleFromSessionActivity(
+  event: SessionActivityEvent | unknown,
+  fallbackId: string,
+  live = false,
+): AgentChatBubble | null {
+  const sessionActivityEvent = asSessionActivityEvent(event);
+  if (!sessionActivityEvent) {
+    return null;
+  }
+  return agentChatBubbleFromActivityItem(
+    agentChatActivityItemFromEvent(sessionActivityEvent, fallbackId, 0, 0, live),
+    fallbackId,
+    live,
+  );
+}
+
+function agentChatBubbleFromActivityHistoryItem(
+  item: DashboardActivityHistoryItem | unknown,
+  fallbackId: string,
+): AgentChatBubble | null {
+  const record = asRecord(item);
+  if (!record) {
+    return null;
+  }
+
+  const event = asSessionActivityEvent(record.event);
+  if (!event) {
+    return null;
+  }
+
+  const id = stringValue(record.id, fallbackId);
+  return agentChatBubbleFromActivityItem(
+    agentChatActivityItemFromEvent(
+      event,
+      id,
+      numberValue(record.created_at, 0),
+      numberValue(record.updated_at, 0),
+    ),
+    fallbackId,
+  );
+}
+
+function agentChatActivityItemFromEvent(
+  event: SessionActivityEvent,
+  id: string,
+  createdAt: number,
+  updatedAt: number,
+  live = false,
+): AgentChatActivityItem {
+  const meta = agentChatActivityMetaFromEvent(event);
+  return {
+    id,
+    kind: meta.kind,
+    status: live ? "running" : "completed",
+    title: meta.title,
+    actor: meta.actor,
+    ui_hint: meta.uiHint,
+    created_at: createdAt,
+    updated_at: updatedAt,
+    blocks: [],
+    detail_blocks: [],
+    activityEvent: event,
+  };
+}
+
+function agentChatActivityMetaFromEvent(event: SessionActivityEvent): {
+  kind: string;
+  actor?: string;
+  title: string;
+  uiHint?: string;
+} {
+  const user = agentChatSessionActivityPayload(event, "User");
+  if (user) {
+    return {
+      kind: "message",
+      actor: "user",
+      title: agentChatSourceTitle(stringValue(user.content, ""), "You"),
+    };
+  }
+
+  const assistant = agentChatSessionActivityPayload(event, "Assistant");
+  if (assistant) {
+    return {
+      kind: "message",
+      actor: "assistant",
+      title: agentChatSourceTitle(stringValue(assistant.content, ""), "Agent"),
+    };
+  }
+
+  if (agentChatSessionActivityPayload(event, "Thinking")) {
+    return { kind: "message", actor: "assistant", title: "Thinking" };
+  }
+
+  const finalMessageSeparator = agentChatSessionActivityPayload(
+    event,
+    "FinalMessageSeparator",
+  );
+  if (finalMessageSeparator) {
+    const elapsedSeconds = nullableNumberValue(
+      finalMessageSeparator.elapsed_seconds,
+    );
+    return {
+      kind: "message",
+      actor: "system",
+      title:
+        elapsedSeconds === null
+          ? "Worked"
+          : `Worked for ${formatAgentChatDuration(elapsedSeconds * 1000)}`,
+      uiHint: "final-message-separator",
+    };
+  }
+
+  const plan = agentChatSessionActivityPayload(event, "PlanResult");
+  if (plan) {
+    return { kind: "plan", actor: "system", title: "Updated Plan" };
+  }
+
+  const reply = agentChatSessionActivityPayload(event, "Reply");
+  if (reply) {
+    return { kind: "message", actor: "assistant", title: "Reply" };
+  }
+
+  const patch = agentChatSessionActivityPayload(event, "Patch");
+  if (patch) {
+    return { kind: "patch", actor: "tool", title: stringValue(patch.summary_line, "Patch") };
+  }
+
+  const warning = agentChatSessionActivityPayload(event, "Warning");
+  if (warning) {
+    return { kind: "warning", actor: "system", title: stringValue(warning.title, "Warning") };
+  }
+
+  const error = agentChatSessionActivityPayload(event, "Error");
+  if (error) {
+    return { kind: "error", actor: "system", title: stringValue(error.title, "Error") };
+  }
+
+  const telegram = agentChatSessionActivityPayload(event, "Telegram");
+  if (telegram) {
+    return {
+      kind: "message",
+      actor: "telegram",
+      title: stringValue(telegram.title, "Telegram"),
+    };
+  }
+
+  const runtimeStatus = agentChatSessionActivityPayload(event, "RuntimeStatus");
+  if (runtimeStatus) {
+    return {
+      kind: "tool",
+      actor: "system",
+      title: stringValue(runtimeStatus.label, "Working"),
+    };
+  }
+
+  const title =
+    stringValue(agentChatSessionActivityPayload(event, "GenericApp")?.title, "") ||
+    stringValue(agentChatSessionActivityPayload(event, "TerminalWait")?.title, "") ||
+    stringValue(agentChatSessionActivityPayload(event, "ExecResult")?.title, "") ||
+    stringValue(agentChatSessionActivityPayload(event, "LiveExec")?.title, "") ||
+    stringValue(agentChatSessionActivityPayload(event, "Browser")?.title, "") ||
+    stringValue(agentChatSessionActivityPayload(event, "LiveBrowser")?.title, "") ||
+    "Activity";
+  return { kind: "tool", actor: "tool", title };
 }
 
 function mergeAgentChatBubbles(
@@ -6502,14 +6781,14 @@ function mergeAgentChatBubbles(
 }
 
 function agentChatBubbleIsOutputBoundary(bubble: AgentChatBubble) {
-  return agentChatBubbleHasActivityCellVariant(bubble, "Reply");
+  return agentChatBubbleHasSessionActivityEvent(bubble, "Reply");
 }
 
-function agentChatBubbleHasActivityCellVariant(
+function agentChatBubbleHasSessionActivityEvent(
   bubble: AgentChatBubble,
   variant: string,
 ) {
-  return Boolean(agentChatActivityCellPayload(bubble.cell, variant));
+  return Boolean(agentChatSessionActivityPayload(bubble.activityEvent, variant));
 }
 
 function formatAgentChatWorkedDuration(bubbles: AgentChatBubble[]) {
@@ -6552,8 +6831,8 @@ function formatAgentChatDuration(durationMs: number) {
   return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
-function agentChatBubbleFromWebActivityItem(
-  item: WebActivityItem | unknown,
+function agentChatBubbleFromActivityItem(
+  item: AgentChatActivityItem | unknown,
   fallbackId: string,
   live = false,
 ): AgentChatBubble | null {
@@ -6573,14 +6852,14 @@ function agentChatBubbleFromWebActivityItem(
 
   return {
     id,
-    role: agentChatRoleFromWebActivity(actor, kind, source),
+    role: agentChatRoleFromActivityItem(actor, kind, source),
     kind,
     status,
     uiHint: nullableStringValue(record.ui_hint),
     title,
     createdAt: numberValue(record.created_at, 0),
     updatedAt: numberValue(record.updated_at, 0),
-    blocks: webActivityBlocksValue(record.blocks),
+    blocks: agentChatBlocksValue(record.blocks),
     planSteps: agentChatPlanStepsFromMetadata(record.metadata),
     live,
     toolName: tool ? stringValue(tool.name, "") : undefined,
@@ -6588,11 +6867,11 @@ function agentChatBubbleFromWebActivityItem(
     sourceLabel: source
       ? stringValue(source.label, stringValue(source.source_type, ""))
       : undefined,
-    cell: asActivityCellVariant(record.cell),
+    activityEvent: asSessionActivityEvent(record.activityEvent),
   };
 }
 
-function agentChatRoleFromWebActivity(
+function agentChatRoleFromActivityItem(
   actor: string,
   kind: string,
   source: Record<string, unknown> | null,
@@ -6719,9 +6998,9 @@ function agentChatBubbleIsUserInput(bubble: AgentChatBubble) {
   return (
     bubble.kind === "message" &&
     (bubble.role === "user" || bubble.role === "telegram") &&
-    !agentChatBubbleHasActivityCellVariant(bubble, "Assistant") &&
-    !agentChatBubbleHasActivityCellVariant(bubble, "Reply") &&
-    !agentChatBubbleHasActivityCellVariant(bubble, "Thinking")
+    !agentChatBubbleHasSessionActivityEvent(bubble, "Assistant") &&
+    !agentChatBubbleHasSessionActivityEvent(bubble, "Reply") &&
+    !agentChatBubbleHasSessionActivityEvent(bubble, "Thinking")
   );
 }
 
@@ -6751,13 +7030,13 @@ function agentChatQuickNavLabelForBubble(bubble: AgentChatBubble) {
     return null;
   }
 
-  const cell = bubble.cell;
-  const user = agentChatActivityCellPayload(cell, "User");
+  const activityEvent = bubble.activityEvent;
+  const user = agentChatSessionActivityPayload(activityEvent, "User");
   if (user) {
     return agentChatQuickNavLabelFromPayload(user, bubble.title);
   }
 
-  const telegram = agentChatActivityCellPayload(cell, "Telegram");
+  const telegram = agentChatSessionActivityPayload(activityEvent, "Telegram");
   if (telegram) {
     return agentChatQuickNavLabelFromPayload(telegram, bubble.title);
   }
@@ -6810,6 +7089,7 @@ function agentChatQuickNavLabelFromPayload(
   fallback: string,
 ) {
   const candidates = [
+    nullableStringValue(payload.content),
     nullableStringValue(payload.full_body),
     ...stringArrayValue(payload.message_lines),
     nullableStringValue(payload.title),
@@ -6827,7 +7107,7 @@ function agentChatQuickNavLabelFromPayload(
   return null;
 }
 
-function agentChatQuickNavLabelFromBlocks(blocks: WebActivityBlock[]) {
+function agentChatQuickNavLabelFromBlocks(blocks: AgentChatBlock[]) {
   for (const block of blocks) {
     const record = asRecord(block);
     if (record?.type !== "text") {
@@ -6909,8 +7189,8 @@ function agentChatQuickNavCollapsedItems(
 
 function agentChatDisplayBlocksForBubble(
   bubble: AgentChatBubble,
-  blocks: WebActivityBlock[],
-): WebActivityBlock[] {
+  blocks: AgentChatBlock[],
+): AgentChatBlock[] {
   if (!agentChatBubbleIsConversationMessage(bubble)) {
     return blocks;
   }
@@ -6918,24 +7198,24 @@ function agentChatDisplayBlocksForBubble(
   return blocks;
 }
 
-function agentChatActivityCellRenderForBubble(
+function agentChatSessionActivityRenderForBubble(
   bubble: AgentChatBubble,
-): AgentChatActivityCellRender | null {
-  const cell = bubble.cell;
+): AgentChatSessionActivityRender | null {
+  const activityEvent = bubble.activityEvent;
 
-  const assistant = agentChatActivityCellPayload(cell, "Assistant");
+  const assistant = agentChatSessionActivityPayload(activityEvent, "Assistant");
   if (assistant) {
-    return agentChatTextActivityRender("activity", assistant, "Activity");
+    return agentChatMessageActivityRender("activity", assistant, "Activity");
   }
 
-  const user = agentChatActivityCellPayload(cell, "User");
+  const user = agentChatSessionActivityPayload(activityEvent, "User");
   if (user) {
-    const render = agentChatTextActivityRender("user", user, "user");
+    const render = agentChatMessageActivityRender("user", user, "user");
     render.imageAttachments = imageAttachmentsValue(user.image_attachments);
     return render;
   }
 
-  const browser = agentChatActivityCellPayload(cell, "Browser");
+  const browser = agentChatSessionActivityPayload(activityEvent, "Browser");
   if (browser) {
     return {
       kind: "browser",
@@ -6945,7 +7225,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const liveBrowser = agentChatActivityCellPayload(cell, "LiveBrowser");
+  const liveBrowser = agentChatSessionActivityPayload(activityEvent, "LiveBrowser");
   if (liveBrowser) {
     const url = nullableStringValue(liveBrowser.url);
     return {
@@ -6959,7 +7239,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const webSearch = agentChatActivityCellPayload(cell, "WebSearch");
+  const webSearch = agentChatSessionActivityPayload(activityEvent, "WebSearch");
   if (webSearch) {
     const action = stringValue(webSearch.action, "searched").toLowerCase();
     const url = nullableStringValue(webSearch.url);
@@ -6974,8 +7254,8 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const codingOpenProject = agentChatActivityCellPayload(
-    cell,
+  const codingOpenProject = agentChatSessionActivityPayload(
+    activityEvent,
     "CodingOpenProject",
   );
   if (codingOpenProject) {
@@ -6987,7 +7267,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const codingReview = agentChatActivityCellPayload(cell, "CodingReview");
+  const codingReview = agentChatSessionActivityPayload(activityEvent, "CodingReview");
   if (codingReview) {
     const title = stringValue(codingReview.title, "Review").trim();
     return {
@@ -6998,9 +7278,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const genericApp =
-    agentChatActivityCellPayload(cell, "GenericApp") ??
-    agentChatActivityCellPayload(cell, "ToolResult");
+  const genericApp = agentChatSessionActivityPayload(activityEvent, "GenericApp");
   if (genericApp) {
     return {
       kind: "text",
@@ -7010,18 +7288,18 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const plan = agentChatActivityCellPayload(cell, "PlanResult");
+  const plan = agentChatSessionActivityPayload(activityEvent, "PlanResult");
   if (plan) {
     return {
       kind: "plan",
       icon: "activity",
-      title: agentChatPlanTitleFromActivityCell(plan),
-      steps: agentChatPlanStepsFromActivityCell(cell),
+      title: agentChatPlanTitleFromSessionActivity(plan),
+      steps: agentChatPlanStepsFromSessionActivity(activityEvent),
     };
   }
 
-  const createPrimitive = agentChatActivityCellPayload(
-    cell,
+  const createPrimitive = agentChatSessionActivityPayload(
+    activityEvent,
     "CreatePrimitiveSpecResult",
   );
   if (createPrimitive) {
@@ -7033,8 +7311,8 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const activatePrimitive = agentChatActivityCellPayload(
-    cell,
+  const activatePrimitive = agentChatSessionActivityPayload(
+    activityEvent,
     "ActivatePrimitiveResult",
   );
   if (activatePrimitive) {
@@ -7046,17 +7324,17 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const explored = agentChatActivityCellPayload(cell, "Explored");
+  const explored = agentChatSessionActivityPayload(activityEvent, "Explored");
   if (explored) {
     return {
       kind: "explored",
       icon: "activity",
       title: stringValue(explored.title, "Explored"),
-      calls: agentChatExploredCallsFromActivityCell(explored),
+      calls: agentChatExploredCallsFromSessionActivity(explored),
     };
   }
 
-  const execResult = agentChatActivityCellPayload(cell, "ExecResult");
+  const execResult = agentChatSessionActivityPayload(activityEvent, "ExecResult");
   if (execResult) {
     return {
       kind: "exec",
@@ -7067,7 +7345,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const liveExec = agentChatActivityCellPayload(cell, "LiveExec");
+  const liveExec = agentChatSessionActivityPayload(activityEvent, "LiveExec");
   if (liveExec) {
     return {
       kind: "exec",
@@ -7079,9 +7357,9 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const codingEdit = agentChatActivityCellPayload(cell, "CodingEdit");
+  const codingEdit = agentChatSessionActivityPayload(activityEvent, "CodingEdit");
   if (codingEdit) {
-    const files = agentChatCodingEditFilesFromActivityCell(codingEdit);
+    const files = agentChatCodingEditFilesFromSessionActivity(codingEdit);
     return {
       kind: "patch",
       icon: "activity",
@@ -7090,9 +7368,9 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const patch = agentChatActivityCellPayload(cell, "Patch");
+  const patch = agentChatSessionActivityPayload(activityEvent, "Patch");
   if (patch) {
-    const files = agentChatPatchFilesFromActivityCell(patch);
+    const files = agentChatPatchFilesFromSessionActivity(patch);
     return {
       kind: "patch",
       icon: "activity",
@@ -7101,7 +7379,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const telegram = agentChatActivityCellPayload(cell, "Telegram");
+  const telegram = agentChatSessionActivityPayload(activityEvent, "Telegram");
   if (telegram) {
     return {
       kind: "messageActivity",
@@ -7114,7 +7392,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const reply = agentChatActivityCellPayload(cell, "Reply");
+  const reply = agentChatSessionActivityPayload(activityEvent, "Reply");
   if (reply) {
     const disposition = normalizeAgentChatReplyDisposition(reply.disposition);
     return {
@@ -7130,7 +7408,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const terminalWait = agentChatActivityCellPayload(cell, "TerminalWait");
+  const terminalWait = agentChatSessionActivityPayload(activityEvent, "TerminalWait");
   if (terminalWait) {
     return {
       kind: "text",
@@ -7141,7 +7419,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const warning = agentChatActivityCellPayload(cell, "Warning");
+  const warning = agentChatSessionActivityPayload(activityEvent, "Warning");
   if (warning) {
     return {
       kind: "text",
@@ -7153,7 +7431,7 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const error = agentChatActivityCellPayload(cell, "Error");
+  const error = agentChatSessionActivityPayload(activityEvent, "Error");
   if (error) {
     return {
       kind: "text",
@@ -7165,18 +7443,16 @@ function agentChatActivityCellRenderForBubble(
     };
   }
 
-  const thinking = agentChatActivityCellPayload(cell, "Thinking");
+  const thinking = agentChatSessionActivityPayload(activityEvent, "Thinking");
   if (thinking) {
     return {
       kind: "thinking",
-      title: stringValue(thinking.title, "Thinking"),
-      bodyLines: stringArrayValue(thinking.body_lines),
-      fullBody: nullableStringValue(thinking.full_body),
+      content: stringValue(thinking.content, ""),
       bodyLimit: AGENT_CHAT_THINKING_PREVIEW_LINE_LIMIT,
     };
   }
 
-  const runtimeStatus = agentChatActivityCellPayload(cell, "RuntimeStatus");
+  const runtimeStatus = agentChatSessionActivityPayload(activityEvent, "RuntimeStatus");
   if (runtimeStatus) {
     return {
       kind: "runtimeStatus",
@@ -7191,18 +7467,42 @@ function agentChatActivityCellRenderForBubble(
   return null;
 }
 
-function agentChatTextActivityRender(
+function agentChatMessageActivityRender(
   icon: AgentChatActivityMarkerKind,
-  cell: Record<string, unknown>,
+  payload: Record<string, unknown>,
   fallbackTitle: string,
-): Extract<AgentChatActivityCellRender, { kind: "text" }> {
+): Extract<AgentChatSessionActivityRender, { kind: "text" }> {
+  const content = stringValue(payload.content, "");
   return {
     kind: "text",
     icon,
-    title: stringValue(cell.title, fallbackTitle),
-    bodyLines: stringArrayValue(cell.body_lines),
-    fullBody: nullableStringValue(cell.full_body),
+    title: agentChatSourceTitle(content, fallbackTitle),
+    bodyLines: agentChatSourceBodyLines(content),
+    fullBody: content.trim() ? content : null,
   };
+}
+
+function agentChatSourceTitle(content: string, fallback: string) {
+  return (
+    content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? fallback
+  );
+}
+
+function agentChatSourceBodyLines(content: string) {
+  const lines = content.split(/\r?\n/);
+  if (lines.length > 0) {
+    lines.shift();
+  }
+  while (lines[0]?.trim() === "") {
+    lines.shift();
+  }
+  while (lines.at(-1)?.trim() === "") {
+    lines.pop();
+  }
+  return lines;
 }
 
 function agentChatAgentMessageFromLines(messageLines: string[]) {
@@ -7220,10 +7520,10 @@ function agentChatAgentMessageFromLines(messageLines: string[]) {
   };
 }
 
-function agentChatExploredCallsFromActivityCell(
-  cell: Record<string, unknown>,
+function agentChatExploredCallsFromSessionActivity(
+  payload: Record<string, unknown>,
 ): AgentChatExploredCall[] {
-  return arrayValue(cell.calls)
+  return arrayValue(payload.calls)
     .map(asRecord)
     .filter((call): call is Record<string, unknown> => Boolean(call))
     .map((call) => ({
@@ -7364,9 +7664,9 @@ function dedupeStrings(values: string[]) {
   return values.filter((value, index) => value && values.indexOf(value) === index);
 }
 
-function agentChatBrowserStatsLines(cell: Record<string, unknown>): string[] {
-  const lineCount = nullableNumberValue(cell.line_count);
-  const refCount = nullableNumberValue(cell.ref_count);
+function agentChatBrowserStatsLines(payload: Record<string, unknown>): string[] {
+  const lineCount = nullableNumberValue(payload.line_count);
+  const refCount = nullableNumberValue(payload.ref_count);
   const stats = [
     lineCount !== null ? `${lineCount} lines` : null,
     refCount !== null ? `${refCount} refs` : null,
@@ -7380,16 +7680,16 @@ function compactAgentChatBrowserUrl(value: string) {
   return compact.length > 88 ? `${compact.slice(0, 85)}...` : compact;
 }
 
-function agentChatPatchFilesFromActivityCell(
-  cell: Record<string, unknown>,
+function agentChatPatchFilesFromSessionActivity(
+  payload: Record<string, unknown>,
 ): AgentChatDiffFile[] {
-  return agentChatPatchFilesFromValue(cell.files);
+  return agentChatPatchFilesFromValue(payload.files);
 }
 
-function agentChatCodingEditFilesFromActivityCell(
-  cell: Record<string, unknown>,
+function agentChatCodingEditFilesFromSessionActivity(
+  payload: Record<string, unknown>,
 ): AgentChatDiffFile[] {
-  return agentChatPatchFilesFromValue(cell.diff_files);
+  return agentChatPatchFilesFromValue(payload.diff_files);
 }
 
 function agentChatPatchFilesFromValue(value: unknown): AgentChatDiffFile[] {
@@ -7407,16 +7707,16 @@ function agentChatPatchFilesFromValue(value: unknown): AgentChatDiffFile[] {
 }
 
 function agentChatCodingEditTitle(
-  cell: Record<string, unknown>,
+  payload: Record<string, unknown>,
   files: AgentChatDiffFile[],
 ) {
   if (files.length > 0) {
     return agentChatPatchTitle(files);
   }
 
-  const file = nullableStringValue(cell.file);
-  const addedLines = numberValue(cell.added_lines, 0);
-  const removedLines = numberValue(cell.removed_lines, 0);
+  const file = nullableStringValue(payload.file);
+  const addedLines = numberValue(payload.added_lines, 0);
+  const removedLines = numberValue(payload.removed_lines, 0);
   if (file) {
     return `Edited ${file} (+${addedLines} -${removedLines})`;
   }
@@ -7434,8 +7734,8 @@ function agentChatPatchTitle(files: AgentChatDiffFile[]) {
   return `Edited ${files.length} ${fileNoun}`;
 }
 
-function agentChatPlanTitleFromActivityCell(cell: Record<string, unknown>) {
-  return stringValue(cell.kind, "updated").toLowerCase() === "proposed"
+function agentChatPlanTitleFromSessionActivity(payload: Record<string, unknown>) {
+  return stringValue(payload.kind, "updated").toLowerCase() === "proposed"
     ? "Proposed Plan"
     : "Updated Plan";
 }
@@ -7504,10 +7804,10 @@ function agentChatDiffLineNumberWidth(
   );
 }
 
-function agentChatPlanStepsFromActivityCell(
-  cell: ActivityCellVariant | null | undefined,
+function agentChatPlanStepsFromSessionActivity(
+  event: SessionActivityEvent | null | undefined,
 ): AgentChatPlanStep[] {
-  const plan = agentChatActivityCellPayload(cell, "PlanResult");
+  const plan = agentChatSessionActivityPayload(event, "PlanResult");
 
   if (!plan) {
     return [];
@@ -7529,11 +7829,11 @@ function agentChatPlanStepsFromActivityCell(
     .filter((step): step is AgentChatPlanStep => Boolean(step));
 }
 
-function agentChatActivityCellPayload(
-  cell: ActivityCellVariant | null | undefined,
+function agentChatSessionActivityPayload(
+  event: SessionActivityEvent | null | undefined,
   variant: string,
 ): Record<string, unknown> | null {
-  const record = asActivityCellVariant(cell) as Record<string, unknown> | null;
+  const record = asSessionActivityEvent(event) as Record<string, unknown> | null;
   return asRecord(record?.[variant]);
 }
 
@@ -7603,18 +7903,18 @@ type AgentChatDiffLine = {
   new_lineno?: number | null;
 };
 
-function webActivityBlocksValue(value: unknown): WebActivityBlock[] {
+function agentChatBlocksValue(value: unknown): AgentChatBlock[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  return value.filter((block): block is WebActivityBlock => {
+  return value.filter((block): block is AgentChatBlock => {
     const record = asRecord(block);
     return Boolean(record && typeof record.type === "string");
   });
 }
 
-function asActivityCellVariant(value: unknown): ActivityCellVariant | null {
+function asSessionActivityEvent(value: unknown): SessionActivityEvent | null {
   const record = asRecord(value);
 
   if (!record) {
@@ -7627,7 +7927,7 @@ function asActivityCellVariant(value: unknown): ActivityCellVariant | null {
     return null;
   }
 
-  return record as ActivityCellVariant;
+  return record as SessionActivityEvent;
 }
 
 function arrayValue(value: unknown): unknown[] {

@@ -1,8 +1,8 @@
 use crate::{
     context::Context,
     core::Llm,
+    dashboard::SessionActivityEvent,
     logging::{RuntimeStatusLevel, set_runtime_status},
-    tool_ui::{ToolCallUiEvent, ToolUiEvent},
 };
 use miette::{Result, miette};
 use serde::{
@@ -252,9 +252,9 @@ pub struct AgentTurnStreamResult {
 pub struct HistoryMessage {
     pub message: AgentMessage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_ui_event: Option<ToolUiEvent>,
+    pub activity_event: Option<SessionActivityEvent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_call_ui_events: Vec<ToolCallUiEvent>,
+    pub tool_call_activity_events: Vec<SessionActivityEvent>,
 }
 
 impl HistoryMessage {
@@ -262,8 +262,8 @@ impl HistoryMessage {
         let content = content.into();
         Self {
             message: AgentMessage::system(content.clone()),
-            tool_ui_event: None,
-            tool_call_ui_events: Vec::new(),
+            activity_event: None,
+            tool_call_activity_events: Vec::new(),
         }
     }
 
@@ -271,8 +271,8 @@ impl HistoryMessage {
         let content = content.into();
         Self {
             message: AgentMessage::user(content.clone()),
-            tool_ui_event: None,
-            tool_call_ui_events: Vec::new(),
+            activity_event: None,
+            tool_call_activity_events: Vec::new(),
         }
     }
 
@@ -280,8 +280,8 @@ impl HistoryMessage {
         let content = content.into();
         Self {
             message: AgentMessage::assistant(content.clone()),
-            tool_ui_event: None,
-            tool_call_ui_events: Vec::new(),
+            activity_event: None,
+            tool_call_activity_events: Vec::new(),
         }
     }
 
@@ -289,15 +289,15 @@ impl HistoryMessage {
         tool_call_id: impl Into<String>,
         name: impl Into<String>,
         content: impl Into<String>,
-        tool_ui_event: ToolUiEvent,
+        activity_event: Option<SessionActivityEvent>,
     ) -> Self {
         let tool_call_id = tool_call_id.into();
         let name = name.into();
         let content = content.into();
         Self {
             message: AgentMessage::tool(tool_call_id, name, content.clone()),
-            tool_ui_event: Some(tool_ui_event),
-            tool_call_ui_events: Vec::new(),
+            activity_event,
+            tool_call_activity_events: Vec::new(),
         }
     }
 

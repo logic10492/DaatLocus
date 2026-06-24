@@ -7,9 +7,9 @@ use super::command_panels::{CommandFeedback, CommandPanel};
 use super::selection::{SelectableRegion, SelectionRegistry};
 use super::tui_event::TuiMouseSelectionKind;
 use super::{
-    ActivityCell, CachedActivityLines, DashboardActivityHistoryPage, DashboardCommandAttachment,
-    DashboardState, LiveActivityCell, WebActivityItem, activity_cells_from_history_items,
-    cells::append_runtime_status_live_cell,
+    CachedActivityLines, DashboardActivityHistoryItem, DashboardActivityHistoryPage,
+    DashboardCommandAttachment, DashboardState, LiveActivityEvent, SessionActivityEvent,
+    activity_events_from_history_items, cells::sync_runtime_status_live_cell,
 };
 
 use super::terminal_hyperlinks::TerminalHyperlinkOverlay;
@@ -203,8 +203,8 @@ impl InputState {
 }
 
 pub(super) struct TranscriptOverlayState {
-    pub(super) cells: Vec<ActivityCell>,
-    pub(super) live_cells: Vec<LiveActivityCell>,
+    pub(super) cells: Vec<SessionActivityEvent>,
+    pub(super) live_cells: Vec<LiveActivityEvent>,
     pub(super) history_prefix_len: usize,
     pub(super) scroll: u16,
     pub(super) follow_bottom: bool,
@@ -214,8 +214,8 @@ pub(super) struct TranscriptOverlayState {
 
 impl TranscriptOverlayState {
     pub(super) fn new(
-        cells: Vec<ActivityCell>,
-        live_cells: Vec<LiveActivityCell>,
+        cells: Vec<SessionActivityEvent>,
+        live_cells: Vec<LiveActivityEvent>,
         state_activity_len: usize,
     ) -> Self {
         Self {
@@ -236,10 +236,10 @@ impl TranscriptOverlayState {
             .take(self.history_prefix_len)
             .cloned()
             .collect::<Vec<_>>();
-        next_cells.extend(state.activity_cells.clone());
+        next_cells.extend(state.activity_events.clone());
         self.cells = next_cells;
-        let mut live_cells = state.live_activity_cells.clone();
-        append_runtime_status_live_cell(&mut live_cells, state);
+        let mut live_cells = state.live_activity_events.clone();
+        sync_runtime_status_live_cell(&mut live_cells, state);
         self.live_cells = live_cells;
         self.clamp_scroll();
     }
@@ -344,7 +344,7 @@ pub(super) struct TuiViewState {
     pub(super) last_cursor_pos: Option<(u16, u16)>,
     pub(super) previous_hyperlink_overlays: Vec<TerminalHyperlinkOverlay>,
     pub(super) selection: SelectionRegistry,
-    pub(super) extra_history_cells: Vec<ActivityCell>,
+    pub(super) extra_history_cells: Vec<SessionActivityEvent>,
     pub(super) oldest_cursor: Option<i64>,
     pub(super) has_more_before: bool,
     pub(super) loading_history: bool,
@@ -401,7 +401,7 @@ impl TuiViewState {
         self.transcript_overlay = Some(TranscriptOverlayState::new(
             cells,
             live_cells,
-            state.activity_cells.len(),
+            state.activity_events.len(),
         ));
         self.command_panel = None;
         self.command_feedback = None;
@@ -615,25 +615,20 @@ impl TuiViewState {
     pub(super) fn visible_activity_cells(
         &self,
         state: &DashboardState,
-    ) -> (Vec<ActivityCell>, Vec<LiveActivityCell>) {
-        let mut committed_cells = if self.visible_activity_cleared {
+    ) -> (Vec<SessionActivityEvent>, Vec<LiveActivityEvent>) {
+        let committed_cells = if self.visible_activity_cleared {
             Vec::new()
         } else {
             let mut cells = self.extra_history_cells.clone();
-            cells.extend(state.activity_cells.clone());
+            cells.extend(state.activity_events.clone());
             cells
         };
-        for (i, cell) in committed_cells.iter_mut().enumerate() {
-            if let ActivityCell::Thinking(thinking) = cell {
-                thinking.expanded = self.expanded_thinking.contains(&i);
-            }
-        }
         let mut live_cells = if self.visible_activity_cleared {
             Vec::new()
         } else {
-            state.live_activity_cells.clone()
+            state.live_activity_events.clone()
         };
-        append_runtime_status_live_cell(&mut live_cells, state);
+        sync_runtime_status_live_cell(&mut live_cells, state);
         (committed_cells, live_cells)
     }
 
@@ -675,7 +670,7 @@ impl TuiViewState {
     }
 
     pub(super) fn apply_loaded_history_page(&mut self, page: DashboardActivityHistoryPage) {
-        let new_cells = activity_cells_from_history_items(&page.items);
+        let new_cells = activity_events_from_history_items(&page.items);
         let mut merged = new_cells;
         merged.extend(self.extra_history_cells.clone());
         self.extra_history_cells = merged;
@@ -701,8 +696,8 @@ impl TuiViewState {
     pub(super) fn sync_visible_clear_from_state(&mut self, state: &DashboardState) {
         if self.visible_activity_cleared
             && state.activity_history.items.is_empty()
-            && state.activity_cells.is_empty()
-            && state.live_activity_cells.is_empty()
+            && state.activity_events.is_empty()
+            && state.live_activity_events.is_empty()
         {
             self.visible_activity_cleared = false;
         }
@@ -757,11 +752,14 @@ impl TuiViewState {
         self.selection.is_dragging()
     }
 
-    pub(super) fn toggle_thinking_expansion(&mut self, activity_cells: &[ActivityCell]) -> bool {
+    pub(super) fn toggle_thinking_expansion(
+        &mut self,
+        activity_events: &[SessionActivityEvent],
+    ) -> bool {
         let offset = self.extra_history_cells.len();
         let mut any_thinking = false;
-        for (i, cell) in activity_cells.iter().enumerate() {
-            if matches!(cell, ActivityCell::Thinking(_)) {
+        for (i, cell) in activity_events.iter().enumerate() {
+            if matches!(cell, SessionActivityEvent::Thinking(_)) {
                 let idx = offset + i;
                 if self.expanded_thinking.contains(&idx) {
                     self.expanded_thinking.remove(&idx);
@@ -844,32 +842,34 @@ impl TuiViewState {
 }
 
 fn command_history_entries_from_state(state: &DashboardState) -> Vec<String> {
-    let items = if state.activity_history.items.is_empty() {
-        state.web_activity_items.as_slice()
-    } else {
-        state.activity_history.items.as_slice()
-    };
-    items
+    if state.activity_history.items.is_empty() {
+        return state
+            .activity_events
+            .iter()
+            .filter_map(command_history_text_from_activity_cell)
+            .collect();
+    }
+    state
+        .activity_history
+        .items
         .iter()
-        .filter_map(command_history_text_from_activity_item)
+        .filter_map(command_history_text_from_history_item)
         .collect()
 }
 
-fn command_history_text_from_activity_item(item: &WebActivityItem) -> Option<String> {
-    let Some(ActivityCell::User(cell)) = item.cell.as_ref() else {
+fn command_history_text_from_history_item(item: &DashboardActivityHistoryItem) -> Option<String> {
+    let SessionActivityEvent::User(cell) = &item.event else {
         return None;
     };
-    let text = cell
-        .full_body
-        .clone()
-        .unwrap_or_else(|| {
-            std::iter::once(cell.title.as_str())
-                .chain(cell.body_lines.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .trim()
-        .to_string();
+    let text = cell.content.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn command_history_text_from_activity_cell(item: &SessionActivityEvent) -> Option<String> {
+    let SessionActivityEvent::User(cell) = item else {
+        return None;
+    };
+    let text = cell.content.trim().to_string();
     (!text.is_empty()).then_some(text)
 }
 
@@ -879,17 +879,17 @@ mod tests {
     use crate::dashboard::selection::{SelectableId, SelectableRegion};
     use crate::dashboard::{
         DashboardActivityHistoryWindow, DashboardRuntimeActivity, assistant_activity_cell,
-        render_activity_from_messages, web_activity_item_from_cell,
+        render_activity_from_messages, sync_dashboard_runtime_status_live_cell,
     };
     use crate::reasoning::runtime::HistoryMessage;
     use ratatui::layout::Rect;
 
-    fn user_history_item(id: &str, text: &str) -> WebActivityItem {
+    fn user_history_item(id: &str, text: &str) -> DashboardActivityHistoryItem {
         let cell = render_activity_from_messages(vec![HistoryMessage::user(text.to_string())])
             .into_iter()
             .next()
             .expect("user activity cell");
-        web_activity_item_from_cell(&cell, id, false)
+        DashboardActivityHistoryItem::from_event_with_id(&cell, id)
     }
 
     #[test]
@@ -903,14 +903,37 @@ mod tests {
 
         let (_, live_cells) = view.visible_activity_cells(&state);
 
-        assert!(state.live_activity_cells.is_empty());
+        assert!(state.live_activity_events.is_empty());
         assert_eq!(live_cells.len(), 1);
         assert_eq!(live_cells[0].key, "runtime-status");
-        let ActivityCell::RuntimeStatus(cell) = &live_cells[0].cell else {
+        let SessionActivityEvent::RuntimeStatus(cell) = &live_cells[0].event else {
             panic!("expected runtime status live cell");
         };
         assert_eq!(cell.label, "Working");
         assert_eq!(cell.active_runtime_started_at_ms, Some(1_000));
+    }
+
+    #[test]
+    fn shared_dashboard_state_syncs_runtime_status_live_cell_once() {
+        let view = TuiViewState::new();
+        let mut state = DashboardState {
+            runtime_activity: DashboardRuntimeActivity::default()
+                .with_runtime_turn(Some("model request".to_string()), Some(1_000)),
+            ..DashboardState::default()
+        };
+
+        sync_dashboard_runtime_status_live_cell(&mut state);
+        sync_dashboard_runtime_status_live_cell(&mut state);
+        let (_, live_cells) = view.visible_activity_cells(&state);
+
+        assert_eq!(state.live_activity_events.len(), 1);
+        assert_eq!(live_cells.len(), 1);
+        assert_eq!(live_cells[0].key, "runtime-status");
+
+        state.runtime_activity = DashboardRuntimeActivity::default();
+        sync_dashboard_runtime_status_live_cell(&mut state);
+
+        assert!(state.live_activity_events.is_empty());
     }
 
     #[test]
@@ -1021,7 +1044,7 @@ mod tests {
         assert_eq!(view.scroll_offset, 80);
     }
 
-    fn assistant_cell(text: &str) -> ActivityCell {
+    fn assistant_cell(text: &str) -> SessionActivityEvent {
         assistant_activity_cell(text).expect("assistant cell")
     }
 
@@ -1033,7 +1056,7 @@ mod tests {
         let mut overlay =
             TranscriptOverlayState::new(vec![history.clone(), first.clone()], Vec::new(), 1);
         let state = DashboardState {
-            activity_cells: vec![first, second.clone()],
+            activity_events: vec![first, second.clone()],
             ..DashboardState::default()
         };
 
@@ -1042,23 +1065,23 @@ mod tests {
         assert!(overlay.follow_bottom);
         assert_eq!(
             overlay.cells,
-            vec![history, state.activity_cells[0].clone(), second]
+            vec![history, state.activity_events[0].clone(), second]
         );
     }
 
     #[test]
     fn transcript_overlay_syncs_live_activity_cells() {
-        let first_live = LiveActivityCell {
+        let first_live = LiveActivityEvent {
             key: "first".to_string(),
-            cell: assistant_cell("first live cell"),
+            event: assistant_cell("first live cell"),
         };
-        let second_live = LiveActivityCell {
+        let second_live = LiveActivityEvent {
             key: "second".to_string(),
-            cell: assistant_cell("second live cell"),
+            event: assistant_cell("second live cell"),
         };
         let mut overlay = TranscriptOverlayState::new(Vec::new(), vec![first_live], 0);
         let state = DashboardState {
-            live_activity_cells: vec![second_live.clone()],
+            live_activity_events: vec![second_live.clone()],
             ..DashboardState::default()
         };
 

@@ -16,8 +16,8 @@ use super::{
     DashboardPrimitiveOptimizationSnapshot, DashboardRuntimeActivity,
     DashboardRuntimeActivityStatus, DashboardRuntimeOptimizationSnapshot,
     DashboardRuntimeStatusLevel, DashboardState, DashboardStatusCommandSnapshot,
-    DashboardTokenUsageSnapshot, activity_cells_from_history_items, dashboard_agent_name,
-    render_activity_from_messages,
+    DashboardTokenUsageSnapshot, activity_events_from_history_items, dashboard_agent_name,
+    render_activity_from_messages, sync_dashboard_runtime_status_live_cell,
 };
 
 /// Sleep-related constants used in dashboard rendering.
@@ -45,10 +45,10 @@ pub fn sync_dashboard_state(
         state.skill_errors = context.openskills.dashboard_errors();
         state.pending_access_requests = context.telegram_acl.pending_requests();
         state.pending_user_inputs = pending_user_inputs_for_dashboard(context);
-        state.activity_cells = if state.activity_history.items.is_empty() {
+        state.activity_events = if state.activity_history.items.is_empty() {
             render_activity_for_dashboard(context)
         } else {
-            activity_cells_from_history_items(&state.activity_history.items)
+            activity_events_from_history_items(&state.activity_history.items)
         };
         state.last_cycle_elapsed_ms = last_cycle_elapsed_ms.map(duration_millis_to_u64);
         state.runtime_activity = runtime_activity_for_dashboard(
@@ -57,7 +57,7 @@ pub fn sync_dashboard_state(
             state.runtime_status.as_deref(),
             state.runtime_status_level,
         );
-        crate::dashboard::sync_web_activity_state(state);
+        sync_dashboard_runtime_status_live_cell(state);
         state.footer_context =
             render_dashboard_footer_context(context, state.footer_estimated_input_tokens);
         state.current_plan_step = current_plan_step_for_dashboard(context);
@@ -880,7 +880,9 @@ pub fn pending_user_inputs_from_sources(
         .collect()
 }
 
-pub fn render_activity_for_dashboard(context: &Context) -> Vec<crate::dashboard::ActivityCell> {
+pub fn render_activity_for_dashboard(
+    context: &Context,
+) -> Vec<crate::dashboard::SessionActivityEvent> {
     render_activity_from_messages(context.memory.runtime_conversation_messages())
 }
 

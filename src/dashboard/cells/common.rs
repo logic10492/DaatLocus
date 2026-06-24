@@ -1,31 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-use crate::app::AppId;
-use crate::tool_ui::{
-    CodingEditUiData, CodingReviewUiData, ExploredCallUiAction, ExploredUiData, PatchFileUiData,
-    ToolUiData,
+use crate::activity_event::{
+    CodingEditActivityDescriptor, CodingReviewActivityDescriptor, ExploredActivityDescriptor,
+    ExploredCallActivityAction, PatchFileActivityDescriptor, TextActivityDescriptor,
 };
+use crate::app::AppId;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AssistantActivityCell {
-    pub title: String,
-    pub body_lines: Vec<String>,
-    /// Full assistant message body. Used for width-aware per-cell rendering.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full_body: Option<String>,
-    /// Rich (markdown) vs Raw (plain text) display mode.
-    #[serde(default = "default_rich_mode")]
-    pub rich_mode: bool,
+pub struct AssistantActivityData {
+    pub content: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FinalMessageSeparatorActivityCell {
+pub struct FinalMessageSeparatorActivityData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_seconds: Option<u64>,
-}
-
-fn default_rich_mode() -> bool {
-    true
 }
 
 /// Controls animation behaviour in the TUI dashboard.
@@ -38,7 +27,7 @@ pub enum ReducedMotion {
     Reduced,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeStatusActivityCell {
+pub struct RuntimeStatusActivityData {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -49,26 +38,14 @@ pub struct RuntimeStatusActivityCell {
 }
 
 /// Thinking / reasoning content produced by the model.
-/// Rendered truncated by default; press Enter to expand.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ThinkingActivityCell {
-    pub title: String,
-    pub body_lines: Vec<String>,
-    /// Full reasoning text. Rendered when `expanded` is true.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full_body: Option<String>,
-    /// Whether the cell is expanded (toggle via Enter key).
-    #[serde(default)]
-    pub expanded: bool,
+pub struct ThinkingActivityData {
+    pub content: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UserActivityCell {
-    pub title: String,
-    pub body_lines: Vec<String>,
-    /// Full user message body. Used by TUI/WebUI to render long inputs without truncation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full_body: Option<String>,
+pub struct UserActivityData {
+    pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_attachments: Vec<MessageImageAttachment>,
 }
@@ -83,26 +60,26 @@ pub struct MessageImageAttachment {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GenericAppActivityCell {
+pub struct GenericAppActivityData {
     pub title: String,
     pub body_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingOpenProjectActivityCell {
+pub struct CodingOpenProjectActivityData {
     pub project_root: String,
     pub detail_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExploredActivityCell {
+pub struct ExploredActivityData {
     pub stable_id: String,
     pub title: String,
-    pub calls: Vec<ExploredCallActivityCell>,
+    pub calls: Vec<ExploredCallActivityData>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingEditActivityCell {
+pub struct CodingEditActivityData {
     pub stable_id: String,
     pub title: String,
     pub tool_name: Option<String>,
@@ -113,21 +90,21 @@ pub struct CodingEditActivityCell {
     pub removed_lines: usize,
     pub propagation_count: usize,
     pub impact_lines: Vec<String>,
-    pub diff_files: Vec<PatchFileUiData>,
+    pub diff_files: Vec<PatchFileActivityDescriptor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingReviewActivityCell {
+pub struct CodingReviewActivityData {
     pub title: String,
     pub summary: String,
     pub review_pending: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExploredCallActivityCell {
+pub struct ExploredCallActivityData {
     pub tool_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<ExploredCallUiAction>,
+    pub action: Option<ExploredCallActivityAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,7 +115,7 @@ pub struct ExploredCallActivityCell {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TerminalWaitActivityCell {
+pub struct TerminalWaitActivityData {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<String>,
@@ -146,35 +123,26 @@ pub struct TerminalWaitActivityCell {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ErrorActivityCell {
+pub struct ErrorActivityData {
     pub title: String,
     pub body_lines: Vec<String>,
 }
 
-pub fn assistant_cell_with_body(
-    title: impl Into<String>,
-    body_lines: Vec<String>,
-    full_body: Option<String>,
-) -> AssistantActivityCell {
-    AssistantActivityCell {
-        title: title.into(),
-        body_lines,
-        full_body,
-        rich_mode: true,
+pub fn assistant_message_data(content: impl Into<String>) -> AssistantActivityData {
+    AssistantActivityData {
+        content: content.into(),
     }
 }
 
 pub fn final_message_separator_cell(
     elapsed_seconds: Option<u64>,
-) -> FinalMessageSeparatorActivityCell {
-    FinalMessageSeparatorActivityCell { elapsed_seconds }
+) -> FinalMessageSeparatorActivityData {
+    FinalMessageSeparatorActivityData { elapsed_seconds }
 }
 
-pub fn user_cell(title: impl Into<String>, body_lines: Vec<String>) -> UserActivityCell {
-    UserActivityCell {
-        title: title.into(),
-        body_lines,
-        full_body: None,
+pub fn user_message_data(content: impl Into<String>) -> UserActivityData {
+    UserActivityData {
+        content: content.into(),
         image_attachments: Vec::new(),
     }
 }
@@ -182,8 +150,8 @@ pub fn user_cell(title: impl Into<String>, body_lines: Vec<String>) -> UserActiv
 pub fn generic_app_cell(
     title: impl Into<String>,
     body_lines: Vec<String>,
-) -> GenericAppActivityCell {
-    GenericAppActivityCell {
+) -> GenericAppActivityData {
+    GenericAppActivityData {
         title: title.into(),
         body_lines,
     }
@@ -193,36 +161,234 @@ pub fn terminal_wait_cell(
     title: impl Into<String>,
     meta: Option<String>,
     body_lines: Vec<String>,
-) -> TerminalWaitActivityCell {
-    TerminalWaitActivityCell {
+) -> TerminalWaitActivityData {
+    TerminalWaitActivityData {
         title: title.into(),
         meta,
         body_lines,
     }
 }
 
-pub fn error_cell(title: impl Into<String>, body_lines: Vec<String>) -> ErrorActivityCell {
-    ErrorActivityCell {
-        title: title.into(),
-        body_lines,
+pub fn error_cell(title: impl Into<String>, body_lines: Vec<String>) -> ErrorActivityData {
+    let title = title.into();
+    ErrorActivityData {
+        title: render_exposed_tool_names(&title),
+        body_lines: render_exposed_tool_names_in_lines(body_lines),
     }
 }
 
-pub fn thinking_cell(
-    title: impl Into<String>,
-    body_lines: Vec<String>,
-    full_body: Option<String>,
-) -> ThinkingActivityCell {
-    ThinkingActivityCell {
-        title: title.into(),
-        body_lines,
-        full_body,
-        expanded: false,
+pub fn thinking_cell(content: impl Into<String>) -> ThinkingActivityData {
+    ThinkingActivityData {
+        content: normalize_thinking_markdown_sections(&content.into()),
     }
 }
 
-impl From<ToolUiData> for GenericAppActivityCell {
-    fn from(data: ToolUiData) -> Self {
+fn normalize_thinking_markdown_sections(content: &str) -> String {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let split = split_embedded_thinking_headings(&normalized);
+    add_blank_lines_around_thinking_headings(&split)
+}
+
+fn split_embedded_thinking_headings(content: &str) -> String {
+    let mut output = String::with_capacity(content.len());
+    let mut cursor = 0;
+
+    while let Some(relative_start) = content[cursor..].find("**") {
+        let start = cursor + relative_start;
+        let heading_body_start = start + 2;
+        let Some(relative_end) = content[heading_body_start..].find("**") else {
+            break;
+        };
+        let end = heading_body_start + relative_end + 2;
+        let candidate = &content[start..end];
+
+        output.push_str(&content[cursor..start]);
+        if embedded_thinking_heading_needs_break(content, start, end, candidate) {
+            push_paragraph_break(&mut output);
+        }
+        output.push_str(candidate);
+        cursor = end;
+    }
+
+    output.push_str(&content[cursor..]);
+    output
+}
+
+fn embedded_thinking_heading_needs_break(
+    content: &str,
+    start: usize,
+    end: usize,
+    candidate: &str,
+) -> bool {
+    if start == 0 || content[..start].ends_with('\n') || !content[end..].starts_with("\n\n") {
+        return false;
+    }
+    let Some(previous) = content[..start].chars().next_back() else {
+        return false;
+    };
+    !previous.is_whitespace() && is_standalone_thinking_heading(candidate)
+}
+
+fn add_blank_lines_around_thinking_headings(content: &str) -> String {
+    let lines = content.lines().collect::<Vec<_>>();
+    let mut output = Vec::with_capacity(lines.len());
+
+    for (index, line) in lines.iter().enumerate() {
+        let heading = is_standalone_thinking_heading(line);
+        if heading && !last_line_is_blank(&output) {
+            output.push(String::new());
+        }
+        output.push((*line).to_string());
+        if heading && !next_line_is_blank(&lines, index) {
+            output.push(String::new());
+        }
+    }
+
+    output.join("\n")
+}
+
+fn is_standalone_thinking_heading(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || is_markdown_block_syntax(trimmed) {
+        return false;
+    }
+
+    let text = strip_markdown_emphasis(trimmed);
+    let ends_with_sentence_punctuation = text
+        .chars()
+        .next_back()
+        .is_some_and(|ch| matches!(ch, '.' | '!' | '?' | '。' | '！' | '？'));
+    if text.is_empty() || text.chars().count() > 88 || ends_with_sentence_punctuation {
+        return false;
+    }
+
+    if is_strong_markdown(trimmed) {
+        return true;
+    }
+
+    let word_count = text
+        .split_whitespace()
+        .filter(|word| !word.is_empty())
+        .count();
+    if word_count > 9 {
+        return false;
+    }
+
+    text.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase() || is_common_han(ch))
+}
+
+fn strip_markdown_emphasis(value: &str) -> &str {
+    let trimmed = value.trim();
+    for marker in ["**", "__", "*", "_"] {
+        if let Some(inner) = trimmed
+            .strip_prefix(marker)
+            .and_then(|inner| inner.strip_suffix(marker))
+        {
+            return inner.trim();
+        }
+    }
+    trimmed
+        .strip_prefix('#')
+        .map(|inner| inner.trim_start_matches('#'))
+        .unwrap_or(trimmed)
+        .trim()
+}
+
+fn is_strong_markdown(value: &str) -> bool {
+    (value.starts_with("**") && value.ends_with("**"))
+        || (value.starts_with("__") && value.ends_with("__"))
+}
+
+fn is_markdown_block_syntax(value: &str) -> bool {
+    value.starts_with("# ")
+        || value.starts_with("## ")
+        || value.starts_with("### ")
+        || value.starts_with("#### ")
+        || value.starts_with("##### ")
+        || value.starts_with("###### ")
+        || value.starts_with("- ")
+        || value.starts_with("* ")
+        || value.starts_with("+ ")
+        || value.starts_with("> ")
+        || value.starts_with("```")
+        || value.starts_with("~~~")
+        || value.starts_with('|')
+        || ordered_list_prefix(value)
+}
+
+fn ordered_list_prefix(value: &str) -> bool {
+    let mut chars = value.chars().peekable();
+    let mut saw_digit = false;
+    while chars.peek().is_some_and(|ch| ch.is_ascii_digit()) {
+        saw_digit = true;
+        chars.next();
+    }
+    saw_digit
+        && matches!(chars.next(), Some('.') | Some(')'))
+        && chars.next().is_some_and(|ch| ch.is_whitespace())
+}
+
+fn is_common_han(ch: char) -> bool {
+    ('\u{4E00}'..='\u{9FFF}').contains(&ch)
+}
+
+fn last_line_is_blank(lines: &[String]) -> bool {
+    lines.last().is_none_or(|line| line.trim().is_empty())
+}
+
+fn next_line_is_blank(lines: &[&str], index: usize) -> bool {
+    lines
+        .get(index + 1)
+        .is_none_or(|line| line.trim().is_empty())
+}
+
+fn push_paragraph_break(output: &mut String) {
+    if output.ends_with("\n\n") {
+        return;
+    }
+    if output.ends_with('\n') {
+        output.push('\n');
+    } else {
+        output.push_str("\n\n");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_thinking_markdown_sections, thinking_cell};
+
+    #[test]
+    fn thinking_markdown_splits_embedded_bold_headings() {
+        let content = "Everything needs careful path syntax.**Considering project operations**\n\nI am checking project state.";
+
+        assert_eq!(
+            normalize_thinking_markdown_sections(content),
+            "Everything needs careful path syntax.\n\n**Considering project operations**\n\nI am checking project state."
+        );
+    }
+
+    #[test]
+    fn thinking_cell_normalizes_persisted_content() {
+        let cell = thinking_cell("Intro.**Setting up for git commands**\n\nBody");
+
+        assert_eq!(
+            cell.content,
+            "Intro.\n\n**Setting up for git commands**\n\nBody"
+        );
+    }
+
+    #[test]
+    fn thinking_markdown_does_not_split_inline_bold_phrases() {
+        let content = "I should keep **important phrase**\n\nas normal prose.";
+
+        assert_eq!(normalize_thinking_markdown_sections(content), content);
+    }
+}
+
+impl From<TextActivityDescriptor> for GenericAppActivityData {
+    fn from(data: TextActivityDescriptor) -> Self {
         generic_app_cell(
             render_exposed_tool_names(&data.title),
             render_exposed_tool_names_in_lines(data.body_lines),
@@ -230,8 +396,10 @@ impl From<ToolUiData> for GenericAppActivityCell {
     }
 }
 
-impl From<crate::tool_ui::CodingOpenProjectUiData> for CodingOpenProjectActivityCell {
-    fn from(data: crate::tool_ui::CodingOpenProjectUiData) -> Self {
+impl From<crate::activity_event::CodingOpenProjectActivityDescriptor>
+    for CodingOpenProjectActivityData
+{
+    fn from(data: crate::activity_event::CodingOpenProjectActivityDescriptor) -> Self {
         Self {
             project_root: data.project_root,
             detail_lines: data.detail_lines,
@@ -239,15 +407,15 @@ impl From<crate::tool_ui::CodingOpenProjectUiData> for CodingOpenProjectActivity
     }
 }
 
-impl From<ExploredUiData> for ExploredActivityCell {
-    fn from(data: ExploredUiData) -> Self {
+impl From<ExploredActivityDescriptor> for ExploredActivityData {
+    fn from(data: ExploredActivityDescriptor) -> Self {
         Self {
             stable_id: data.stable_id,
             title: data.title,
             calls: data
                 .calls
                 .into_iter()
-                .map(|call| ExploredCallActivityCell {
+                .map(|call| ExploredCallActivityData {
                     tool_name: AppId::render_exposed_tool_name(&call.tool_name),
                     action: call.action,
                     target: call.target,
@@ -261,8 +429,8 @@ impl From<ExploredUiData> for ExploredActivityCell {
     }
 }
 
-impl From<CodingEditUiData> for CodingEditActivityCell {
-    fn from(data: CodingEditUiData) -> Self {
+impl From<CodingEditActivityDescriptor> for CodingEditActivityData {
+    fn from(data: CodingEditActivityDescriptor) -> Self {
         Self {
             stable_id: data.stable_id,
             title: data.title,
@@ -279,8 +447,8 @@ impl From<CodingEditUiData> for CodingEditActivityCell {
     }
 }
 
-impl From<CodingReviewUiData> for CodingReviewActivityCell {
-    fn from(data: CodingReviewUiData) -> Self {
+impl From<CodingReviewActivityDescriptor> for CodingReviewActivityData {
+    fn from(data: CodingReviewActivityDescriptor) -> Self {
         Self {
             title: data.title,
             summary: data.summary,
@@ -289,8 +457,8 @@ impl From<CodingReviewUiData> for CodingReviewActivityCell {
     }
 }
 
-impl From<ToolUiData> for ErrorActivityCell {
-    fn from(data: ToolUiData) -> Self {
+impl From<TextActivityDescriptor> for ErrorActivityData {
+    fn from(data: TextActivityDescriptor) -> Self {
         error_cell(
             render_exposed_tool_names(&data.title),
             render_exposed_tool_names_in_lines(data.body_lines),

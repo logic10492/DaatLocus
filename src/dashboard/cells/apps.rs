@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::tool_ui::{BrowserUiAction, BrowserUiData, WebSearchUiAction, WebSearchUiData};
+use crate::activity_event::{
+    BrowserActivityAction, BrowserActivityDescriptor, WebSearchActivityAction,
+    WebSearchActivityDescriptor,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BrowserActivityCell {
+pub struct BrowserActivityData {
     pub title: String,
     pub body_lines: Vec<String>,
     pub url: Option<String>,
@@ -12,22 +15,22 @@ pub struct BrowserActivityCell {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LiveBrowserActivityCell {
+pub struct LiveBrowserActivityData {
     pub title: String,
     pub body_lines: Vec<String>,
     pub url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WebSearchActivityCell {
-    pub action: WebSearchUiAction,
+pub struct WebSearchActivityData {
+    pub action: WebSearchActivityAction,
     pub query: String,
     pub url: Option<String>,
     pub body_lines: Vec<String>,
 }
 
-impl From<BrowserUiData> for BrowserActivityCell {
-    fn from(data: BrowserUiData) -> Self {
+impl From<BrowserActivityDescriptor> for BrowserActivityData {
+    fn from(data: BrowserActivityDescriptor) -> Self {
         Self {
             title: data.title,
             body_lines: data.body_lines,
@@ -38,22 +41,22 @@ impl From<BrowserUiData> for BrowserActivityCell {
     }
 }
 
-impl From<BrowserUiData> for LiveBrowserActivityCell {
-    fn from(data: BrowserUiData) -> Self {
+impl From<BrowserActivityDescriptor> for LiveBrowserActivityData {
+    fn from(data: BrowserActivityDescriptor) -> Self {
         let title = match data.action {
-            BrowserUiAction::OpenPage => data
+            BrowserActivityAction::OpenPage => data
                 .url
                 .as_deref()
                 .map(|url| format!("Opening URL: {}", compact_browser_url(url)))
                 .unwrap_or_else(|| "Opening Page".to_string()),
-            BrowserUiAction::Wait => "Waiting for Page".to_string(),
-            BrowserUiAction::Click => "Clicking Element".to_string(),
-            BrowserUiAction::Fill => "Filling Element".to_string(),
-            BrowserUiAction::Back => "Going Back".to_string(),
-            BrowserUiAction::Forward => "Going Forward".to_string(),
-            BrowserUiAction::Reload => "Reloading Page".to_string(),
-            BrowserUiAction::ClosePage => "Closing Page".to_string(),
-            BrowserUiAction::Snapshot => "Capturing Page".to_string(),
+            BrowserActivityAction::Wait => "Waiting for Page".to_string(),
+            BrowserActivityAction::Click => "Clicking Element".to_string(),
+            BrowserActivityAction::Fill => "Filling Element".to_string(),
+            BrowserActivityAction::Back => "Going Back".to_string(),
+            BrowserActivityAction::Forward => "Going Forward".to_string(),
+            BrowserActivityAction::Reload => "Reloading Page".to_string(),
+            BrowserActivityAction::ClosePage => "Closing Page".to_string(),
+            BrowserActivityAction::Snapshot => "Capturing Page".to_string(),
         };
         Self {
             title,
@@ -63,8 +66,8 @@ impl From<BrowserUiData> for LiveBrowserActivityCell {
     }
 }
 
-impl From<WebSearchUiData> for WebSearchActivityCell {
-    fn from(data: WebSearchUiData) -> Self {
+impl From<WebSearchActivityDescriptor> for WebSearchActivityData {
+    fn from(data: WebSearchActivityDescriptor) -> Self {
         Self {
             action: data.action,
             query: data.query,

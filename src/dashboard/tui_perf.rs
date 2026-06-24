@@ -5,20 +5,22 @@ use ratatui::{Terminal, backend::TestBackend};
 use serde::Serialize;
 
 use super::{
-    ActivityCell, DashboardActivityEvent, DashboardState, LiveActivityCell,
-    activity_cell_from_tool_ui_event, apply_activity_event, assistant_activity_cell,
+    DashboardActivityEvent, DashboardState, LiveActivityEvent, SessionActivityEvent,
+    apply_activity_event, assistant_activity_cell,
     command_panels::{CommandPanel, SkillsListPanel, SkillsTogglePanel},
-    render_tui_dashboard_frame, thinking_activity_cell,
+    render_tui_dashboard_frame, terminal_activity_event_from_terminal_data, thinking_activity_cell,
     view_state::TuiViewState,
 };
 use crate::{
+    activity_event::{
+        BrowserActivityAction, BrowserActivityDescriptor, ExploredActivityDescriptor,
+        ExploredCallActivityAction, ExploredCallActivityDescriptor,
+        PatchDiffLineActivityDescriptor, PatchDiffLineKind, PatchFileActivityDescriptor,
+        PatchFileOperation, ReplyActivityDescriptor, ReplyDisposition, ReplySubject,
+        TerminalActivityAction, TerminalActivityDescriptor,
+    },
     openskills::OpenSkillDashboardSummary,
     telegram_acl::PendingAccessRequest,
-    tool_ui::{
-        BrowserUiAction, BrowserUiData, ExploredCallUiAction, ExploredCallUiData, ExploredUiData,
-        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData,
-        ReplyDisposition, ReplySubject, ReplyUiData, TerminalUiAction, TerminalUiData, ToolUiEvent,
-    },
 };
 
 #[derive(Clone, Debug)]
@@ -309,7 +311,7 @@ fn apply_perf_scroll_step(
 
 fn mock_dashboard_state(scenario: TuiPerfScenario) -> (DashboardState, TuiViewState) {
     let mut state = DashboardState {
-        activity_cells: mock_activity_cells(match scenario {
+        activity_events: mock_activity_cells(match scenario {
             TuiPerfScenario::LongHistory | TuiPerfScenario::Scrolling => 260,
             TuiPerfScenario::LiveActivity => 45,
             TuiPerfScenario::CommandPanels => 55,
@@ -376,16 +378,16 @@ fn mock_dashboard_state(scenario: TuiPerfScenario) -> (DashboardState, TuiViewSt
     (state, view)
 }
 
-fn mock_activity_cells(count: usize) -> Vec<ActivityCell> {
+fn mock_activity_cells(count: usize) -> Vec<SessionActivityEvent> {
     (0..count)
         .filter_map(|idx| match idx % 7 {
             0 => assistant_activity_cell(&mock_markdown(idx)),
             1 => thinking_activity_cell(&mock_reasoning(idx)),
-            2 => activity_cell_from_tool_ui_event(ToolUiEvent::Explored(mock_explored(idx))),
-            3 => activity_cell_from_tool_ui_event(ToolUiEvent::Terminal(mock_terminal(idx))),
-            4 => activity_cell_from_tool_ui_event(ToolUiEvent::Browser(mock_browser(idx))),
-            5 => activity_cell_from_tool_ui_event(ToolUiEvent::Patch(mock_patch(idx))),
-            _ => activity_cell_from_tool_ui_event(ToolUiEvent::Reply(mock_reply(idx))),
+            2 => Some(SessionActivityEvent::Explored(mock_explored(idx).into())),
+            3 => terminal_activity_event_from_terminal_data(mock_terminal(idx)),
+            4 => Some(SessionActivityEvent::Browser(mock_browser(idx).into())),
+            5 => Some(SessionActivityEvent::Patch(mock_patch(idx).into())),
+            _ => Some(SessionActivityEvent::Reply(mock_reply(idx).into())),
         })
         .collect()
 }
@@ -417,11 +419,11 @@ fn add_live_cells(state: &mut DashboardState, count: usize) {
             },
         );
     }
-    state.live_activity_cells.push(LiveActivityCell {
+    state.live_activity_events.push(LiveActivityEvent {
         key: "live-browser".to_string(),
-        cell: ActivityCell::LiveBrowser(
-            BrowserUiData {
-                action: BrowserUiAction::Snapshot,
+        event: SessionActivityEvent::LiveBrowser(
+            BrowserActivityDescriptor {
+                action: BrowserActivityAction::Snapshot,
                 title: "Capturing dashboard docs".to_string(),
                 body_lines: vec!["https://example.local/docs/dashboard".to_string()],
                 url: Some("https://example.local/docs/dashboard".to_string()),
@@ -446,22 +448,22 @@ fn mock_reasoning(idx: usize) -> String {
     )
 }
 
-fn mock_explored(idx: usize) -> ExploredUiData {
-    ExploredUiData {
+fn mock_explored(idx: usize) -> ExploredActivityDescriptor {
+    ExploredActivityDescriptor {
         stable_id: format!("explored-{idx}"),
         title: "Explored".to_string(),
         calls: vec![
-            ExploredCallUiData {
+            ExploredCallActivityDescriptor {
                 tool_name: "Read".to_string(),
-                action: Some(ExploredCallUiAction::Read),
+                action: Some(ExploredCallActivityAction::Read),
                 target: Some("src/dashboard/mod.rs".to_string()),
                 secondary_target: None,
                 summary: "Read mod.rs".to_string(),
                 detail_lines: vec!["src/dashboard/mod.rs#L350-L590".to_string()],
             },
-            ExploredCallUiData {
+            ExploredCallActivityDescriptor {
                 tool_name: "Search".to_string(),
-                action: Some(ExploredCallUiAction::Search),
+                action: Some(ExploredCallActivityAction::Search),
                 target: Some("schedule_frame|render_tui_dashboard_frame".to_string()),
                 secondary_target: Some("dashboard".to_string()),
                 summary: "Search schedule_frame|render_tui_dashboard_frame in dashboard"
@@ -472,9 +474,9 @@ fn mock_explored(idx: usize) -> ExploredUiData {
     }
 }
 
-fn mock_terminal(idx: usize) -> TerminalUiData {
-    TerminalUiData {
-        action: TerminalUiAction::Execute,
+fn mock_terminal(idx: usize) -> TerminalActivityDescriptor {
+    TerminalActivityDescriptor {
+        action: TerminalActivityAction::Execute,
         origin: None,
         title: format!("cargo check #{idx}"),
         body_lines: vec![
@@ -486,9 +488,9 @@ fn mock_terminal(idx: usize) -> TerminalUiData {
     }
 }
 
-fn mock_browser(idx: usize) -> BrowserUiData {
-    BrowserUiData {
-        action: BrowserUiAction::Snapshot,
+fn mock_browser(idx: usize) -> BrowserActivityDescriptor {
+    BrowserActivityDescriptor {
+        action: BrowserActivityAction::Snapshot,
         title: format!("Browser snapshot {idx}"),
         body_lines: vec![
             "Dashboard Architecture".to_string(),
@@ -502,28 +504,28 @@ fn mock_browser(idx: usize) -> BrowserUiData {
     }
 }
 
-fn mock_patch(idx: usize) -> crate::tool_ui::PatchUiData {
-    crate::tool_ui::PatchUiData {
+fn mock_patch(idx: usize) -> crate::activity_event::PatchActivityDescriptor {
+    crate::activity_event::PatchActivityDescriptor {
         summary_line: format!("Edited dashboard perf harness {idx}"),
-        files: vec![PatchFileUiData {
+        files: vec![PatchFileActivityDescriptor {
             path: "src/dashboard/tui_perf.rs".to_string(),
             operation: PatchFileOperation::Update,
             added_lines: 12,
             removed_lines: 3,
             diff_lines: vec![
-                PatchDiffLineUiData {
+                PatchDiffLineActivityDescriptor {
                     kind: PatchDiffLineKind::Context,
                     old_lineno: Some(10),
                     new_lineno: Some(10),
                     text: "fn render_frame() {".to_string(),
                 },
-                PatchDiffLineUiData {
+                PatchDiffLineActivityDescriptor {
                     kind: PatchDiffLineKind::Delete,
                     old_lineno: Some(11),
                     new_lineno: None,
                     text: "    old_render_loop();".to_string(),
                 },
-                PatchDiffLineUiData {
+                PatchDiffLineActivityDescriptor {
                     kind: PatchDiffLineKind::Add,
                     old_lineno: None,
                     new_lineno: Some(11),
@@ -534,8 +536,8 @@ fn mock_patch(idx: usize) -> crate::tool_ui::PatchUiData {
     }
 }
 
-fn mock_reply(idx: usize) -> ReplyUiData {
-    ReplyUiData {
+fn mock_reply(idx: usize) -> ReplyActivityDescriptor {
+    ReplyActivityDescriptor {
         disposition: ReplyDisposition::Resolved,
         subject: if idx % 2 == 0 {
             ReplySubject::Message

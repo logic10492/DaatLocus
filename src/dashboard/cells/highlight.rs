@@ -124,7 +124,7 @@ pub(super) fn highlight_shell_command(command: &str) -> Option<Vec<Span<'static>
 
 pub(super) fn highlight_patch_lines(
     path: &str,
-    lines: &[crate::tool_ui::PatchDiffLineUiData],
+    lines: &[crate::activity_event::PatchDiffLineActivityDescriptor],
 ) -> Vec<Option<Vec<Span<'static>>>> {
     let mut highlighted = vec![None; lines.len()];
     let mut segment_start = 0usize;
@@ -132,7 +132,7 @@ pub(super) fn highlight_patch_lines(
         while segment_start < lines.len()
             && matches!(
                 lines[segment_start].kind,
-                crate::tool_ui::PatchDiffLineKind::HunkBreak
+                crate::activity_event::PatchDiffLineKind::HunkBreak
             )
         {
             segment_start += 1;
@@ -142,7 +142,12 @@ pub(super) fn highlight_patch_lines(
         }
         let segment_end = lines[segment_start..]
             .iter()
-            .position(|line| matches!(line.kind, crate::tool_ui::PatchDiffLineKind::HunkBreak))
+            .position(|line| {
+                matches!(
+                    line.kind,
+                    crate::activity_event::PatchDiffLineKind::HunkBreak
+                )
+            })
             .map(|offset| segment_start + offset)
             .unwrap_or(lines.len());
         let code = lines[segment_start..segment_end]
@@ -226,13 +231,13 @@ mod tests {
         diff_scope_backgrounds_for_theme, find_syntax_for_path, highlight_patch_lines,
         theme_with_diff_backgrounds,
     };
-    use crate::tool_ui::{PatchDiffLineKind, PatchDiffLineUiData};
+    use crate::activity_event::{PatchDiffLineActivityDescriptor, PatchDiffLineKind};
 
     #[test]
     fn rust_patch_lines_receive_highlighted_spans() {
         let highlighted = highlight_patch_lines(
             "src/main.rs",
-            &[PatchDiffLineUiData {
+            &[PatchDiffLineActivityDescriptor {
                 kind: PatchDiffLineKind::Context,
                 old_lineno: Some(1),
                 new_lineno: Some(1),
@@ -254,7 +259,7 @@ mod tests {
     fn rust_patch_lines_use_truecolor_spans() {
         let highlighted = highlight_patch_lines(
             "src/main.rs",
-            &[PatchDiffLineUiData {
+            &[PatchDiffLineActivityDescriptor {
                 kind: PatchDiffLineKind::Context,
                 old_lineno: Some(1),
                 new_lineno: Some(1),
@@ -299,7 +304,7 @@ mod tests {
     fn typescript_react_patch_lines_receive_highlighted_spans() {
         let highlighted = highlight_patch_lines(
             "webui/src/components/status-page.tsx",
-            &[PatchDiffLineUiData {
+            &[PatchDiffLineActivityDescriptor {
                 kind: PatchDiffLineKind::Context,
                 old_lineno: Some(1),
                 new_lineno: Some(1),

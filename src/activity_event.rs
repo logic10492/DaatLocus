@@ -13,64 +13,41 @@ pub const EXPLORED_STABLE_ID: &str = "explored";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
-pub enum ToolUiEvent {
-    Exec(ToolUiData),
-    Terminal(TerminalUiData),
-    CodingOpenProject(CodingOpenProjectUiData),
-    Explored(ExploredUiData),
-    CodingEdit(CodingEditUiData),
-    CodingReview(CodingReviewUiData),
-    Browser(BrowserUiData),
-    Patch(PatchUiData),
-    Telegram(TelegramUiData),
-    Reply(ReplyUiData),
-    Plan(PlanUiData),
-    WebSearch(WebSearchUiData),
-    CreatePrimitiveSpec(CreatePrimitiveSpecUiData),
-    ActivatePrimitive(ActivatePrimitiveUiData),
+pub enum ToolCallActivityEvent {
+    Exec(TextActivityDescriptor),
+    Terminal(TerminalActivityDescriptor),
+    Browser(BrowserActivityDescriptor),
+    Patch(PatchActivityDescriptor),
+    CodingEdit(CodingEditActivityDescriptor),
+    Telegram(TelegramActivityDescriptor),
+    Plan(PlanActivityDescriptor),
+    CreatePrimitiveSpec(TextActivityDescriptor),
+    ActivatePrimitive(TextActivityDescriptor),
     #[serde(alias = "Finish", alias = "Work")]
-    App(ToolUiData),
-    Warning(ToolUiData),
-    Error(ToolUiData),
+    App(TextActivityDescriptor),
+    Error(TextActivityDescriptor),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind")]
-pub enum ToolCallUiEvent {
-    Exec(ToolUiData),
-    Terminal(TerminalUiData),
-    Browser(BrowserUiData),
-    Patch(PatchUiData),
-    CodingEdit(CodingEditUiData),
-    Telegram(TelegramUiData),
-    Plan(PlanUiData),
-    CreatePrimitiveSpec(ToolUiData),
-    ActivatePrimitive(ToolUiData),
-    #[serde(alias = "Finish", alias = "Work")]
-    App(ToolUiData),
-    Error(ToolUiData),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ToolUiData {
+pub struct TextActivityDescriptor {
     pub title: String,
     #[serde(default)]
     pub body_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TerminalUiData {
-    pub action: TerminalUiAction,
+pub struct TerminalActivityDescriptor {
+    pub action: TerminalActivityAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<TerminalUiOrigin>,
+    pub origin: Option<TerminalActivityOrigin>,
     pub title: String,
     #[serde(default)]
     pub body_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BrowserUiData {
-    pub action: BrowserUiAction,
+pub struct BrowserActivityDescriptor {
+    pub action: BrowserActivityAction,
     pub title: String,
     #[serde(default)]
     pub body_lines: Vec<String>,
@@ -83,8 +60,8 @@ pub struct BrowserUiData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WebSearchUiData {
-    pub action: WebSearchUiAction,
+pub struct WebSearchActivityDescriptor {
+    pub action: WebSearchActivityAction,
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -94,31 +71,31 @@ pub struct WebSearchUiData {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WebSearchUiAction {
+pub enum WebSearchActivityAction {
     Searching,
     Searched,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingOpenProjectUiData {
+pub struct CodingOpenProjectActivityDescriptor {
     pub project_root: String,
     #[serde(default)]
     pub detail_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExploredUiData {
+pub struct ExploredActivityDescriptor {
     pub stable_id: String,
     pub title: String,
     #[serde(default)]
-    pub calls: Vec<ExploredCallUiData>,
+    pub calls: Vec<ExploredCallActivityDescriptor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExploredCallUiData {
+pub struct ExploredCallActivityDescriptor {
     pub tool_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<ExploredCallUiAction>,
+    pub action: Option<ExploredCallActivityAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,7 +107,7 @@ pub struct ExploredCallUiData {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ExploredCallUiAction {
+pub enum ExploredCallActivityAction {
     Read,
     List,
     Search,
@@ -138,7 +115,7 @@ pub enum ExploredCallUiAction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingEditUiData {
+pub struct CodingEditActivityDescriptor {
     pub stable_id: String,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,18 +131,18 @@ pub struct CodingEditUiData {
     #[serde(default)]
     pub impact_lines: Vec<String>,
     #[serde(default)]
-    pub diff_files: Vec<PatchFileUiData>,
+    pub diff_files: Vec<PatchFileActivityDescriptor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CodingReviewUiData {
+pub struct CodingReviewActivityDescriptor {
     pub title: String,
     pub summary: String,
     pub review_pending: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TerminalUiAction {
+pub enum TerminalActivityAction {
     Execute,
     Continue,
     Poll,
@@ -174,14 +151,14 @@ pub enum TerminalUiAction {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TerminalUiOrigin {
+pub enum TerminalActivityOrigin {
     Agent,
     User,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum BrowserUiAction {
+pub enum BrowserActivityAction {
     OpenPage,
     Snapshot,
     Wait,
@@ -194,20 +171,20 @@ pub enum BrowserUiAction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PatchUiData {
+pub struct PatchActivityDescriptor {
     pub summary_line: String,
     #[serde(default)]
-    pub files: Vec<PatchFileUiData>,
+    pub files: Vec<PatchFileActivityDescriptor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PatchFileUiData {
+pub struct PatchFileActivityDescriptor {
     pub path: String,
     pub operation: PatchFileOperation,
     pub added_lines: usize,
     pub removed_lines: usize,
     #[serde(default)]
-    pub diff_lines: Vec<PatchDiffLineUiData>,
+    pub diff_lines: Vec<PatchDiffLineActivityDescriptor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -219,7 +196,7 @@ pub enum PatchFileOperation {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PatchDiffLineUiData {
+pub struct PatchDiffLineActivityDescriptor {
     pub kind: PatchDiffLineKind,
     pub old_lineno: Option<usize>,
     pub new_lineno: Option<usize>,
@@ -236,8 +213,8 @@ pub enum PatchDiffLineKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TelegramUiData {
-    pub action: TelegramUiAction,
+pub struct TelegramActivityDescriptor {
+    pub action: TelegramActivityAction,
     pub title: String,
     #[serde(default)]
     pub detail_lines: Vec<String>,
@@ -246,7 +223,7 @@ pub struct TelegramUiData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReplyUiData {
+pub struct ReplyActivityDescriptor {
     pub disposition: ReplyDisposition,
     #[serde(default)]
     pub subject: ReplySubject,
@@ -255,43 +232,43 @@ pub struct ReplyUiData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PlanUiData {
+pub struct PlanActivityDescriptor {
     #[serde(default, rename = "plan_kind", alias = "kind")]
-    pub kind: PlanUiKind,
+    pub kind: PlanActivityKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
-    pub steps: Vec<PlanStepUiData>,
+    pub steps: Vec<PlanStepActivityDescriptor>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum PlanUiKind {
+pub enum PlanActivityKind {
     Proposed,
     #[default]
     Updated,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PlanStepUiData {
-    pub status: PlanStepUiStatus,
+pub struct PlanStepActivityDescriptor {
+    pub status: PlanStepActivityStatus,
     pub text: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum PlanStepUiStatus {
+pub enum PlanStepActivityStatus {
     Pending,
     InProgress,
     Completed,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreatePrimitiveSpecUiData {
+pub struct CreatePrimitiveSpecActivityDescriptor {
     pub primitive_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ActivatePrimitiveUiData {
+pub struct ActivatePrimitiveActivityDescriptor {
     pub primitive_id: String,
 }
 
@@ -312,7 +289,7 @@ pub enum ReplySubject {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TelegramUiAction {
+pub enum TelegramActivityAction {
     ListChats,
     #[serde(alias = "ReadChat")]
     ReadHistory,
@@ -321,134 +298,17 @@ pub enum TelegramUiAction {
     ResolveChat,
 }
 
-impl ToolUiEvent {
-    pub fn terminal(
-        action: TerminalUiAction,
-        title: impl Into<String>,
-        body_lines: Vec<String>,
-    ) -> Self {
-        Self::terminal_with_origin(action, None, title, body_lines)
-    }
-
-    pub fn terminal_with_origin(
-        action: TerminalUiAction,
-        origin: Option<TerminalUiOrigin>,
-        title: impl Into<String>,
-        body_lines: Vec<String>,
-    ) -> Self {
-        Self::Terminal(TerminalUiData {
-            action,
-            origin,
-            title: title.into(),
-            body_lines,
-        })
-    }
-
-    pub fn coding_open_project(project_root: impl Into<String>, detail_lines: Vec<String>) -> Self {
-        Self::CodingOpenProject(CodingOpenProjectUiData {
-            project_root: project_root.into(),
-            detail_lines,
-        })
-    }
-
-    pub fn explored(
-        stable_id: impl Into<String>,
-        title: impl Into<String>,
-        calls: Vec<ExploredCallUiData>,
-    ) -> Self {
-        Self::Explored(ExploredUiData {
-            stable_id: stable_id.into(),
-            title: title.into(),
-            calls,
-        })
-    }
-
-    pub fn coding_edit(data: CodingEditUiData) -> Self {
-        Self::CodingEdit(data)
-    }
-
-    pub fn coding_review(
-        title: impl Into<String>,
-        summary: impl Into<String>,
-        review_pending: bool,
-    ) -> Self {
-        Self::CodingReview(CodingReviewUiData {
-            title: title.into(),
-            summary: summary.into(),
-            review_pending,
-        })
-    }
-
-    pub fn plan(steps: Vec<PlanStepUiData>) -> Self {
-        Self::Plan(PlanUiData {
-            kind: PlanUiKind::Updated,
-            explanation: None,
-            steps,
-        })
-    }
-
-    pub fn plan_with_explanation(explanation: Option<String>, steps: Vec<PlanStepUiData>) -> Self {
-        Self::Plan(PlanUiData {
-            kind: PlanUiKind::Updated,
-            explanation,
-            steps,
-        })
-    }
-
-    pub fn create_primitive_spec(primitive_id: impl Into<String>) -> Self {
-        Self::CreatePrimitiveSpec(CreatePrimitiveSpecUiData {
-            primitive_id: primitive_id.into(),
-        })
-    }
-
-    pub fn activate_primitive(primitive_id: impl Into<String>) -> Self {
-        Self::ActivatePrimitive(ActivatePrimitiveUiData {
-            primitive_id: primitive_id.into(),
-        })
-    }
-
-    pub fn reply(disposition: ReplyDisposition, message_lines: Vec<String>) -> Self {
-        Self::Reply(ReplyUiData {
-            disposition,
-            subject: ReplySubject::Message,
-            message_lines,
-        })
-    }
-
-    pub fn notice_reply(disposition: ReplyDisposition, message_lines: Vec<String>) -> Self {
-        Self::Reply(ReplyUiData {
-            disposition,
-            subject: ReplySubject::Notice,
-            message_lines,
-        })
-    }
-
-    pub fn app(title: impl Into<String>, body_lines: Vec<String>) -> Self {
-        Self::App(ToolUiData {
-            title: title.into(),
-            body_lines,
-        })
-    }
-
-    pub fn error(title: impl Into<String>, body_lines: Vec<String>) -> Self {
-        Self::Error(ToolUiData {
-            title: title.into(),
-            body_lines,
-        })
-    }
-}
-
-impl ToolCallUiEvent {
-    pub fn coding_edit(data: CodingEditUiData) -> Self {
+impl ToolCallActivityEvent {
+    pub fn coding_edit(data: CodingEditActivityDescriptor) -> Self {
         Self::CodingEdit(data)
     }
 
     pub fn terminal(
-        action: TerminalUiAction,
+        action: TerminalActivityAction,
         title: impl Into<String>,
         body_lines: Vec<String>,
     ) -> Self {
-        Self::Terminal(TerminalUiData {
+        Self::Terminal(TerminalActivityDescriptor {
             action,
             origin: None,
             title: title.into(),
@@ -456,33 +316,33 @@ impl ToolCallUiEvent {
         })
     }
 
-    pub fn plan(data: PlanUiData) -> Self {
+    pub fn plan(data: PlanActivityDescriptor) -> Self {
         Self::Plan(data)
     }
 
     pub fn create_primitive_spec(title: impl Into<String>, body_lines: Vec<String>) -> Self {
-        Self::CreatePrimitiveSpec(ToolUiData {
+        Self::CreatePrimitiveSpec(TextActivityDescriptor {
             title: title.into(),
             body_lines,
         })
     }
 
     pub fn activate_primitive(title: impl Into<String>, body_lines: Vec<String>) -> Self {
-        Self::ActivatePrimitive(ToolUiData {
+        Self::ActivatePrimitive(TextActivityDescriptor {
             title: title.into(),
             body_lines,
         })
     }
 
     pub fn app(title: impl Into<String>, body_lines: Vec<String>) -> Self {
-        Self::App(ToolUiData {
+        Self::App(TextActivityDescriptor {
             title: title.into(),
             body_lines,
         })
     }
 
     pub fn error(title: impl Into<String>, body_lines: Vec<String>) -> Self {
-        Self::Error(ToolUiData {
+        Self::Error(TextActivityDescriptor {
             title: title.into(),
             body_lines,
         })
@@ -504,20 +364,20 @@ mod tests {
 
     use super::*;
 
-    fn sample_plan() -> PlanUiData {
-        PlanUiData {
-            kind: PlanUiKind::Proposed,
+    fn sample_plan() -> PlanActivityDescriptor {
+        PlanActivityDescriptor {
+            kind: PlanActivityKind::Proposed,
             explanation: Some("check the route".to_string()),
-            steps: vec![PlanStepUiData {
-                status: PlanStepUiStatus::InProgress,
+            steps: vec![PlanStepActivityDescriptor {
+                status: PlanStepActivityStatus::InProgress,
                 text: "inspect code".to_string(),
             }],
         }
     }
 
     #[test]
-    fn tool_ui_plan_uses_distinct_wire_field_for_plan_kind() {
-        let event = ToolUiEvent::Plan(sample_plan());
+    fn tool_call_activity_plan_uses_distinct_wire_field_for_plan_kind() {
+        let event = ToolCallActivityEvent::Plan(sample_plan());
         let encoded = serde_json::to_string(&event).unwrap();
         let value = serde_json::to_value(event).unwrap();
 
@@ -526,32 +386,11 @@ mod tests {
         assert_eq!(value["kind"], json!("Plan"));
         assert_eq!(value["plan_kind"], json!("proposed"));
 
-        let decoded: ToolUiEvent = serde_json::from_value(value).unwrap();
+        let decoded: ToolCallActivityEvent = serde_json::from_value(value).unwrap();
         assert!(matches!(
             decoded,
-            ToolUiEvent::Plan(PlanUiData {
-                kind: PlanUiKind::Proposed,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn tool_call_ui_plan_uses_distinct_wire_field_for_plan_kind() {
-        let event = ToolCallUiEvent::Plan(sample_plan());
-        let encoded = serde_json::to_string(&event).unwrap();
-        let value = serde_json::to_value(event).unwrap();
-
-        assert_eq!(encoded.matches("\"kind\"").count(), 1);
-        assert!(encoded.contains("\"plan_kind\""));
-        assert_eq!(value["kind"], json!("Plan"));
-        assert_eq!(value["plan_kind"], json!("proposed"));
-
-        let decoded: ToolCallUiEvent = serde_json::from_value(value).unwrap();
-        assert!(matches!(
-            decoded,
-            ToolCallUiEvent::Plan(PlanUiData {
-                kind: PlanUiKind::Proposed,
+            ToolCallActivityEvent::Plan(PlanActivityDescriptor {
+                kind: PlanActivityKind::Proposed,
                 ..
             })
         ));
@@ -559,12 +398,12 @@ mod tests {
 
     #[test]
     fn plan_ui_data_accepts_legacy_standalone_kind_field() {
-        let decoded: PlanUiData = serde_json::from_value(json!({
+        let decoded: PlanActivityDescriptor = serde_json::from_value(json!({
             "kind": "proposed",
             "steps": []
         }))
         .unwrap();
 
-        assert_eq!(decoded.kind, PlanUiKind::Proposed);
+        assert_eq!(decoded.kind, PlanActivityKind::Proposed);
     }
 }

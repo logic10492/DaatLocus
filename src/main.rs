@@ -1,5 +1,6 @@
 rust_i18n::i18n!("locales", fallback = "en-US");
 
+mod activity_event;
 mod app;
 mod browser_app;
 mod browser_install;
@@ -41,7 +42,6 @@ mod telegram_acl;
 mod telegram_transport;
 mod terminal_app;
 mod terminal_logo;
-mod tool_ui;
 mod workflow;
 mod workspace_app;
 

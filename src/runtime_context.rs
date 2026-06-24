@@ -485,8 +485,8 @@ fn summarize_runtime_inline_text(text: &str) -> String {
 fn history_message_for_compaction(message: AgentMessage) -> HistoryMessage {
     HistoryMessage {
         message,
-        tool_ui_event: None,
-        tool_call_ui_events: Vec::new(),
+        activity_event: None,
+        tool_call_activity_events: Vec::new(),
     }
 }
 

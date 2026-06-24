@@ -75,8 +75,8 @@ pub(crate) async fn daat_locus_loop(
     let (activity_len_before_turn, last_activity_cell_before_turn) = {
         let state = tx.borrow();
         (
-            state.activity_cells.len(),
-            state.activity_cells.last().cloned(),
+            state.activity_events.len(),
+            state.activity_events.last().cloned(),
         )
     };
     let runtime_turn_started_at = std::time::Instant::now();

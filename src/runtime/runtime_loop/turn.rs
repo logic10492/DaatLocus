@@ -109,8 +109,8 @@ fn preview_afterclaim_context_message(
     }
     Some(HistoryMessage {
         message: AgentMessage::user_content(afterclaim_agent_content(text, input)),
-        tool_ui_event: None,
-        tool_call_ui_events: Vec::new(),
+        activity_event: None,
+        tool_call_activity_events: Vec::new(),
     })
 }
 
@@ -748,13 +748,21 @@ pub(crate) async fn execute_agent_loop_step(
             } else {
                 Some(response_assistant_messages.join("\n\n"))
             };
-            let tool_call_ui_events = calls
+            let tool_call_previews = calls
                 .iter()
                 .map(|call| {
-                    render_tool_call_ui_event(context, call).unwrap_or_else(|_| {
-                        ToolCallUiEvent::error(call.name.clone(), vec![call.arguments.to_string()])
+                    build_tool_call_activity_event(context, call).unwrap_or_else(|_| {
+                        ToolCallActivityEvent::error(
+                            call.name.clone(),
+                            vec![call.arguments.to_string()],
+                        )
                     })
                 })
+                .collect::<Vec<_>>();
+            let tool_call_activity_events = tool_call_previews
+                .iter()
+                .cloned()
+                .filter_map(activity_event_from_tool_call_activity_event)
                 .collect::<Vec<_>>();
             runtime_step.push_agent_message(
                 AgentMessage::assistant_tool_call_protocol_with_reasoning(
@@ -774,8 +782,8 @@ pub(crate) async fn execute_agent_loop_step(
                     response.last_reasoning_content.clone(),
                     calls.clone(),
                 ),
-                tool_ui_event: None,
-                tool_call_ui_events: tool_call_ui_events.clone(),
+                activity_event: None,
+                tool_call_activity_events,
             });
             let mut committed_cells = Vec::new();
             if let Some(content) = assistant_text.clone()
@@ -784,7 +792,7 @@ pub(crate) async fn execute_agent_loop_step(
                 committed_cells.push(cell);
             }
             append_committed_activity_cells(context, tx, committed_cells);
-            for (call, call_ui_event) in calls.iter().zip(tool_call_ui_events.iter()) {
+            for (call, call_activity_event) in calls.iter().zip(tool_call_previews.iter()) {
                 let action_record =
                     summarize_action_from_tool_call(context, call).unwrap_or_else(|_| {
                         EpisodeActionRecord {
@@ -795,8 +803,8 @@ pub(crate) async fn execute_agent_loop_step(
                 actions.push(action_record);
                 enter_runtime_phase(context, tx, RuntimeTurnPhase::ToolExecution);
                 if let Some(tx) = tx {
-                    match call_ui_event.clone() {
-                        ToolCallUiEvent::Exec(event) => {
+                    match call_activity_event.clone() {
+                        ToolCallActivityEvent::Exec(event) => {
                             tx.send_modify(|state| {
                                 apply_activity_event(
                                     state,
@@ -808,11 +816,11 @@ pub(crate) async fn execute_agent_loop_step(
                                 );
                             });
                         }
-                        ToolCallUiEvent::Terminal(event)
+                        ToolCallActivityEvent::Terminal(event)
                             if matches!(
                                 event.action,
-                                crate::tool_ui::TerminalUiAction::Execute
-                                    | crate::tool_ui::TerminalUiAction::Continue
+                                crate::activity_event::TerminalActivityAction::Execute
+                                    | crate::activity_event::TerminalActivityAction::Continue
                             ) =>
                         {
                             tx.send_modify(|state| {
@@ -826,10 +834,10 @@ pub(crate) async fn execute_agent_loop_step(
                                 );
                             });
                         }
-                        ToolCallUiEvent::Browser(event)
+                        ToolCallActivityEvent::Browser(event)
                             if !matches!(
                                 event.action,
-                                crate::tool_ui::BrowserUiAction::Snapshot
+                                crate::activity_event::BrowserActivityAction::Snapshot
                             ) =>
                         {
                             tx.send_modify(|state| {
@@ -842,15 +850,15 @@ pub(crate) async fn execute_agent_loop_step(
                                 );
                             });
                         }
-                        ToolCallUiEvent::Plan(event) => {
-                            if let Some(cell) =
-                                activity_cell_from_tool_ui_event(ToolUiEvent::Plan(event))
-                            {
+                        ToolCallActivityEvent::Plan(event) => {
+                            if !event.steps.is_empty() {
                                 tx.send_modify(|state| {
                                     apply_activity_event(
                                         state,
                                         DashboardActivityEvent::AppendCommittedCells {
-                                            cells: vec![cell],
+                                            cells: vec![SessionActivityEvent::PlanResult(
+                                                event.into(),
+                                            )],
                                         },
                                     );
                                 });
@@ -890,15 +898,18 @@ pub(crate) async fn execute_agent_loop_step(
                         .await;
                         let display_tool_name =
                             crate::app::AppId::render_exposed_tool_name(&call.name);
-                        ToolExecutionResult::new(
+                        ToolExecutionResult::from_activity_event(
                             format!("{display_tool_name} failed"),
                             json!({
                                 "error": error_text,
                             }),
-                            ToolUiEvent::error(
-                                format!("{display_tool_name} failed"),
-                                compact_body_lines(&error_text, 6),
-                            ),
+                            Some(crate::dashboard::SessionActivityEvent::Error(
+                                TextActivityDescriptor {
+                                    title: format!("{display_tool_name} failed"),
+                                    body_lines: compact_body_lines(&error_text, 6),
+                                }
+                                .into(),
+                            )),
                         )
                     }
                 };
@@ -926,6 +937,7 @@ pub(crate) async fn execute_agent_loop_step(
                     call.name.clone(),
                     result.model_content(),
                 ));
+                let activity_event = result.activity_event.clone();
                 runtime_step.push_history_message(HistoryMessage::tool(
                     call.id.clone(),
                     call.name.clone(),
@@ -938,15 +950,9 @@ pub(crate) async fn execute_agent_loop_step(
                             .tool_output_max_tokens
                             .max(1),
                     ),
-                    result.ui_event.clone(),
+                    activity_event.clone(),
                 ));
-                append_committed_activity_cells(
-                    context,
-                    tx,
-                    activity_cell_from_tool_ui_event(result.ui_event.clone())
-                        .into_iter()
-                        .collect(),
-                );
+                append_committed_activity_cells(context, tx, activity_event.into_iter().collect());
                 tool_results.push(format!("{} => {}", call.name, result.summary));
                 if claimed_events_are_terminal(context, &claimed_event_ids) {
                     let mut terminal_actions = actions.clone();
@@ -1404,7 +1410,7 @@ fn compact_runtime_error_text(text: &str, max_chars: usize) -> String {
 fn append_committed_activity_cells(
     context: &Context,
     tx: Option<&tokio::sync::watch::Sender<DashboardState>>,
-    cells: Vec<crate::dashboard::ActivityCell>,
+    cells: Vec<crate::dashboard::SessionActivityEvent>,
 ) {
     let stable_ids = cells
         .iter()
@@ -1417,18 +1423,18 @@ pub(super) fn append_final_message_separator_activity_cell(
     context: &Context,
     tx: &tokio::sync::watch::Sender<DashboardState>,
     activity_len_before_turn: usize,
-    last_activity_cell_before_turn: Option<crate::dashboard::ActivityCell>,
+    last_activity_cell_before_turn: Option<crate::dashboard::SessionActivityEvent>,
     elapsed_seconds: Option<u64>,
 ) {
     let should_append = {
         let state = tx.borrow();
-        let last_cell = state.activity_cells.last();
-        let has_new_tail = state.activity_cells.len() != activity_len_before_turn
+        let last_cell = state.activity_events.last();
+        let has_new_tail = state.activity_events.len() != activity_len_before_turn
             || last_cell != last_activity_cell_before_turn.as_ref();
         has_new_tail
             && matches!(
                 last_cell,
-                Some(crate::dashboard::ActivityCell::Assistant(_))
+                Some(crate::dashboard::SessionActivityEvent::Assistant(_))
             )
     };
     if !should_append {
@@ -1444,7 +1450,7 @@ pub(super) fn append_final_message_separator_activity_cell(
 fn append_committed_activity_cells_with_ids(
     context: &Context,
     tx: Option<&tokio::sync::watch::Sender<DashboardState>>,
-    cells: Vec<crate::dashboard::ActivityCell>,
+    cells: Vec<crate::dashboard::SessionActivityEvent>,
     stable_ids: Option<Vec<String>>,
 ) {
     if cells.is_empty() {
@@ -1525,8 +1531,8 @@ fn dashboard_user_activity_item_id(event: &EventView) -> String {
 }
 
 fn dashboard_activity_items_from_cells(
-    cells: &[crate::dashboard::ActivityCell],
-) -> Vec<crate::dashboard::WebActivityItem> {
+    cells: &[crate::dashboard::SessionActivityEvent],
+) -> Vec<crate::dashboard::DashboardActivityHistoryItem> {
     dashboard_activity_items_from_cells_with_ids(
         cells,
         cells
@@ -1542,12 +1548,14 @@ fn dashboard_activity_items_from_cells(
     )
 }
 
-fn stable_dashboard_activity_id_for_cell(cell: &crate::dashboard::ActivityCell) -> Option<String> {
+fn stable_dashboard_activity_id_for_cell(
+    cell: &crate::dashboard::SessionActivityEvent,
+) -> Option<String> {
     match cell {
-        crate::dashboard::ActivityCell::Explored(group) => {
+        crate::dashboard::SessionActivityEvent::Explored(group) => {
             Some(format!("activity-{}", group.stable_id))
         }
-        crate::dashboard::ActivityCell::CodingEdit(edit) => {
+        crate::dashboard::SessionActivityEvent::CodingEdit(edit) => {
             Some(format!("activity-{}", edit.stable_id))
         }
         _ => None,
@@ -1555,19 +1563,21 @@ fn stable_dashboard_activity_id_for_cell(cell: &crate::dashboard::ActivityCell) 
 }
 
 fn dashboard_activity_items_from_cells_with_ids(
-    cells: &[crate::dashboard::ActivityCell],
+    cells: &[crate::dashboard::SessionActivityEvent],
     item_ids: Vec<String>,
-) -> Vec<crate::dashboard::WebActivityItem> {
+) -> Vec<crate::dashboard::DashboardActivityHistoryItem> {
     cells
         .iter()
         .zip(item_ids)
-        .map(|(cell, item_id)| web_activity_item_from_cell(cell, &item_id, false))
+        .map(|(cell, item_id)| {
+            crate::dashboard::DashboardActivityHistoryItem::from_event_with_id(cell, &item_id)
+        })
         .collect()
 }
 
 fn persist_dashboard_activity_items(
     history: &DashboardActivityHistoryStore,
-    items: &[crate::dashboard::WebActivityItem],
+    items: &[crate::dashboard::DashboardActivityHistoryItem],
 ) -> miette::Result<DashboardActivityHistoryWindow> {
     history.append_items(items)?;
     Ok(history.load_initial_window())
@@ -1665,8 +1675,8 @@ mod tests {
             ]
         );
         assert!(matches!(
-            items[0].cell,
-            Some(crate::dashboard::ActivityCell::User(_))
+            items[0].event,
+            crate::dashboard::SessionActivityEvent::User(_)
         ));
     }
 

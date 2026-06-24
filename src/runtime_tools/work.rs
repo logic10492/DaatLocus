@@ -2,20 +2,23 @@ use miette::Result;
 use serde_json::json;
 
 use crate::{
+    activity_event::{
+        ActivatePrimitiveActivityDescriptor, CreatePrimitiveSpecActivityDescriptor,
+        PlanActivityDescriptor, PlanActivityKind, PlanStepActivityDescriptor,
+        PlanStepActivityStatus, ReplyDisposition, ReplySubject, TextActivityDescriptor,
+        ToolCallActivityEvent,
+    },
     context::Context,
     core::{
         ActivateComposedPrimitiveArgs, CreatePrimitiveSpecArgs, EventResolveArgs,
         NoticeResolvedArgs, ReadPrimitiveSpecArgs, UpdatePlanArgs, UpdatePrimitiveSpecArgs,
     },
+    dashboard::SessionActivityEvent,
     dashboard::render::{current_plan_step_for_dashboard, status_command_snapshot_for_dashboard},
     events::{EventDisposition, EventPayload, EventStatus},
     plan::{Plan, PlanStatus, PlanStep},
     reasoning::{episode::EpisodeActionRecord, runtime::AgentToolCall},
     schema_utils::model_schema_for,
-    tool_ui::{
-        PlanStepUiData, PlanStepUiStatus, PlanUiData, PlanUiKind, ReplyDisposition,
-        ToolCallUiEvent, ToolUiEvent,
-    },
     workflow::{NewPrimitiveSpec, PrimitiveActivation, PrimitiveRunOutcome, PrimitiveSpec},
 };
 
@@ -85,6 +88,40 @@ pub(super) fn register_tools() -> Vec<Box<dyn RuntimeTool>> {
     ]
 }
 
+fn generic_activity_event(
+    title: impl Into<String>,
+    body_lines: Vec<String>,
+) -> SessionActivityEvent {
+    SessionActivityEvent::GenericApp(
+        TextActivityDescriptor {
+            title: title.into(),
+            body_lines,
+        }
+        .into(),
+    )
+}
+
+fn reply_activity_event(
+    disposition: ReplyDisposition,
+    subject: ReplySubject,
+    message_lines: Vec<String>,
+) -> SessionActivityEvent {
+    SessionActivityEvent::Reply(
+        crate::activity_event::ReplyActivityDescriptor {
+            disposition,
+            subject,
+            message_lines,
+        }
+        .into(),
+    )
+}
+
+fn activate_primitive_activity_event(primitive_id: String) -> SessionActivityEvent {
+    SessionActivityEvent::ActivatePrimitiveResult(
+        ActivatePrimitiveActivityDescriptor { primitive_id }.into(),
+    )
+}
+
 fn event_disposition_kind(disposition: EventDisposition) -> &'static str {
     match disposition {
         EventDisposition::Resolved => "resolved",
@@ -129,7 +166,7 @@ fn summarize_event_resolve_tool(call: &AgentToolCall) -> Result<EpisodeActionRec
     })
 }
 
-fn render_event_resolve_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_event_resolve_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: EventResolveArgs = parse_tool_args(call)?;
     let mut lines = vec![format!(
         "disposition={}",
@@ -140,7 +177,7 @@ fn render_event_resolve_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent>
     {
         lines.push(format!("reply={}", summarize_inline_text(reply_message)));
     }
-    Ok(ToolCallUiEvent::app("finish_and_send", lines))
+    Ok(ToolCallActivityEvent::app("finish_and_send", lines))
 }
 
 fn execute_event_resolve_tool<'a>(
@@ -230,17 +267,18 @@ fn execute_event_resolve_tool<'a>(
             "reply_message": reply_message.clone(),
             "note": args.note.clone(),
         });
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             summary.clone(),
             result_payload,
-            ToolUiEvent::reply(
+            Some(reply_activity_event(
                 match args.disposition {
                     EventDisposition::Resolved => ReplyDisposition::Resolved,
                     EventDisposition::Dismissed => ReplyDisposition::Dismissed,
                     EventDisposition::Failed => ReplyDisposition::Failed,
                 },
+                ReplySubject::Message,
                 reply_lines,
-            ),
+            )),
         ))
     })
 }
@@ -257,7 +295,7 @@ fn summarize_notice_resolved_tool(call: &AgentToolCall) -> Result<EpisodeActionR
     })
 }
 
-fn render_notice_resolved_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_notice_resolved_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: NoticeResolvedArgs = parse_tool_args(call)?;
     let mut lines = vec![
         format!("app={}", args.app),
@@ -268,7 +306,7 @@ fn render_notice_resolved_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEven
     {
         lines.push(format!("note={}", summarize_inline_text(note)));
     }
-    Ok(ToolCallUiEvent::app("notice_resolved", lines))
+    Ok(ToolCallActivityEvent::app("notice_resolved", lines))
 }
 
 fn execute_notice_resolved_tool<'a>(
@@ -300,14 +338,18 @@ fn execute_notice_resolved_tool<'a>(
             format!("App notice resolved: {}", key.app),
             format!("Reason: {}", summarize_inline_text(&key.reason)),
         ];
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             format!("resolved app notice {}: {}", key.app, key.reason),
             json!({
                 "app": key.app,
                 "reason": key.reason,
                 "note": args.note,
             }),
-            ToolUiEvent::notice_reply(ReplyDisposition::Resolved, result_lines),
+            Some(reply_activity_event(
+                ReplyDisposition::Resolved,
+                ReplySubject::Notice,
+                result_lines,
+            )),
         ))
     })
 }
@@ -320,10 +362,10 @@ fn summarize_update_plan_tool(call: &AgentToolCall) -> Result<EpisodeActionRecor
     })
 }
 
-fn render_update_plan_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_update_plan_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: UpdatePlanArgs = parse_tool_args(call)?;
-    Ok(ToolCallUiEvent::plan(PlanUiData {
-        kind: PlanUiKind::Proposed,
+    Ok(ToolCallActivityEvent::plan(PlanActivityDescriptor {
+        kind: PlanActivityKind::Proposed,
         explanation: args.explanation,
         steps: args
             .plan
@@ -370,19 +412,18 @@ fn execute_update_plan_tool<'a>(
             });
         }
         let plan_ui_steps = plan_ui_steps(&context.plan);
-        let plan_ui_event = match explanation.clone() {
-            Some(explanation) => {
-                ToolUiEvent::plan_with_explanation(Some(explanation), plan_ui_steps)
-            }
-            None => ToolUiEvent::plan(plan_ui_steps),
+        let plan_event = PlanActivityDescriptor {
+            kind: PlanActivityKind::Updated,
+            explanation: explanation.clone(),
+            steps: plan_ui_steps,
         };
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             summary.clone(),
             json!({
                 "explanation": explanation,
                 "plan": effective_steps,
             }),
-            plan_ui_event,
+            Some(SessionActivityEvent::PlanResult(plan_event.into())),
         ))
     })
 }
@@ -395,14 +436,14 @@ fn summarize_create_primitive_spec_tool(call: &AgentToolCall) -> Result<EpisodeA
     })
 }
 
-fn render_create_primitive_spec_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_create_primitive_spec_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: CreatePrimitiveSpecArgs = parse_tool_args(call)?;
     let lines = vec![
         format!("id={}", args.id),
         format!("when_to_use={}", args.when_to_use.len()),
         format!("primitive_steps={}", args.primitive_steps.len()),
     ];
-    Ok(ToolCallUiEvent::create_primitive_spec(
+    Ok(ToolCallActivityEvent::create_primitive_spec(
         "create_primitive_spec",
         lines,
     ))
@@ -426,13 +467,18 @@ fn execute_create_primitive_spec_tool<'a>(
             })
             .await?;
         let summary = format!("created primitive spec {}", created.id);
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             summary.clone(),
             json!({
                 "created": created,
                 "bound_primitive_id": context.bound_primitive_id,
             }),
-            ToolUiEvent::create_primitive_spec(created.id),
+            Some(SessionActivityEvent::CreatePrimitiveSpecResult(
+                CreatePrimitiveSpecActivityDescriptor {
+                    primitive_id: created.id,
+                }
+                .into(),
+            )),
         ))
     })
 }
@@ -445,9 +491,9 @@ fn summarize_activate_primitive_tool(call: &AgentToolCall) -> Result<EpisodeActi
     })
 }
 
-fn render_activate_primitive_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_activate_primitive_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: ActivateComposedPrimitiveArgs = parse_tool_args(call)?;
-    Ok(ToolCallUiEvent::activate_primitive(
+    Ok(ToolCallActivityEvent::activate_primitive(
         "activate_composed_primitive",
         vec![format!("primitive_id={}", args.workflow_id)],
     ))
@@ -496,7 +542,7 @@ fn execute_activate_primitive_tool<'a>(
             } else {
                 format!("primitive {bound_id} is already active")
             };
-            return Ok(ToolExecutionResult::new(
+            return Ok(ToolExecutionResult::from_activity_event(
                 summary.clone(),
                 json!({
                     "bound_primitive_id": context.bound_primitive_id,
@@ -506,7 +552,7 @@ fn execute_activate_primitive_tool<'a>(
                     "is_composition": is_composition,
                     "already_active": true,
                 }),
-                ToolUiEvent::activate_primitive(workflow_id),
+                Some(activate_primitive_activity_event(workflow_id)),
             )
             .with_model_content(format!(
                 "summary={summary}\nalready_active=true\nbound_primitive_id={bound_id}\nprimitive_ids={}\nContinue the task using the currently bound primitive or composition; do not call activate_composed_primitive again for this binding.",
@@ -534,7 +580,7 @@ fn execute_activate_primitive_tool<'a>(
         } else {
             format!("activated primitive {bound_id}")
         };
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             summary.clone(),
             json!({
                 "bound_primitive_id": context.bound_primitive_id,
@@ -543,7 +589,7 @@ fn execute_activate_primitive_tool<'a>(
                 "activated": activated_value,
                 "is_composition": is_composition,
             }),
-            ToolUiEvent::activate_primitive(workflow_id),
+            Some(activate_primitive_activity_event(workflow_id)),
         ))
     })
 }
@@ -556,9 +602,9 @@ fn summarize_read_workflow_tool(call: &AgentToolCall) -> Result<EpisodeActionRec
     })
 }
 
-fn render_read_workflow_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_read_workflow_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: ReadPrimitiveSpecArgs = parse_tool_args(call)?;
-    Ok(ToolCallUiEvent::app(
+    Ok(ToolCallActivityEvent::app(
         "read_primitive_spec",
         vec![format!("primitive_id={}", args.workflow_id)],
     ))
@@ -583,7 +629,11 @@ fn execute_read_workflow_tool<'a>(
             .map(|path| path.display().to_string());
         let summary = format!("read primitive spec {}", spec.id);
         let primitive_id = spec.id.clone();
-        Ok(ToolExecutionResult::new(
+        let origin_label = origin
+            .as_ref()
+            .map(|origin| format!("{origin:?}").to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
+        Ok(ToolExecutionResult::from_activity_event(
             summary.clone(),
             json!({
                 "primitive_id": primitive_id,
@@ -591,18 +641,13 @@ fn execute_read_workflow_tool<'a>(
                 "path": path,
                 "spec": spec,
             }),
-            ToolUiEvent::app(
+            Some(generic_activity_event(
                 "Read Primitive Spec",
                 vec![
                     format!("primitive_id={workflow_id}"),
-                    format!(
-                        "origin={}",
-                        origin
-                            .map(|origin| format!("{origin:?}").to_ascii_lowercase())
-                            .unwrap_or_else(|| "unknown".to_string())
-                    ),
+                    format!("origin={origin_label}"),
                 ],
-            ),
+            )),
         ))
     })
 }
@@ -620,9 +665,9 @@ fn summarize_update_workflow_tool(call: &AgentToolCall) -> Result<EpisodeActionR
     })
 }
 
-fn render_update_workflow_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_update_workflow_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: UpdatePrimitiveSpecArgs = parse_tool_args(call)?;
-    Ok(ToolCallUiEvent::app(
+    Ok(ToolCallActivityEvent::app(
         "update_primitive_spec",
         vec![
             format!("primitive_id={}", args.workflow_id),
@@ -655,20 +700,20 @@ fn execute_update_workflow_tool<'a>(
             )
             .await?;
         let summary = format!("updated primitive spec {}", updated.id);
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             summary.clone(),
             json!({
                 "primitive_id": updated.id,
                 "updated": updated,
                 "reason": trim_optional_field(args.reason),
             }),
-            ToolUiEvent::app(
+            Some(generic_activity_event(
                 "Updated Primitive Spec",
                 vec![
                     format!("primitive_id={workflow_id}"),
                     format!("summary={summary}"),
                 ],
-            ),
+            )),
         ))
     })
 }
@@ -769,27 +814,27 @@ fn validate_plan_steps(steps: &[PlanStep]) -> miette::Result<()> {
     Ok(())
 }
 
-fn plan_ui_steps(plan: &Plan) -> Vec<PlanStepUiData> {
+fn plan_ui_steps(plan: &Plan) -> Vec<PlanStepActivityDescriptor> {
     plan.steps()
         .iter()
         .take(8)
-        .map(|step| PlanStepUiData {
+        .map(|step| PlanStepActivityDescriptor {
             status: match step.status {
-                PlanStatus::Pending => PlanStepUiStatus::Pending,
-                PlanStatus::InProgress => PlanStepUiStatus::InProgress,
-                PlanStatus::Completed => PlanStepUiStatus::Completed,
+                PlanStatus::Pending => PlanStepActivityStatus::Pending,
+                PlanStatus::InProgress => PlanStepActivityStatus::InProgress,
+                PlanStatus::Completed => PlanStepActivityStatus::Completed,
             },
             text: summarize_inline_text(&step.step),
         })
         .collect()
 }
 
-fn plan_ui_step_from_args(step: crate::core::UpdatePlanStepArgs) -> PlanStepUiData {
-    PlanStepUiData {
+fn plan_ui_step_from_args(step: crate::core::UpdatePlanStepArgs) -> PlanStepActivityDescriptor {
+    PlanStepActivityDescriptor {
         status: match step.status {
-            PlanStatus::Pending => PlanStepUiStatus::Pending,
-            PlanStatus::InProgress => PlanStepUiStatus::InProgress,
-            PlanStatus::Completed => PlanStepUiStatus::Completed,
+            PlanStatus::Pending => PlanStepActivityStatus::Pending,
+            PlanStatus::InProgress => PlanStepActivityStatus::InProgress,
+            PlanStatus::Completed => PlanStepActivityStatus::Completed,
         },
         text: summarize_inline_text(&step.step),
     }
@@ -820,7 +865,7 @@ mod tests {
 
         let event = render_notice_resolved_call_ui(&call).expect("render notice resolved call");
         match event {
-            ToolCallUiEvent::App(data) => {
+            ToolCallActivityEvent::App(data) => {
                 assert_eq!(data.title, "notice_resolved");
                 assert_eq!(
                     data.body_lines,
@@ -851,14 +896,14 @@ mod tests {
 
         let event = render_update_plan_call_ui(&call).expect("render update_plan call ui");
         match event {
-            ToolCallUiEvent::Plan(plan) => {
-                assert_eq!(plan.kind, PlanUiKind::Proposed);
+            ToolCallActivityEvent::Plan(plan) => {
+                assert_eq!(plan.kind, PlanActivityKind::Proposed);
                 assert_eq!(
                     plan.explanation.as_deref(),
                     Some("Need a short setup sequence.")
                 );
                 assert_eq!(plan.steps.len(), 2);
-                assert_eq!(plan.steps[0].status, PlanStepUiStatus::InProgress);
+                assert_eq!(plan.steps[0].status, PlanStepActivityStatus::InProgress);
             }
             other => panic!("expected plan call ui, got {other:?}"),
         }

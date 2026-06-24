@@ -28,8 +28,8 @@ use crate::{
         DashboardAction, DashboardActivityHistoryStore, DashboardControlCommand,
         DashboardPendingUserInputMoveDirection, DashboardRuntimeActivity,
         DashboardRuntimeActivityStatus, DashboardRuntimeStatusLevel, DashboardState, ReducedMotion,
-        activity_cells_from_history_items, dashboard_agent_name, execute_control_command,
-        execute_dashboard_action, sync_web_activity_state,
+        activity_events_from_history_items, dashboard_agent_name, execute_control_command,
+        execute_dashboard_action, sync_dashboard_runtime_status_live_cell,
     },
     events::{
         EventPayload, EventStatus, EventStore, TelegramIncomingEvent, TerminalIncomingAttachment,
@@ -279,15 +279,12 @@ pub(crate) async fn run_session_serve(
                 &context.events,
                 &context.pending_work,
             ),
-            activity_cells: if activity_history.items.is_empty() {
+            activity_events: if activity_history.items.is_empty() {
                 render_activity_for_dashboard(&context)
             } else {
-                activity_cells_from_history_items(&activity_history.items)
+                activity_events_from_history_items(&activity_history.items)
             },
-            live_activity_cells: Vec::new(),
-            web_activity_version: crate::dashboard::default_web_activity_version(),
-            web_activity_items: Vec::new(),
-            live_web_activity_items: Vec::new(),
+            live_activity_events: Vec::new(),
             activity_history,
             last_cycle_elapsed_ms: None,
             runtime_status: None,
@@ -302,7 +299,7 @@ pub(crate) async fn run_session_serve(
             footer_context: render_dashboard_footer_context(&context, None),
             footer_estimated_input_tokens: None,
         };
-        sync_web_activity_state(state);
+        sync_dashboard_runtime_status_live_cell(state);
     });
     crate::runtime::session_title::sync_session_title_placeholder(&mut context, &tx);
 

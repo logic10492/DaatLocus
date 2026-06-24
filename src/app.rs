@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    dashboard::DashboardState,
+    activity_event::{TextActivityDescriptor, ToolCallActivityEvent},
+    dashboard::{DashboardState, SessionActivityEvent},
     reasoning::{episode::EpisodeActionRecord, runtime::AgentToolCall},
     sandbox::RuntimeSandboxPolicy,
-    tool_ui::{ToolCallUiEvent, ToolUiData, ToolUiEvent},
 };
 
 #[model_schema(transparent)]
@@ -164,7 +164,23 @@ pub struct AppToolExecutionResult {
     pub summary: String,
     pub payload: Value,
     pub model_content: Option<String>,
-    pub ui_event: ToolUiEvent,
+    pub activity_event: Option<SessionActivityEvent>,
+}
+
+impl AppToolExecutionResult {
+    pub fn from_activity_event(
+        summary: impl Into<String>,
+        payload: Value,
+        model_content: Option<String>,
+        activity_event: Option<SessionActivityEvent>,
+    ) -> Self {
+        Self {
+            summary: summary.into(),
+            payload,
+            model_content,
+            activity_event,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -195,7 +211,7 @@ fn summarize_app_inline_text(text: &str) -> String {
     }
 }
 
-fn compact_app_tool_ui_lines(arguments: &Value) -> Vec<String> {
+fn compact_app_activity_event_lines(arguments: &Value) -> Vec<String> {
     match arguments {
         Value::Object(map) if map.is_empty() => Vec::new(),
         Value::Object(map) => map
@@ -240,10 +256,10 @@ pub trait App: Send + Sync {
         })
     }
 
-    fn render_tool_call_ui(&self, call: &AgentToolCall) -> Result<ToolCallUiEvent> {
-        Ok(ToolCallUiEvent::App(ToolUiData {
+    fn tool_call_activity_event(&self, call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
+        Ok(ToolCallActivityEvent::App(TextActivityDescriptor {
             title: call.name.clone(),
-            body_lines: compact_app_tool_ui_lines(&call.arguments),
+            body_lines: compact_app_activity_event_lines(&call.arguments),
         }))
     }
 
@@ -263,12 +279,18 @@ pub trait App: Send + Sync {
         let result = self
             .execute_dynamic_tool(&call.name, call.arguments.clone())
             .await?;
-        Ok(AppToolExecutionResult {
-            summary: result.summary,
-            payload: result.payload,
-            model_content: result.model_content,
-            ui_event: ToolUiEvent::app(call.name.clone(), result.ui_lines),
-        })
+        Ok(AppToolExecutionResult::from_activity_event(
+            result.summary,
+            result.payload,
+            result.model_content,
+            Some(SessionActivityEvent::GenericApp(
+                TextActivityDescriptor {
+                    title: call.name.clone(),
+                    body_lines: result.ui_lines,
+                }
+                .into(),
+            )),
+        ))
     }
 
     async fn execute_dynamic_tool(
@@ -413,14 +435,14 @@ impl AppManager {
         app.summarize_tool_call(&app_call)
     }
 
-    pub fn render_tool_call_ui(&self, call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+    pub fn tool_call_activity_event(&self, call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
         let (app_id, app_tool_name) = self.app_tool_name_from_exposed(&call.name)?;
         let app = self
             .apps
             .get(&app_id)
             .ok_or_else(|| miette!("app missing for tool `{}`: {app_id}", call.name))?;
         let app_call = call.with_name(app_tool_name);
-        app.render_tool_call_ui(&app_call)
+        app.tool_call_activity_event(&app_call)
     }
 
     pub async fn execute_tool_for_app(

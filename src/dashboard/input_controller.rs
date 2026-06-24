@@ -156,7 +156,7 @@ pub(super) fn handle_key_event(
 
     if view.command_input.is_empty() {
         if key.code == KeyCode::Enter {
-            view.toggle_thinking_expansion(&state.activity_cells);
+            view.toggle_thinking_expansion(&state.activity_events);
             return TuiInputOutcome::Continue;
         }
         if view.handle_activity_scroll_key(key) {

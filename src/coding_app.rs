@@ -14,19 +14,22 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    activity_event::{
+        CodingEditActivityDescriptor, CodingOpenProjectActivityDescriptor,
+        CodingReviewActivityDescriptor, EXPLORED_STABLE_ID, ExploredActivityDescriptor,
+        ExploredCallActivityAction, ExploredCallActivityDescriptor,
+        PatchDiffLineActivityDescriptor, PatchDiffLineKind, PatchFileActivityDescriptor,
+        PatchFileOperation, ToolCallActivityEvent, compact_body_lines,
+    },
     app::{
         App, AppHowToUse, AppId, AppStateRender, AppToolExecutionContext, AppToolExecutionResult,
         AppToolSpec, AppUsage,
     },
     context_budget::truncate_text_to_token_budget,
+    dashboard::SessionActivityEvent,
     reasoning::{episode::EpisodeActionRecord, prompts::APP_CODING, runtime::AgentToolCall},
     runtime::scope_client::ScopeClient,
     schema_utils::{model_schema_for, structured_edit_args_schema},
-    tool_ui::{
-        CodingEditUiData, EXPLORED_STABLE_ID, ExploredCallUiAction, ExploredCallUiData,
-        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData,
-        ToolCallUiEvent, ToolUiEvent, compact_body_lines,
-    },
 };
 
 const MAX_RENDERED_LSP_SETUP_HINTS: usize = 5;
@@ -441,30 +444,33 @@ impl CodingApp {
                 == Some(root_instruction_fingerprint.as_str())
             {
                 self.last_action = Some("project already open".to_string());
-                return Ok(AppToolExecutionResult {
-                    summary: format!("coding project already open {}", project_root.display()),
-                    payload: json!({
+                return Ok(AppToolExecutionResult::from_activity_event(
+                    format!("coding project already open {}", project_root.display()),
+                    json!({
                         "status": "already_open",
                         "project_root": project_root,
                         "root_project_instruction_fingerprint": root_instruction_fingerprint,
                     }),
-                    model_content: Some(format!(
+                    Some(format!(
                         "status=already_open\nproject_root={}\nroot_project_instruction_fingerprint={}",
                         project_root.display(),
                         root_instruction_fingerprint,
                     )),
-                    ui_event: ToolUiEvent::coding_open_project(
-                        project_root.display().to_string(),
-                        vec![
-                            "status=already_open".to_string(),
-                            format!("project_root={}", project_root.display()),
-                            format!(
-                                "root_project_instruction_fingerprint={}",
-                                short_hash(&root_instruction_fingerprint)
-                            ),
-                        ],
-                    ),
-                });
+                    Some(SessionActivityEvent::CodingOpenProject(
+                        CodingOpenProjectActivityDescriptor {
+                            project_root: project_root.display().to_string(),
+                            detail_lines: vec![
+                                "status=already_open".to_string(),
+                                format!("project_root={}", project_root.display()),
+                                format!(
+                                    "root_project_instruction_fingerprint={}",
+                                    short_hash(&root_instruction_fingerprint)
+                                ),
+                            ],
+                        }
+                        .into(),
+                    )),
+                ));
             }
 
             let root_instructions = load_instruction_documents_in_dir(&project_root)?;
@@ -490,26 +496,29 @@ impl CodingApp {
                     short_hash(&instruction.sha256)
                 )
             }));
-            return Ok(AppToolExecutionResult {
-                summary: format!(
+            return Ok(AppToolExecutionResult::from_activity_event(
+                format!(
                     "reloaded coding project instructions {}",
                     project_root.display()
                 ),
-                payload: json!({
+                json!({
                     "status": "project_instructions_reloaded",
                     "project_root": project_root,
                     "root_project_instruction_fingerprint": root_instruction_fingerprint,
                 }),
-                model_content: Some(format!(
+                Some(format!(
                     "status=project_instructions_reloaded\nproject_root={}\nroot_project_instruction_fingerprint={}\nproject_instruction_context=available_in_next_preturn_context",
                     project_root.display(),
                     root_instruction_fingerprint,
                 )),
-                ui_event: ToolUiEvent::coding_open_project(
-                    project_root.display().to_string(),
-                    ui_lines,
-                ),
-            });
+                Some(SessionActivityEvent::CodingOpenProject(
+                    CodingOpenProjectActivityDescriptor {
+                        project_root: project_root.display().to_string(),
+                        detail_lines: ui_lines,
+                    }
+                    .into(),
+                )),
+            ));
         }
 
         let root_instructions = load_instruction_documents_in_dir(&project_root)?;
@@ -550,21 +559,24 @@ impl CodingApp {
             )
         }));
 
-        Ok(AppToolExecutionResult {
-            summary: format!("opened coding project {}", project_root.display()),
-            payload: json!({
+        Ok(AppToolExecutionResult::from_activity_event(
+            format!("opened coding project {}", project_root.display()),
+            json!({
                 "status": "opened",
                 "project_root": project_root,
                 "scope_response": response,
                 "config_hints": config_hints,
                 "root_project_instruction_fingerprint": root_instruction_fingerprint,
             }),
-            model_content: Some(model_content),
-            ui_event: ToolUiEvent::coding_open_project(
-                project_root.display().to_string(),
-                ui_lines,
-            ),
-        })
+            Some(model_content),
+            Some(SessionActivityEvent::CodingOpenProject(
+                CodingOpenProjectActivityDescriptor {
+                    project_root: project_root.display().to_string(),
+                    detail_lines: ui_lines,
+                }
+                .into(),
+            )),
+        ))
     }
 
     fn scoped_instructions_for_path_once_per_turn(
@@ -657,7 +669,7 @@ impl CodingApp {
                 ),
             );
         }
-        if let ToolUiEvent::App(ui_data) = &mut result.ui_event {
+        if let Some(SessionActivityEvent::GenericApp(ui_data)) = &mut result.activity_event {
             ui_data
                 .body_lines
                 .extend(scoped_instructions.iter().map(|instruction| {
@@ -681,23 +693,26 @@ impl CodingApp {
     fn explored_event(
         &self,
         tool_name: impl Into<String>,
-        action: ExploredCallUiAction,
+        action: ExploredCallActivityAction,
         target: Option<String>,
         secondary_target: Option<String>,
         summary: impl Into<String>,
         detail_lines: Vec<String>,
-    ) -> ToolUiEvent {
-        ToolUiEvent::explored(
-            EXPLORED_STABLE_ID,
-            "Explored",
-            vec![ExploredCallUiData {
-                tool_name: tool_name.into(),
-                action: Some(action),
-                target,
-                secondary_target,
-                summary: summary.into(),
-                detail_lines,
-            }],
+    ) -> SessionActivityEvent {
+        SessionActivityEvent::Explored(
+            ExploredActivityDescriptor {
+                stable_id: EXPLORED_STABLE_ID.to_string(),
+                title: "Explored".to_string(),
+                calls: vec![ExploredCallActivityDescriptor {
+                    tool_name: tool_name.into(),
+                    action: Some(action),
+                    target,
+                    secondary_target,
+                    summary: summary.into(),
+                    detail_lines,
+                }],
+            }
+            .into(),
         )
     }
 
@@ -869,8 +884,8 @@ impl App for CodingApp {
         })
     }
 
-    fn render_tool_call_ui(&self, call: &AgentToolCall) -> Result<ToolCallUiEvent> {
-        Ok(ToolCallUiEvent::app(
+    fn tool_call_activity_event(&self, call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
+        Ok(ToolCallActivityEvent::app(
             call.name.clone(),
             compact_coding_argument_lines(&call.arguments),
         ))
@@ -922,16 +937,16 @@ impl App for CodingApp {
                     ));
                 }
                 let model_content = format_search_hits_for_model(&result.matches);
-                let mut output = AppToolExecutionResult {
-                    summary: format!("found {} matches", result.matches.len()),
-                    payload: serde_json::to_value(&result).unwrap(),
-                    model_content: Some(truncate_text_to_token_budget(
+                let mut output = AppToolExecutionResult::from_activity_event(
+                    format!("found {} matches", result.matches.len()),
+                    serde_json::to_value(&result).unwrap(),
+                    Some(truncate_text_to_token_budget(
                         &model_content,
                         context.tool_output_max_tokens,
                     )),
-                    ui_event: self.explored_event(
+                    Some(self.explored_event(
                         "Search",
-                        ExploredCallUiAction::Search,
+                        ExploredCallActivityAction::Search,
                         Some(args.query.clone()),
                         args.path.clone(),
                         coding_pattern_result_summary(
@@ -942,8 +957,8 @@ impl App for CodingApp {
                             "matches",
                         ),
                         detail_lines,
-                    ),
-                };
+                    )),
+                );
                 if let Some(path) = args.path.as_deref() {
                     self.append_scoped_instructions_to_result(&mut output, path, context)?;
                 }
@@ -965,13 +980,13 @@ impl App for CodingApp {
                 self.last_action = Some(format!("read {summary_target}"));
                 let model_content =
                     truncate_text_to_token_budget(&result.content, context.tool_output_max_tokens);
-                let mut output = AppToolExecutionResult {
-                    summary: format!("read code {summary_target}"),
-                    payload: serde_json::to_value(&result).unwrap(),
-                    model_content: Some(model_content),
-                    ui_event: self.explored_event(
+                let mut output = AppToolExecutionResult::from_activity_event(
+                    format!("read code {summary_target}"),
+                    serde_json::to_value(&result).unwrap(),
+                    Some(model_content),
+                    Some(self.explored_event(
                         "Read",
-                        ExploredCallUiAction::Read,
+                        ExploredCallActivityAction::Read,
                         Some(args.path.clone()),
                         None,
                         coding_target_summary(&args.path),
@@ -979,8 +994,8 @@ impl App for CodingApp {
                             "{} lines",
                             coding_count_label(result.content.lines().count(), "line", "lines")
                         )],
-                    ),
-                };
+                    )),
+                );
                 self.append_scoped_instructions_to_result(&mut output, &args.path, context)?;
                 Ok(output)
             }
@@ -1002,24 +1017,27 @@ impl App for CodingApp {
                     .sum::<usize>();
                 let impact_lines = build_coding_edit_impact_lines(&results);
                 let summary = format!("edited code; propagation_results={}", results.len());
-                let mut output = AppToolExecutionResult {
-                    summary: summary.clone(),
-                    payload: json!({ "propagation_results": &results }),
-                    model_content: None,
-                    ui_event: ToolUiEvent::coding_edit(CodingEditUiData {
-                        stable_id: self.coding_edit_stable_id(&args.edits),
-                        title: "Edited Code".to_string(),
-                        tool_name: None,
-                        tool_app: None,
-                        selector: "hash-anchored edit".to_string(),
-                        file: args.edits.first().map(|e| e.path.clone()),
-                        added_lines,
-                        removed_lines,
-                        propagation_count: results.len(),
-                        impact_lines,
-                        diff_files,
-                    }),
-                };
+                let mut output = AppToolExecutionResult::from_activity_event(
+                    summary.clone(),
+                    json!({ "propagation_results": &results }),
+                    None,
+                    Some(SessionActivityEvent::CodingEdit(
+                        CodingEditActivityDescriptor {
+                            stable_id: self.coding_edit_stable_id(&args.edits),
+                            title: "Edited Code".to_string(),
+                            tool_name: None,
+                            tool_app: None,
+                            selector: "hash-anchored edit".to_string(),
+                            file: args.edits.first().map(|e| e.path.clone()),
+                            added_lines,
+                            removed_lines,
+                            propagation_count: results.len(),
+                            impact_lines,
+                            diff_files,
+                        }
+                        .into(),
+                    )),
+                );
                 self.append_scoped_instructions_to_result(
                     &mut output,
                     args.edits
@@ -1045,8 +1063,8 @@ impl App for CodingApp {
                 let model_content = coding_review_model_content(&response).map(|content| {
                     truncate_text_to_token_budget(&content, context.tool_output_max_tokens)
                 });
-                Ok(AppToolExecutionResult {
-                    summary: if review_present {
+                Ok(AppToolExecutionResult::from_activity_event(
+                    if review_present {
                         format!(
                             "acknowledged {} coding impact review target(s); remaining={}",
                             response.returned, response.remaining
@@ -1054,14 +1072,17 @@ impl App for CodingApp {
                     } else {
                         "no coding review event pending".to_string()
                     },
-                    payload: serde_json::to_value(&response).unwrap(),
+                    serde_json::to_value(&response).unwrap(),
                     model_content,
-                    ui_event: ToolUiEvent::coding_review(
-                        review_title,
-                        review_summary,
-                        review_present,
-                    ),
-                })
+                    Some(SessionActivityEvent::CodingReview(
+                        CodingReviewActivityDescriptor {
+                            title: review_title,
+                            summary: review_summary,
+                            review_pending: review_present,
+                        }
+                        .into(),
+                    )),
+                ))
             }
             _ => Err(miette!("unknown coding tool `{}`", call.name)),
         }
@@ -1233,11 +1254,11 @@ fn build_coding_edit_impact_lines(results: &[scope_engine::api::PropagationResul
 
 fn applied_edit_ui_files(
     summary: &scope_engine::api::AppliedStructuredEditSummary,
-) -> Vec<PatchFileUiData> {
+) -> Vec<PatchFileActivityDescriptor> {
     summary
         .files
         .iter()
-        .map(|file| PatchFileUiData {
+        .map(|file| PatchFileActivityDescriptor {
             path: file.path.clone(),
             operation: match file.operation {
                 scope_engine::api::AppliedStructuredEditOperation::Add => PatchFileOperation::Add,
@@ -1252,13 +1273,16 @@ fn applied_edit_ui_files(
         .collect()
 }
 
-fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLineUiData> {
+fn applied_edit_diff_lines(
+    original: &str,
+    new_content: &str,
+) -> Vec<PatchDiffLineActivityDescriptor> {
     let patch = diffy::create_patch(original, new_content);
     let mut lines = Vec::new();
 
     for (hunk_index, hunk) in patch.hunks().iter().enumerate() {
         if hunk_index > 0 {
-            lines.push(PatchDiffLineUiData {
+            lines.push(PatchDiffLineActivityDescriptor {
                 kind: PatchDiffLineKind::HunkBreak,
                 old_lineno: None,
                 new_lineno: None,
@@ -1271,7 +1295,7 @@ fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLi
         for line in hunk.lines() {
             match line {
                 diffy::Line::Context(text) => {
-                    lines.push(PatchDiffLineUiData {
+                    lines.push(PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Context,
                         old_lineno: Some(old_lineno),
                         new_lineno: Some(new_lineno),
@@ -1281,7 +1305,7 @@ fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLi
                     new_lineno += 1;
                 }
                 diffy::Line::Delete(text) => {
-                    lines.push(PatchDiffLineUiData {
+                    lines.push(PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Delete,
                         old_lineno: Some(old_lineno),
                         new_lineno: None,
@@ -1290,7 +1314,7 @@ fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLi
                     old_lineno += 1;
                 }
                 diffy::Line::Insert(text) => {
-                    lines.push(PatchDiffLineUiData {
+                    lines.push(PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Add,
                         old_lineno: None,
                         new_lineno: Some(new_lineno),

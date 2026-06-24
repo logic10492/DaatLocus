@@ -8,16 +8,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
+    activity_event::{TextActivityDescriptor, ToolCallActivityEvent, glyph},
     app::{AppHowToUse, AppId, AppStateRender, AppToolExecutionContext, AppUsage},
     context::Context,
     context_budget::truncate_text_to_token_budget_with_notice,
+    dashboard::SessionActivityEvent,
     live_progress::TelegramLiveStatus,
     reasoning::{
         episode::EpisodeActionRecord,
         runtime::{AgentToolCall, AgentToolInputSpec, AgentToolSpec},
     },
     schema_utils::{model_schema, model_schema_for, validate_model_facing_schema},
-    tool_ui::{ToolCallUiEvent, ToolUiEvent, glyph},
 };
 
 mod files;
@@ -27,7 +28,7 @@ pub(super) type ToolFuture<'a> =
     Pin<Box<dyn Future<Output = miette::Result<ToolExecutionResult>> + Send + 'a>>;
 type ToolExecutor = for<'a> fn(&'a mut Context, &'a AgentToolCall) -> ToolFuture<'a>;
 type ToolSummarizer = fn(&AgentToolCall) -> miette::Result<EpisodeActionRecord>;
-type ToolCallUiBuilder = fn(&AgentToolCall) -> miette::Result<ToolCallUiEvent>;
+type ToolCallActivityBuilder = fn(&AgentToolCall) -> miette::Result<ToolCallActivityEvent>;
 type ToolAvailability = fn(&Context) -> bool;
 
 pub(super) fn parse_tool_args<T: for<'de> serde::Deserialize<'de>>(
@@ -60,16 +61,20 @@ pub struct ToolExecutionResult {
     pub summary: String,
     pub payload: Value,
     pub model_content_override: Option<String>,
-    pub ui_event: ToolUiEvent,
+    pub activity_event: Option<SessionActivityEvent>,
 }
 
 impl ToolExecutionResult {
-    pub fn new(summary: impl Into<String>, payload: Value, ui_event: ToolUiEvent) -> Self {
+    pub fn from_activity_event(
+        summary: impl Into<String>,
+        payload: Value,
+        activity_event: Option<SessionActivityEvent>,
+    ) -> Self {
         Self {
             summary: summary.into(),
             payload,
             model_content_override: None,
-            ui_event,
+            activity_event,
         }
     }
 
@@ -152,7 +157,7 @@ pub trait RuntimeTool: Send + Sync {
     }
 
     fn summarize_action(&self, call: &AgentToolCall) -> miette::Result<EpisodeActionRecord>;
-    fn call_ui_event(&self, call: &AgentToolCall) -> miette::Result<ToolCallUiEvent>;
+    fn call_activity_event(&self, call: &AgentToolCall) -> miette::Result<ToolCallActivityEvent>;
     async fn execute(
         &self,
         context: &mut Context,
@@ -166,7 +171,7 @@ struct StaticRuntimeTool {
     input_spec: AgentToolInputSpec,
     availability: Option<ToolAvailability>,
     summarize: ToolSummarizer,
-    call_ui: ToolCallUiBuilder,
+    call_ui: ToolCallActivityBuilder,
     execute: ToolExecutor,
 }
 
@@ -176,7 +181,7 @@ impl StaticRuntimeTool {
         description: &'static str,
         schema: serde_json::Value,
         summarize: ToolSummarizer,
-        call_ui: ToolCallUiBuilder,
+        call_ui: ToolCallActivityBuilder,
         execute: ToolExecutor,
     ) -> Self {
         Self {
@@ -217,7 +222,7 @@ impl RuntimeTool for StaticRuntimeTool {
         (self.summarize)(call)
     }
 
-    fn call_ui_event(&self, call: &AgentToolCall) -> miette::Result<ToolCallUiEvent> {
+    fn call_activity_event(&self, call: &AgentToolCall) -> miette::Result<ToolCallActivityEvent> {
         (self.call_ui)(call)
     }
 
@@ -406,7 +411,7 @@ impl RuntimeTool for AppGetStateRuntimeTool {
         })
     }
 
-    fn call_ui_event(&self, call: &AgentToolCall) -> miette::Result<ToolCallUiEvent> {
+    fn call_activity_event(&self, call: &AgentToolCall) -> miette::Result<ToolCallActivityEvent> {
         let args: AppGetStateArgs = parse_tool_args(call)?;
         let mut lines = vec![format!(
             "detail={}",
@@ -418,7 +423,7 @@ impl RuntimeTool for AppGetStateRuntimeTool {
         if args.include_manual.unwrap_or(false) {
             lines.push("include_manual=true".to_string());
         }
-        Ok(ToolCallUiEvent::app(
+        Ok(ToolCallActivityEvent::app(
             AppId::render_exposed_tool_name(&self.exposed_name),
             lines,
         ))
@@ -454,13 +459,16 @@ impl RuntimeTool for AppGetStateRuntimeTool {
             usage.as_ref(),
             how_to_use.as_ref(),
         );
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             format!("read {} state", self.owner_app_id),
             payload,
-            ToolUiEvent::app(
-                AppId::render_exposed_tool_name(&self.exposed_name),
-                state.lines.clone(),
-            ),
+            Some(SessionActivityEvent::GenericApp(
+                TextActivityDescriptor {
+                    title: AppId::render_exposed_tool_name(&self.exposed_name),
+                    body_lines: state.lines.clone(),
+                }
+                .into(),
+            )),
         )
         .with_model_content(model_content))
     }
@@ -493,7 +501,7 @@ impl RuntimeTool for AppRuntimeTool {
         unreachable!()
     }
 
-    fn call_ui_event(&self, _call: &AgentToolCall) -> miette::Result<ToolCallUiEvent> {
+    fn call_activity_event(&self, _call: &AgentToolCall) -> miette::Result<ToolCallActivityEvent> {
         context_free_error()?;
         unreachable!()
     }
@@ -519,8 +527,11 @@ impl RuntimeTool for AppRuntimeTool {
             .apps
             .execute_tool_for_app(&self.owner_app_id, &app_call, &app_context)
             .await?;
-        let mut output =
-            ToolExecutionResult::new(result.summary.clone(), result.payload, result.ui_event);
+        let mut output = ToolExecutionResult::from_activity_event(
+            result.summary.clone(),
+            result.payload,
+            result.activity_event,
+        );
         if let Some(model_content) = result.model_content {
             output = output.with_model_content(model_content);
         }
@@ -666,7 +677,7 @@ fn unavailable_tool_result(
         "Tool unavailable: `{}`\nReason: {reason}\nAllowed next action: {allowed_next_action}",
         display_tool_name
     );
-    ToolExecutionResult::new(
+    ToolExecutionResult::from_activity_event(
         format!("{display_tool_name} unavailable"),
         json!({
             "available": false,
@@ -674,10 +685,13 @@ fn unavailable_tool_result(
             "reason": reason,
             "allowed_next_action": allowed_next_action,
         }),
-        ToolUiEvent::error(
-            format!("{display_tool_name} unavailable"),
-            vec![reason, allowed_next_action],
-        ),
+        Some(SessionActivityEvent::Error(
+            TextActivityDescriptor {
+                title: format!("{display_tool_name} unavailable"),
+                body_lines: vec![reason, allowed_next_action],
+            }
+            .into(),
+        )),
     )
     .with_model_content(model_content)
 }
@@ -695,16 +709,16 @@ pub fn summarize_action_from_tool_call(
     }
 }
 
-pub fn render_tool_call_ui_event(
+pub fn build_tool_call_activity_event(
     context: &Context,
     call: &AgentToolCall,
-) -> Result<ToolCallUiEvent> {
+) -> Result<ToolCallActivityEvent> {
     let tools = build_runtime_tools(context);
     let tool = find_runtime_tool(&tools, &call.name)?;
     let tool_call = tool_call_for_runtime_tool(tool, call);
-    match tool.call_ui_event(&tool_call) {
+    match tool.call_activity_event(&tool_call) {
         Ok(event) => Ok(event),
-        Err(_) => context.apps.render_tool_call_ui(call),
+        Err(_) => context.apps.tool_call_activity_event(call),
     }
 }
 
@@ -722,14 +736,14 @@ pub fn render_telegram_tool_result_status(
     if telegram_status_ignored_tool(tool_name) {
         return None;
     }
-    if matches!(result.ui_event, ToolUiEvent::Error(_)) {
+    if matches!(result.activity_event, Some(SessionActivityEvent::Error(_))) {
         return telegram_tool_failure_status(tool_name);
     }
 
     match tool_name {
         "update_plan" => Some(telegram_status(glyph::PLAN, "Plan Updated")),
-        "edit_file" => match &result.ui_event {
-            ToolUiEvent::Patch(event) => Some(telegram_status(
+        "edit_file" => match &result.activity_event {
+            Some(SessionActivityEvent::Patch(event)) => Some(telegram_status(
                 glyph::PATCH,
                 format!(
                     "Edited {} {}",
@@ -737,7 +751,7 @@ pub fn render_telegram_tool_result_status(
                     plural_noun(event.files.len(), "File", "Files")
                 ),
             )),
-            ToolUiEvent::CodingEdit(event) => Some(telegram_status(
+            Some(SessionActivityEvent::CodingEdit(event)) => Some(telegram_status(
                 glyph::PATCH,
                 format!(
                     "Edited {} {}",
@@ -775,7 +789,7 @@ pub fn render_telegram_tool_result_status(
             format!(
                 "Primitive Spec Created: {}",
                 compact_telegram_status_detail(
-                    workflow_id_from_result(&result.ui_event)
+                    workflow_id_from_result(result.activity_event.as_ref())
                         .or_else(|| call_arg_string(call, "id"))
                         .unwrap_or_else(|| "unknown".to_string()),
                 )
@@ -786,7 +800,7 @@ pub fn render_telegram_tool_result_status(
             format!(
                 "Primitive Active: {}",
                 compact_telegram_status_detail(
-                    workflow_id_from_result(&result.ui_event)
+                    workflow_id_from_result(result.activity_event.as_ref())
                         .or_else(|| call_arg_string(call, "primitive_id"))
                         .or_else(|| call_arg_string(call, "workflow_id"))
                         .or_else(|| call_arg_string(call, "composition"))
@@ -887,10 +901,14 @@ fn call_arg_string(call: &AgentToolCall, name: &str) -> Option<String> {
     })
 }
 
-fn workflow_id_from_result(event: &ToolUiEvent) -> Option<String> {
+fn workflow_id_from_result(event: Option<&SessionActivityEvent>) -> Option<String> {
     match event {
-        ToolUiEvent::CreatePrimitiveSpec(event) => Some(event.primitive_id.clone()),
-        ToolUiEvent::ActivatePrimitive(event) => Some(event.primitive_id.clone()),
+        Some(SessionActivityEvent::CreatePrimitiveSpecResult(event)) => {
+            Some(event.primitive_id.clone())
+        }
+        Some(SessionActivityEvent::ActivatePrimitiveResult(event)) => {
+            Some(event.primitive_id.clone())
+        }
         _ => None,
     }
 }
@@ -1099,8 +1117,16 @@ mod tests {
         }
     }
 
-    fn tool_result(tool_name: &str, payload: Value, ui_event: ToolUiEvent) -> ToolExecutionResult {
-        ToolExecutionResult::new(format!("{tool_name} summary"), payload, ui_event)
+    fn tool_result(
+        tool_name: &str,
+        payload: Value,
+        activity_event: Option<SessionActivityEvent>,
+    ) -> ToolExecutionResult {
+        ToolExecutionResult::from_activity_event(
+            format!("{tool_name} summary"),
+            payload,
+            activity_event,
+        )
     }
 
     #[test]
@@ -1110,11 +1136,7 @@ mod tests {
             name: "update_plan".to_string(),
             arguments: serde_json::json!({}),
         };
-        let result = tool_result(
-            "update_plan",
-            serde_json::json!({}),
-            ToolUiEvent::plan(vec![]),
-        );
+        let result = tool_result("update_plan", serde_json::json!({}), None);
 
         let status = render_telegram_tool_result_status(&call, &result).unwrap();
 
@@ -1132,11 +1154,7 @@ mod tests {
                 "reply_message": "done",
             }),
         };
-        let result = tool_result(
-            "finish_and_send",
-            serde_json::json!({}),
-            ToolUiEvent::reply(crate::tool_ui::ReplyDisposition::Resolved, Vec::new()),
-        );
+        let result = tool_result("finish_and_send", serde_json::json!({}), None);
 
         assert!(render_telegram_tool_result_status(&call, &result).is_none());
     }
@@ -1151,20 +1169,12 @@ mod tests {
         let running = tool_result(
             "terminal_exec",
             serde_json::json!({ "running": true }),
-            ToolUiEvent::terminal(
-                crate::tool_ui::TerminalUiAction::Execute,
-                "cargo test",
-                Vec::new(),
-            ),
+            None,
         );
         let finished = tool_result(
             "terminal_exec",
             serde_json::json!({ "running": false }),
-            ToolUiEvent::terminal(
-                crate::tool_ui::TerminalUiAction::Continue,
-                "cargo test",
-                Vec::new(),
-            ),
+            None,
         );
 
         assert_eq!(
@@ -1191,7 +1201,13 @@ mod tests {
         let result = tool_result(
             "activate_composed_primitive",
             serde_json::json!({ "error": "unknown primitive" }),
-            ToolUiEvent::error("activate_composed_primitive failed", Vec::new()),
+            Some(SessionActivityEvent::Error(
+                TextActivityDescriptor {
+                    title: "activate_composed_primitive failed".to_string(),
+                    body_lines: Vec::new(),
+                }
+                .into(),
+            )),
         );
 
         let status = render_telegram_tool_result_status(&call, &result).unwrap();
@@ -1372,10 +1388,13 @@ mod tests {
             result.model_content(),
             format!("2#{}|beta", scope_engine::patch::line_hash("beta"))
         );
-        let ToolUiEvent::Explored(ui_event) = &result.ui_event else {
+        let Some(SessionActivityEvent::Explored(ui_event)) = &result.activity_event else {
             panic!("read_file should render as explored activity");
         };
-        assert_eq!(ui_event.stable_id, crate::tool_ui::EXPLORED_STABLE_ID);
+        assert_eq!(
+            ui_event.stable_id,
+            crate::activity_event::EXPLORED_STABLE_ID
+        );
         assert_eq!(ui_event.calls.len(), 1);
         assert_eq!(ui_event.calls[0].tool_name, "Read");
         assert_eq!(ui_event.calls[0].summary, "notes.txt#L2-L2");
@@ -1410,7 +1429,7 @@ mod tests {
             std::fs::read_to_string(root.join("README.md")).expect("read markdown fixture"),
             "new\n"
         );
-        let ToolUiEvent::CodingEdit(ui_event) = &result.ui_event else {
+        let Some(SessionActivityEvent::CodingEdit(ui_event)) = &result.activity_event else {
             panic!("edit_file should render as coding edit activity");
         };
         assert_eq!(ui_event.title, "Edited File");
@@ -1479,7 +1498,10 @@ mod tests {
             "model content was: {}",
             result.model_content()
         );
-        assert!(matches!(result.ui_event, ToolUiEvent::Terminal(_)));
+        assert!(matches!(
+            result.activity_event,
+            Some(SessionActivityEvent::ExecResult(_))
+        ));
     }
 
     #[tokio::test]
@@ -1588,7 +1610,10 @@ mod tests {
         assert!(result.model_content().contains("app=terminal"));
         assert_eq!(result.payload["app"], "terminal");
         assert!(result.payload.get("usage").is_some());
-        assert!(matches!(result.ui_event, ToolUiEvent::App(_)));
+        assert!(matches!(
+            result.activity_event,
+            Some(SessionActivityEvent::GenericApp(_))
+        ));
     }
 
     #[tokio::test]

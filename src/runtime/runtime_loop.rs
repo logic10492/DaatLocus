@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::{
+    activity_event::{TextActivityDescriptor, ToolCallActivityEvent, compact_body_lines},
     app::{AppId, AppToolExecutionContext},
     context::{
         ActivePrimitiveRunSession, AppNoticeKey, Context, PendingPrimitiveRunFlush,
@@ -15,10 +16,10 @@ use crate::{
     },
     dashboard::{
         DashboardActivityEvent, DashboardActivityHistoryStore, DashboardActivityHistoryWindow,
-        DashboardControlCommand, DashboardState, activity_cell_from_tool_ui_event,
-        apply_activity_event, assistant_activity_cell, final_message_separator_activity_cell,
+        DashboardControlCommand, DashboardState, SessionActivityEvent,
+        activity_event_from_tool_call_activity_event, apply_activity_event,
+        assistant_activity_cell, final_message_separator_activity_cell,
         render_activity_from_messages, thinking_activity_cell, user_activity_cell_from_event,
-        web_activity_item_from_cell,
     },
     events::{EventPayload, EventStatus, EventView},
     logging::{
@@ -50,15 +51,14 @@ use crate::{
         runtime_request_budget_limits,
     },
     runtime_tools::{
-        ToolExecutionResult, build_runtime_tool_specs, execute_agent_tool_call,
-        render_telegram_tool_result_status, render_tool_call_ui_event,
+        ToolExecutionResult, build_runtime_tool_specs, build_tool_call_activity_event,
+        execute_agent_tool_call, render_telegram_tool_result_status,
         summarize_action_from_tool_call,
     },
     sleep_status::{
         SleepStatusSnapshot, persist_sleep_status_snapshot, refresh_sleep_status_queues,
     },
     telegram_transport::TelegramLiveDraftClient,
-    tool_ui::{ToolCallUiEvent, ToolUiEvent, compact_body_lines},
     workflow::{PrimitiveRunRecord, append_primitive_run_records},
     workspace_app::{WorkspaceAppInvalidation, WorkspaceAppRegistry},
 };

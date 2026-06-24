@@ -1420,10 +1420,7 @@ mod tests {
                 "call_x",
                 "update_plan",
                 "tool_call_id=call_x\nname=update_plan\nsummary=updated plan",
-                crate::tool_ui::ToolUiEvent::error(
-                    "custom_patch".to_string(),
-                    vec!["irrelevant".to_string()],
-                ),
+                None,
             )],
             current_user_message: "hello".to_string(),
             retry_messages: vec![],

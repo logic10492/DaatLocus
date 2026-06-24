@@ -13,6 +13,7 @@ use serde_json::json;
 use viewpoint_core::{AriaSnapshot, Browser, BrowserContext, DocumentLoadState, Page};
 
 use crate::{
+    activity_event::{BrowserActivityAction, BrowserActivityDescriptor, ToolCallActivityEvent},
     app::{
         App, AppHowToUse, AppId, AppStateRender, AppToolExecutionContext, AppToolExecutionResult,
         AppToolSpec, AppUsage,
@@ -24,9 +25,9 @@ use crate::{
         BrowserWaitArgs,
     },
     daat_locus_paths::daat_locus_paths_sync,
+    dashboard::SessionActivityEvent,
     reasoning::{episode::EpisodeActionRecord, prompts::APP_BROWSER, runtime::AgentToolCall},
     schema_utils::model_schema_for,
-    tool_ui::{BrowserUiAction, BrowserUiData, ToolCallUiEvent, ToolUiEvent},
 };
 
 const BROWSER_SNAPSHOT_MAX_DEPTH: usize = 6;
@@ -906,18 +907,18 @@ fn browser_snapshot_model_content(
 }
 
 fn browser_action_result(
-    action: BrowserUiAction,
+    action: BrowserActivityAction,
     title: &str,
     result: &BrowserActionResult,
     extra_lines: Vec<String>,
     max_tokens: usize,
 ) -> AppToolExecutionResult {
     let model_content = browser_action_model_content(title, &result.page, &extra_lines, max_tokens);
-    AppToolExecutionResult {
-        summary: title.to_string(),
-        payload: json!({ "page": result.page }),
-        model_content: Some(model_content),
-        ui_event: ToolUiEvent::Browser(BrowserUiData {
+    AppToolExecutionResult::from_activity_event(
+        title.to_string(),
+        json!({ "page": result.page }),
+        Some(model_content),
+        browser_committed_activity_event(BrowserActivityDescriptor {
             action,
             title: title.to_string(),
             body_lines: {
@@ -929,7 +930,7 @@ fn browser_action_result(
             line_count: None,
             ref_count: None,
         }),
-    }
+    )
 }
 
 fn browser_wait_result(result: &BrowserWaitResult, max_tokens: usize) -> AppToolExecutionResult {
@@ -940,15 +941,15 @@ fn browser_wait_result(result: &BrowserWaitResult, max_tokens: usize) -> AppTool
         &extra_lines,
         max_tokens,
     );
-    AppToolExecutionResult {
-        summary: "waited for browser page".to_string(),
-        payload: json!({
+    AppToolExecutionResult::from_activity_event(
+        "waited for browser page".to_string(),
+        json!({
             "page": result.page,
             "wait_state": result.wait_state,
         }),
-        model_content: Some(model_content),
-        ui_event: ToolUiEvent::Browser(BrowserUiData {
-            action: BrowserUiAction::Wait,
+        Some(model_content),
+        browser_committed_activity_event(BrowserActivityDescriptor {
+            action: BrowserActivityAction::Wait,
             title: "waited for browser page".to_string(),
             body_lines: {
                 let mut lines = vec![format!("page={}", result.page.page_id)];
@@ -959,6 +960,22 @@ fn browser_wait_result(result: &BrowserWaitResult, max_tokens: usize) -> AppTool
             line_count: None,
             ref_count: None,
         }),
+    )
+}
+
+fn browser_committed_activity_event(
+    data: BrowserActivityDescriptor,
+) -> Option<SessionActivityEvent> {
+    match data.action {
+        BrowserActivityAction::Snapshot => Some(SessionActivityEvent::Browser(data.into())),
+        BrowserActivityAction::OpenPage
+        | BrowserActivityAction::Wait
+        | BrowserActivityAction::Click
+        | BrowserActivityAction::Fill
+        | BrowserActivityAction::Back
+        | BrowserActivityAction::Forward
+        | BrowserActivityAction::Reload
+        | BrowserActivityAction::ClosePage => None,
     }
 }
 
@@ -1102,12 +1119,12 @@ impl App for BrowserApp {
         }
     }
 
-    fn render_tool_call_ui(&self, call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+    fn tool_call_activity_event(&self, call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
         match call.name.as_str() {
             "browser_open_page" => {
                 let args: BrowserOpenArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::OpenPage,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::OpenPage,
                     title: "browser_open_page".to_string(),
                     body_lines: vec![format!("url={}", summarize_state_text(&args.url))],
                     url: Some(args.url),
@@ -1117,8 +1134,8 @@ impl App for BrowserApp {
             }
             "browser_snapshot" => {
                 let args: BrowserSnapshotArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::Snapshot,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::Snapshot,
                     title: "browser_snapshot".to_string(),
                     body_lines: vec![format!("page={}", args.page_id)],
                     url: None,
@@ -1128,8 +1145,8 @@ impl App for BrowserApp {
             }
             "browser_wait" => {
                 let args: BrowserWaitArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::Wait,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::Wait,
                     title: "browser_wait".to_string(),
                     body_lines: vec![
                         format!("page={}", args.page_id),
@@ -1142,8 +1159,8 @@ impl App for BrowserApp {
             }
             "browser_click" => {
                 let args: BrowserClickArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::Click,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::Click,
                     title: "browser_click".to_string(),
                     body_lines: vec![
                         format!("page={}", args.page_id),
@@ -1156,8 +1173,8 @@ impl App for BrowserApp {
             }
             "browser_fill" => {
                 let args: BrowserFillArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::Fill,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::Fill,
                     title: "browser_fill".to_string(),
                     body_lines: vec![
                         format!("page={}", args.page_id),
@@ -1171,8 +1188,8 @@ impl App for BrowserApp {
             }
             "browser_back" => {
                 let args: BrowserBackArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::Back,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::Back,
                     title: "browser_back".to_string(),
                     body_lines: vec![format!("page={}", args.page_id)],
                     url: None,
@@ -1182,8 +1199,8 @@ impl App for BrowserApp {
             }
             "browser_forward" => {
                 let args: BrowserForwardArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::Forward,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::Forward,
                     title: "browser_forward".to_string(),
                     body_lines: vec![format!("page={}", args.page_id)],
                     url: None,
@@ -1193,8 +1210,8 @@ impl App for BrowserApp {
             }
             "browser_reload" => {
                 let args: BrowserReloadArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::Reload,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::Reload,
                     title: "browser_reload".to_string(),
                     body_lines: vec![format!("page={}", args.page_id)],
                     url: None,
@@ -1204,8 +1221,8 @@ impl App for BrowserApp {
             }
             "browser_close_page" => {
                 let args: BrowserClosePageArgs = parse_browser_tool_args(call)?;
-                Ok(ToolCallUiEvent::Browser(BrowserUiData {
-                    action: BrowserUiAction::ClosePage,
+                Ok(ToolCallActivityEvent::Browser(BrowserActivityDescriptor {
+                    action: BrowserActivityAction::ClosePage,
                     title: "browser_close_page".to_string(),
                     body_lines: vec![format!("page={}", args.page_id)],
                     url: None,
@@ -1233,12 +1250,12 @@ impl App for BrowserApp {
                     &Vec::new(),
                     context.tool_output_max_tokens,
                 );
-                Ok(AppToolExecutionResult {
+                Ok(AppToolExecutionResult::from_activity_event(
                     summary,
-                    payload: json!({ "page": result.page }),
-                    model_content: Some(model_content),
-                    ui_event: ToolUiEvent::Browser(BrowserUiData {
-                        action: BrowserUiAction::OpenPage,
+                    json!({ "page": result.page }),
+                    Some(model_content),
+                    browser_committed_activity_event(BrowserActivityDescriptor {
+                        action: BrowserActivityAction::OpenPage,
                         title: "opened browser page".to_string(),
                         body_lines: vec![
                             format!("page={}", result.page.page_id),
@@ -1248,7 +1265,7 @@ impl App for BrowserApp {
                         line_count: None,
                         ref_count: None,
                     }),
-                })
+                ))
             }
             "browser_snapshot" => {
                 let args: BrowserSnapshotArgs = parse_browser_tool_args(call)?;
@@ -1259,18 +1276,18 @@ impl App for BrowserApp {
                     &result,
                     context.tool_output_max_tokens,
                 );
-                Ok(AppToolExecutionResult {
+                Ok(AppToolExecutionResult::from_activity_event(
                     summary,
-                    payload: json!({
+                    json!({
                         "page": result.page,
                         "snapshot": result.snapshot,
                         "line_count": result.line_count,
                         "ref_count": result.ref_count,
                         "interactive_ref_count": result.interactive_ref_count,
                     }),
-                    model_content: Some(model_content),
-                    ui_event: ToolUiEvent::Browser(BrowserUiData {
-                        action: BrowserUiAction::Snapshot,
+                    Some(model_content),
+                    browser_committed_activity_event(BrowserActivityDescriptor {
+                        action: BrowserActivityAction::Snapshot,
                         title: "captured browser snapshot".to_string(),
                         body_lines: vec![
                             format!("page={}", result.page.page_id),
@@ -1281,7 +1298,7 @@ impl App for BrowserApp {
                         line_count: Some(result.line_count),
                         ref_count: Some(result.ref_count),
                     }),
-                })
+                ))
             }
             "browser_wait" => {
                 let args: BrowserWaitArgs = parse_browser_tool_args(call)?;
@@ -1294,7 +1311,7 @@ impl App for BrowserApp {
                 let args: BrowserClickArgs = parse_browser_tool_args(call)?;
                 let result = self.click(&args.page_id, &args.element_ref).await?;
                 Ok(browser_action_result(
-                    BrowserUiAction::Click,
+                    BrowserActivityAction::Click,
                     "clicked browser element",
                     &result,
                     vec![format!("ref={}", args.element_ref)],
@@ -1307,7 +1324,7 @@ impl App for BrowserApp {
                     .fill(&args.page_id, &args.element_ref, &args.value)
                     .await?;
                 Ok(browser_action_result(
-                    BrowserUiAction::Fill,
+                    BrowserActivityAction::Fill,
                     "filled browser element",
                     &result,
                     vec![
@@ -1321,7 +1338,7 @@ impl App for BrowserApp {
                 let args: BrowserBackArgs = parse_browser_tool_args(call)?;
                 let result = self.go_back(&args.page_id).await?;
                 Ok(browser_action_result(
-                    BrowserUiAction::Back,
+                    BrowserActivityAction::Back,
                     "went back in browser",
                     &result,
                     Vec::new(),
@@ -1332,7 +1349,7 @@ impl App for BrowserApp {
                 let args: BrowserForwardArgs = parse_browser_tool_args(call)?;
                 let result = self.go_forward(&args.page_id).await?;
                 Ok(browser_action_result(
-                    BrowserUiAction::Forward,
+                    BrowserActivityAction::Forward,
                     "went forward in browser",
                     &result,
                     Vec::new(),
@@ -1343,7 +1360,7 @@ impl App for BrowserApp {
                 let args: BrowserReloadArgs = parse_browser_tool_args(call)?;
                 let result = self.reload(&args.page_id).await?;
                 Ok(browser_action_result(
-                    BrowserUiAction::Reload,
+                    BrowserActivityAction::Reload,
                     "reloaded browser page",
                     &result,
                     Vec::new(),
@@ -1354,7 +1371,7 @@ impl App for BrowserApp {
                 let args: BrowserClosePageArgs = parse_browser_tool_args(call)?;
                 let result = self.close_page(&args.page_id).await?;
                 Ok(browser_action_result(
-                    BrowserUiAction::ClosePage,
+                    BrowserActivityAction::ClosePage,
                     "closed browser page",
                     &result,
                     Vec::new(),

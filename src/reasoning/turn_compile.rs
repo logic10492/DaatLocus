@@ -899,8 +899,8 @@ Use the configured locale by default.
             }],
             history_messages: vec![HistoryMessage {
                 message: crate::reasoning::runtime::AgentMessage::assistant("I will continue."),
-                tool_ui_event: None,
-                tool_call_ui_events: Vec::new(),
+                activity_event: None,
+                tool_call_activity_events: Vec::new(),
             }],
         }];
 

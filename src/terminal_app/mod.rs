@@ -14,16 +14,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
+    activity_event::{
+        TerminalActivityAction, TerminalActivityDescriptor, ToolCallActivityEvent,
+        compact_body_lines,
+    },
     app::{
         App, AppHowToUse, AppId, AppStateRender, AppToolExecutionContext, AppToolExecutionResult,
         AppToolSpec, AppUsage,
     },
     core::{TerminalExecArgs, TerminalTerminateArgs, TerminalWaitMode, TerminalWriteStdinArgs},
-    dashboard::{DashboardActivityEvent, apply_activity_event},
+    dashboard::{
+        DashboardActivityEvent, apply_activity_event, terminal_activity_event_from_terminal_data,
+    },
     reasoning::{episode::EpisodeActionRecord, prompts::APP_TERMINAL, runtime::AgentToolCall},
     sandbox::RuntimeSandboxPolicy,
     schema_utils::model_schema_for,
-    tool_ui::{TerminalUiAction, ToolCallUiEvent, ToolUiEvent, compact_body_lines},
 };
 
 pub struct TerminalApp {
@@ -728,12 +733,12 @@ impl App for TerminalApp {
         }
     }
 
-    fn render_tool_call_ui(&self, call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+    fn tool_call_activity_event(&self, call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
         match call.name.as_str() {
             "terminal_exec" => {
                 let args: TerminalExecArgs = parse_terminal_tool_args(call)?;
-                Ok(ToolCallUiEvent::terminal(
-                    TerminalUiAction::Execute,
+                Ok(ToolCallActivityEvent::terminal(
+                    TerminalActivityAction::Execute,
                     summarize_terminal_inline_text(&args.command),
                     vec![format!(
                         "session={} workdir={} yield_time_ms={}",
@@ -748,11 +753,11 @@ impl App for TerminalApp {
             "terminal_write_stdin" => {
                 let args: TerminalWriteStdinArgs = parse_terminal_tool_args(call)?;
                 let wait_mode = args.wait_mode.unwrap_or(TerminalWaitMode::AnyOutput);
-                Ok(ToolCallUiEvent::terminal(
+                Ok(ToolCallActivityEvent::terminal(
                     if args.text.is_empty() {
-                        TerminalUiAction::Poll
+                        TerminalActivityAction::Poll
                     } else {
-                        TerminalUiAction::Continue
+                        TerminalActivityAction::Continue
                     },
                     summarize_terminal_inline_text(&args.session_id),
                     vec![format!(
@@ -766,8 +771,8 @@ impl App for TerminalApp {
             }
             "terminal_terminate" => {
                 let args: TerminalTerminateArgs = parse_terminal_tool_args(call)?;
-                Ok(ToolCallUiEvent::terminal(
-                    TerminalUiAction::Terminate,
+                Ok(ToolCallActivityEvent::terminal(
+                    TerminalActivityAction::Terminate,
                     format!("terminate {}", args.session_id),
                     Vec::new(),
                 ))
@@ -871,9 +876,9 @@ impl App for TerminalApp {
                     &extra_lines,
                     context.tool_output_max_tokens,
                 );
-                Ok(AppToolExecutionResult {
+                Ok(AppToolExecutionResult::from_activity_event(
                     summary,
-                    payload: json!({
+                    json!({
                         "session": result.session,
                         "output": result.output,
                         "output_missed_bytes": result.output_missed_bytes,
@@ -884,20 +889,21 @@ impl App for TerminalApp {
                         "yield_time_ms": args.yield_time_ms,
                         "max_chars": args.max_chars,
                     }),
-                    model_content: Some(model_content),
-                    ui_event: ToolUiEvent::terminal(
-                        TerminalUiAction::Execute,
-                        summarize_terminal_inline_text(
+                    Some(model_content),
+                    terminal_activity_event_from_terminal_data(TerminalActivityDescriptor {
+                        action: TerminalActivityAction::Execute,
+                        origin: None,
+                        title: summarize_terminal_inline_text(
                             result.session.command.as_deref().unwrap_or(&args.command),
                         ),
-                        {
+                        body_lines: {
                             let mut body = vec![terminal_session_meta(&result.session)];
                             body.extend(terminal_output_metadata_lines(&result));
                             body.extend(compact_body_lines(&result.output, 10));
                             body
                         },
-                    ),
-                })
+                    }),
+                ))
             }
             "terminal_write_stdin" => {
                 let args: TerminalWriteStdinArgs = parse_terminal_tool_args(call)?;
@@ -1003,9 +1009,9 @@ impl App for TerminalApp {
                     &extra_lines,
                     context.tool_output_max_tokens,
                 );
-                Ok(AppToolExecutionResult {
+                Ok(AppToolExecutionResult::from_activity_event(
                     summary,
-                    payload: json!({
+                    json!({
                         "session": result.session,
                         "output": result.output,
                         "output_missed_bytes": result.output_missed_bytes,
@@ -1018,42 +1024,44 @@ impl App for TerminalApp {
                         "yield_time_ms": args.yield_time_ms,
                         "max_chars": args.max_chars,
                     }),
-                    model_content: Some(model_content),
-                    ui_event: ToolUiEvent::terminal(
-                        if running {
+                    Some(model_content),
+                    terminal_activity_event_from_terminal_data(TerminalActivityDescriptor {
+                        action: if running {
                             if args.text.is_empty() {
-                                TerminalUiAction::Poll
+                                TerminalActivityAction::Poll
                             } else {
-                                TerminalUiAction::Continue
+                                TerminalActivityAction::Continue
                             }
                         } else {
-                            TerminalUiAction::Continue
+                            TerminalActivityAction::Continue
                         },
-                        command_label,
-                        {
+                        origin: None,
+                        title: command_label,
+                        body_lines: {
                             let mut body = vec![terminal_session_meta(&result.session)];
                             body.extend(terminal_output_metadata_lines(&result));
                             body.extend(compact_body_lines(&result.output, 10));
                             body
                         },
-                    ),
-                })
+                    }),
+                ))
             }
             "terminal_terminate" => {
                 let args: TerminalTerminateArgs = parse_terminal_tool_args(call)?;
                 let session = self.terminate_session(&args.session_id).await?;
-                Ok(AppToolExecutionResult {
-                    summary: format!("terminated {}", display_session_label(&session.session_id)),
-                    payload: json!({ "session": session }),
-                    model_content: None,
-                    ui_event: ToolUiEvent::terminal(
-                        TerminalUiAction::Terminate,
-                        summarize_terminal_inline_text(
+                Ok(AppToolExecutionResult::from_activity_event(
+                    format!("terminated {}", display_session_label(&session.session_id)),
+                    json!({ "session": session }),
+                    None,
+                    terminal_activity_event_from_terminal_data(TerminalActivityDescriptor {
+                        action: TerminalActivityAction::Terminate,
+                        origin: None,
+                        title: summarize_terminal_inline_text(
                             session.command.as_deref().unwrap_or(&args.session_id),
                         ),
-                        vec![terminal_session_meta(&session)],
-                    ),
-                })
+                        body_lines: vec![terminal_session_meta(&session)],
+                    }),
+                ))
             }
             _ => Err(miette!("unknown terminal tool `{}`", call.name)),
         }

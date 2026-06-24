@@ -1,18 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-use crate::tool_ui::{PlanStepUiStatus, PlanUiData, PlanUiKind};
+use crate::activity_event::{PlanActivityDescriptor, PlanActivityKind, PlanStepActivityStatus};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PlanActivityCell {
+pub struct PlanActivityData {
     #[serde(default)]
-    pub kind: PlanUiKind,
+    pub kind: PlanActivityKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
-    pub steps: Vec<PlanStepActivityCell>,
+    pub steps: Vec<PlanStepActivityData>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PlanStepActivityCell {
+pub struct PlanStepActivityData {
     pub status: PlanStepDisplayStatus,
     pub text: String,
 }
@@ -24,19 +24,19 @@ pub enum PlanStepDisplayStatus {
     Completed,
 }
 
-impl From<PlanUiData> for PlanActivityCell {
-    fn from(data: PlanUiData) -> Self {
-        PlanActivityCell {
+impl From<PlanActivityDescriptor> for PlanActivityData {
+    fn from(data: PlanActivityDescriptor) -> Self {
+        PlanActivityData {
             kind: data.kind,
             explanation: data.explanation,
             steps: data
                 .steps
                 .into_iter()
-                .map(|step| PlanStepActivityCell {
+                .map(|step| PlanStepActivityData {
                     status: match step.status {
-                        PlanStepUiStatus::Pending => PlanStepDisplayStatus::Pending,
-                        PlanStepUiStatus::InProgress => PlanStepDisplayStatus::InProgress,
-                        PlanStepUiStatus::Completed => PlanStepDisplayStatus::Completed,
+                        PlanStepActivityStatus::Pending => PlanStepDisplayStatus::Pending,
+                        PlanStepActivityStatus::InProgress => PlanStepDisplayStatus::InProgress,
+                        PlanStepActivityStatus::Completed => PlanStepDisplayStatus::Completed,
                     },
                     text: step.text,
                 })

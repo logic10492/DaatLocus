@@ -7,17 +7,19 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
+    activity_event::{
+        CodingEditActivityDescriptor, EXPLORED_STABLE_ID, ExploredActivityDescriptor,
+        ExploredCallActivityAction, ExploredCallActivityDescriptor,
+        PatchDiffLineActivityDescriptor, PatchDiffLineKind, PatchFileActivityDescriptor,
+        PatchFileOperation, ToolCallActivityEvent,
+    },
     context::Context,
+    dashboard::SessionActivityEvent,
     reasoning::{episode::EpisodeActionRecord, runtime::AgentToolCall},
     runtime_tools::{
         RuntimeTool, StaticRuntimeTool, ToolExecutionResult, ToolFuture, parse_tool_args,
     },
     schema_utils::{model_schema_for, structured_edit_args_schema},
-    tool_ui::{
-        CodingEditUiData, EXPLORED_STABLE_ID, ExploredCallUiAction, ExploredCallUiData,
-        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData,
-        ToolCallUiEvent, ToolUiEvent,
-    },
 };
 
 const DEFAULT_READ_LINE_COUNT: usize = 80;
@@ -76,20 +78,20 @@ fn summarize_edit_file_tool(call: &AgentToolCall) -> Result<EpisodeActionRecord>
     })
 }
 
-fn render_read_file_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_read_file_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: ReadFileArgs = parse_tool_args(call)?;
-    Ok(ToolCallUiEvent::app(
+    Ok(ToolCallActivityEvent::app(
         "Read File",
         vec![read_file_target_summary(&args)],
     ))
 }
 
-fn render_edit_file_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
+fn render_edit_file_call_ui(call: &AgentToolCall) -> Result<ToolCallActivityEvent> {
     let args: EditFileArgs = parse_tool_args(call)?;
     let files = args
         .edits
         .iter()
-        .map(|edit| PatchFileUiData {
+        .map(|edit| PatchFileActivityDescriptor {
             path: edit.path.clone(),
             operation: PatchFileOperation::Update,
             added_lines: edit_content_line_count(edit.content.as_ref()),
@@ -98,19 +100,21 @@ fn render_edit_file_call_ui(call: &AgentToolCall) -> Result<ToolCallUiEvent> {
         })
         .collect::<Vec<_>>();
     let added_lines = files.iter().map(|file| file.added_lines).sum::<usize>();
-    Ok(ToolCallUiEvent::coding_edit(CodingEditUiData {
-        stable_id: edit_file_stable_id(call),
-        title: "File Edit".to_string(),
-        tool_name: Some("edit_file".to_string()),
-        tool_app: Some("Workspace".to_string()),
-        selector: format!("{} structured edit(s)", args.edits.len()),
-        file: args.edits.first().map(|edit| edit.path.clone()),
-        added_lines,
-        removed_lines: 0,
-        propagation_count: 0,
-        impact_lines: Vec::new(),
-        diff_files: files,
-    }))
+    Ok(ToolCallActivityEvent::coding_edit(
+        CodingEditActivityDescriptor {
+            stable_id: edit_file_stable_id(call),
+            title: "File Edit".to_string(),
+            tool_name: Some("edit_file".to_string()),
+            tool_app: Some("Workspace".to_string()),
+            selector: format!("{} structured edit(s)", args.edits.len()),
+            file: args.edits.first().map(|edit| edit.path.clone()),
+            added_lines,
+            removed_lines: 0,
+            propagation_count: 0,
+            impact_lines: Vec::new(),
+            diff_files: files,
+        },
+    ))
 }
 
 fn execute_read_file_runtime_tool<'a>(
@@ -168,7 +172,7 @@ fn execute_read_file_runtime_tool<'a>(
         } else {
             format!("{display_path}#L{start_line}-L{end_line}")
         };
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             summary.clone(),
             json!({
                 "path": args.path,
@@ -179,14 +183,14 @@ fn execute_read_file_runtime_tool<'a>(
                 "total_lines": total_lines,
                 "content": model_content,
             }),
-            explored_tool_event(
+            Some(explored_tool_event(
                 "Read",
-                Some(ExploredCallUiAction::Read),
+                Some(ExploredCallActivityAction::Read),
                 Some(args.path.clone()),
                 None,
                 ui_summary,
                 vec![format!("{actual_line_count} lines")],
-            ),
+            )),
         )
         .with_model_content(model_content))
     })
@@ -230,7 +234,7 @@ fn execute_edit_file_runtime_tool<'a>(
         } else {
             "Edited Files"
         };
-        Ok(ToolExecutionResult::new(
+        Ok(ToolExecutionResult::from_activity_event(
             format!("edited {} file(s)", result.files.len()),
             json!({
                 "changed_files": result.files.len(),
@@ -248,42 +252,48 @@ fn execute_edit_file_runtime_tool<'a>(
                     })
                 }).collect::<Vec<_>>(),
             }),
-            ToolUiEvent::coding_edit(CodingEditUiData {
-                stable_id: edit_file_stable_id(call),
-                title: title.to_string(),
-                tool_name: Some("edit_file".to_string()),
-                tool_app: Some("Workspace".to_string()),
-                selector: "hash-anchored file edit".to_string(),
-                file: result.files.first().map(|file| file.path.clone()),
-                added_lines,
-                removed_lines,
-                propagation_count: 0,
-                impact_lines: Vec::new(),
-                diff_files,
-            }),
+            Some(SessionActivityEvent::CodingEdit(
+                CodingEditActivityDescriptor {
+                    stable_id: edit_file_stable_id(call),
+                    title: title.to_string(),
+                    tool_name: Some("edit_file".to_string()),
+                    tool_app: Some("Workspace".to_string()),
+                    selector: "hash-anchored file edit".to_string(),
+                    file: result.files.first().map(|file| file.path.clone()),
+                    added_lines,
+                    removed_lines,
+                    propagation_count: 0,
+                    impact_lines: Vec::new(),
+                    diff_files,
+                }
+                .into(),
+            )),
         ))
     })
 }
 
 fn explored_tool_event(
     tool_name: impl Into<String>,
-    action: Option<ExploredCallUiAction>,
+    action: Option<ExploredCallActivityAction>,
     target: Option<String>,
     secondary_target: Option<String>,
     summary: impl Into<String>,
     detail_lines: Vec<String>,
-) -> ToolUiEvent {
-    ToolUiEvent::explored(
-        EXPLORED_STABLE_ID,
-        "Explored",
-        vec![ExploredCallUiData {
-            tool_name: tool_name.into(),
-            action,
-            target,
-            secondary_target,
-            summary: summary.into(),
-            detail_lines,
-        }],
+) -> SessionActivityEvent {
+    SessionActivityEvent::Explored(
+        ExploredActivityDescriptor {
+            stable_id: EXPLORED_STABLE_ID.to_string(),
+            title: "Explored".to_string(),
+            calls: vec![ExploredCallActivityDescriptor {
+                tool_name: tool_name.into(),
+                action,
+                target,
+                secondary_target,
+                summary: summary.into(),
+                detail_lines,
+            }],
+        }
+        .into(),
     )
 }
 
@@ -346,11 +356,11 @@ fn edit_file_stable_id(call: &AgentToolCall) -> String {
 
 fn applied_edit_ui_files(
     summary: &scope_engine::api::AppliedStructuredEditSummary,
-) -> Vec<PatchFileUiData> {
+) -> Vec<PatchFileActivityDescriptor> {
     summary
         .files
         .iter()
-        .map(|file| PatchFileUiData {
+        .map(|file| PatchFileActivityDescriptor {
             path: file.path.clone(),
             operation: match file.operation {
                 scope_engine::api::AppliedStructuredEditOperation::Add => PatchFileOperation::Add,
@@ -365,13 +375,16 @@ fn applied_edit_ui_files(
         .collect()
 }
 
-fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLineUiData> {
+fn applied_edit_diff_lines(
+    original: &str,
+    new_content: &str,
+) -> Vec<PatchDiffLineActivityDescriptor> {
     let patch = diffy::create_patch(original, new_content);
     let mut lines = Vec::new();
 
     for (hunk_index, hunk) in patch.hunks().iter().enumerate() {
         if hunk_index > 0 {
-            lines.push(PatchDiffLineUiData {
+            lines.push(PatchDiffLineActivityDescriptor {
                 kind: PatchDiffLineKind::HunkBreak,
                 old_lineno: None,
                 new_lineno: None,
@@ -384,7 +397,7 @@ fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLi
         for line in hunk.lines() {
             match line {
                 diffy::Line::Context(text) => {
-                    lines.push(PatchDiffLineUiData {
+                    lines.push(PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Context,
                         old_lineno: Some(old_lineno),
                         new_lineno: Some(new_lineno),
@@ -394,7 +407,7 @@ fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLi
                     new_lineno += 1;
                 }
                 diffy::Line::Delete(text) => {
-                    lines.push(PatchDiffLineUiData {
+                    lines.push(PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Delete,
                         old_lineno: Some(old_lineno),
                         new_lineno: None,
@@ -403,7 +416,7 @@ fn applied_edit_diff_lines(original: &str, new_content: &str) -> Vec<PatchDiffLi
                     old_lineno += 1;
                 }
                 diffy::Line::Insert(text) => {
-                    lines.push(PatchDiffLineUiData {
+                    lines.push(PatchDiffLineActivityDescriptor {
                         kind: PatchDiffLineKind::Add,
                         old_lineno: None,
                         new_lineno: Some(new_lineno),
@@ -431,7 +444,7 @@ fn edit_content_line_count(content: Option<&scope_engine::api::EditContent>) -> 
 
 fn structured_edit_preview_lines(
     content: Option<&scope_engine::api::EditContent>,
-) -> Vec<PatchDiffLineUiData> {
+) -> Vec<PatchDiffLineActivityDescriptor> {
     match content {
         Some(scope_engine::api::EditContent::Lines(lines)) => {
             lines.iter().map(patch_preview_add_line).collect()
@@ -443,8 +456,8 @@ fn structured_edit_preview_lines(
     }
 }
 
-fn patch_preview_add_line(line: impl AsRef<str>) -> PatchDiffLineUiData {
-    PatchDiffLineUiData {
+fn patch_preview_add_line(line: impl AsRef<str>) -> PatchDiffLineActivityDescriptor {
+    PatchDiffLineActivityDescriptor {
         kind: PatchDiffLineKind::Add,
         old_lineno: None,
         new_lineno: None,

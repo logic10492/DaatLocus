@@ -24,14 +24,14 @@ pub mod tui_event;
 pub(crate) mod tui_perf;
 mod view_state;
 
+pub(crate) use cells::sync_dashboard_runtime_status_live_cell;
 pub use cells::{
-    ActivityCell, ActivityFeedRenderArgs, CachedActivityLines, DashboardActivityEvent,
-    LiveActivityCell, LiveWebActivityItem, ReducedMotion, WebActivityActor, WebActivityItem,
-    WebActivityKind, activity_cell_from_tool_ui_event, activity_cells_from_history_items,
-    apply_activity_event, assistant_activity_cell, default_web_activity_version,
+    ActivityFeedRenderArgs, CachedActivityLines, DashboardActivityEvent, LiveActivityEvent,
+    ReducedMotion, SessionActivityEvent, activity_event_from_tool_call_activity_event,
+    activity_events_from_history_items, apply_activity_event, assistant_activity_cell,
     final_message_separator_activity_cell, render_activity_feed_cached,
-    render_activity_from_messages, sync_web_activity_state, thinking_activity_cell,
-    user_activity_cell_from_event, web_activity_item_from_cell,
+    render_activity_from_messages, terminal_activity_event_from_terminal_data,
+    thinking_activity_cell, user_activity_cell_from_event,
 };
 pub(crate) use command_flow::execute_control_command;
 pub use commands::{
@@ -39,8 +39,8 @@ pub use commands::{
     DashboardControlCommand, DashboardPendingUserInputMoveDirection,
 };
 pub use history::{
-    DashboardActivityHistoryCount, DashboardActivityHistoryPage, DashboardActivityHistoryStore,
-    DashboardActivityHistoryWindow, DashboardInputHistory,
+    DashboardActivityHistoryCount, DashboardActivityHistoryItem, DashboardActivityHistoryPage,
+    DashboardActivityHistoryStore, DashboardActivityHistoryWindow, DashboardInputHistory,
 };
 
 #[cfg(test)]
@@ -314,14 +314,8 @@ pub struct DashboardState {
     pub pending_access_requests: Vec<PendingAccessRequest>,
     #[serde(default)]
     pub pending_user_inputs: Vec<DashboardPendingUserInput>,
-    pub activity_cells: Vec<ActivityCell>,
-    pub live_activity_cells: Vec<LiveActivityCell>,
-    #[serde(default = "default_web_activity_version")]
-    pub web_activity_version: u8,
-    #[serde(default)]
-    pub web_activity_items: Vec<WebActivityItem>,
-    #[serde(default)]
-    pub live_web_activity_items: Vec<LiveWebActivityItem>,
+    pub activity_events: Vec<SessionActivityEvent>,
+    pub live_activity_events: Vec<LiveActivityEvent>,
     #[serde(default)]
     pub activity_history: DashboardActivityHistoryWindow,
     pub last_cycle_elapsed_ms: Option<u64>,
@@ -738,6 +732,7 @@ fn render_tui_dashboard_frame<B: Backend>(
             ActivityFeedRenderArgs {
                 cells: &combined_cells,
                 live_cells: &live_activity_cells,
+                expanded_thinking: &view.expanded_thinking,
                 scroll_offset: display_scroll,
                 cache: &mut view.cached_activity_lines,
                 user_hyperlink_areas: &mut user_hyperlink_areas,
@@ -822,9 +817,10 @@ mod tests {
     };
     use super::selection::{SelectableId, SelectableRegion};
     use super::*;
-    use crate::tool_ui::{
-        PatchDiffLineKind, PatchDiffLineUiData, PatchFileOperation, PatchFileUiData, PatchUiData,
-        TerminalUiAction, ToolUiEvent,
+    use crate::activity_event::{
+        PatchActivityDescriptor, PatchDiffLineActivityDescriptor, PatchDiffLineKind,
+        PatchFileActivityDescriptor, PatchFileOperation, TerminalActivityAction,
+        TerminalActivityDescriptor,
     };
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -870,19 +866,20 @@ mod tests {
     #[test]
     fn transcript_overlay_visual_snapshot() {
         let state = DashboardState {
-            activity_cells: vec![
+            activity_events: vec![
             assistant_activity_cell(
                 "## Result\nSee [docs](https://example.test/docs).\n\n```rust\nfn main() {}\n```",
             )
             .expect("assistant cell"),
-            activity_cell_from_tool_ui_event(ToolUiEvent::terminal(
-                TerminalUiAction::Execute,
-                "cargo check",
-                vec![
+            terminal_activity_event_from_terminal_data(TerminalActivityDescriptor {
+                action: TerminalActivityAction::Execute,
+                origin: None,
+                title: "cargo check".to_string(),
+                body_lines: vec![
                     "main  exited  exit=0  cwd=C:/repo".to_string(),
                     "Finished dev profile".to_string(),
                 ],
-            ))
+            })
             .expect("terminal cell"),
         ],
             ..DashboardState::default()
@@ -935,47 +932,48 @@ mod tests {
 
     #[test]
     fn dashboard_full_frame_visual_snapshot() {
-        let mut state = DashboardState {
-            activity_cells: vec![
+        let state = DashboardState {
+            activity_events: vec![
                 assistant_activity_cell(
                     "I updated the renderer.\n\n- transcript\n- markdown\n- composer",
                 )
                 .expect("assistant cell"),
-                activity_cell_from_tool_ui_event(ToolUiEvent::Patch(PatchUiData {
-                    summary_line: "updated dashboard renderer".to_string(),
-                    files: vec![PatchFileUiData {
-                        path: "src/dashboard/cells/tui.rs".to_string(),
-                        operation: PatchFileOperation::Update,
-                        added_lines: 2,
-                        removed_lines: 1,
-                        diff_lines: vec![
-                            PatchDiffLineUiData {
-                                kind: PatchDiffLineKind::Context,
-                                old_lineno: Some(10),
-                                new_lineno: Some(10),
-                                text: "fn render() {".to_string(),
-                            },
-                            PatchDiffLineUiData {
-                                kind: PatchDiffLineKind::Delete,
-                                old_lineno: Some(11),
-                                new_lineno: None,
-                                text: "old();".to_string(),
-                            },
-                            PatchDiffLineUiData {
-                                kind: PatchDiffLineKind::Add,
-                                old_lineno: None,
-                                new_lineno: Some(11),
-                                text: "new();".to_string(),
-                            },
-                        ],
-                    }],
-                }))
-                .expect("patch cell"),
+                SessionActivityEvent::Patch(
+                    PatchActivityDescriptor {
+                        summary_line: "updated dashboard renderer".to_string(),
+                        files: vec![PatchFileActivityDescriptor {
+                            path: "src/dashboard/cells/tui.rs".to_string(),
+                            operation: PatchFileOperation::Update,
+                            added_lines: 2,
+                            removed_lines: 1,
+                            diff_lines: vec![
+                                PatchDiffLineActivityDescriptor {
+                                    kind: PatchDiffLineKind::Context,
+                                    old_lineno: Some(10),
+                                    new_lineno: Some(10),
+                                    text: "fn render() {".to_string(),
+                                },
+                                PatchDiffLineActivityDescriptor {
+                                    kind: PatchDiffLineKind::Delete,
+                                    old_lineno: Some(11),
+                                    new_lineno: None,
+                                    text: "old();".to_string(),
+                                },
+                                PatchDiffLineActivityDescriptor {
+                                    kind: PatchDiffLineKind::Add,
+                                    old_lineno: None,
+                                    new_lineno: Some(11),
+                                    text: "new();".to_string(),
+                                },
+                            ],
+                        }],
+                    }
+                    .into(),
+                ),
             ],
             footer_context: "gpt-5.5 · 10k/100k used".to_string(),
             ..DashboardState::default()
         };
-        sync_web_activity_state(&mut state);
         let mut view = TuiViewState::new();
         view.command_input.set_text("review this".to_string());
         view.pending_image_attachments
@@ -1038,7 +1036,7 @@ mod tests {
             ),
         ]));
         let state = DashboardState {
-            activity_cells,
+            activity_events: activity_cells,
             footer_context: "gpt-5.5 · 126.5k/258.4k used".to_string(),
             ..DashboardState::default()
         };
@@ -1079,7 +1077,7 @@ mod tests {
     #[test]
     fn dashboard_hyperlinks_are_suppressed_while_selection_is_active() {
         let state = DashboardState {
-            activity_cells: render_activity_from_messages(vec![
+            activity_events: render_activity_from_messages(vec![
                 crate::reasoning::runtime::HistoryMessage::user(
                     "See src/dashboard/mod.rs:42 and https://example.com/docs",
                 ),

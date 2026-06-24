@@ -1,14 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-use crate::tool_ui::{TerminalUiAction, TerminalUiData, TerminalUiOrigin, ToolUiData};
+use crate::activity_event::{
+    TerminalActivityAction, TerminalActivityDescriptor, TerminalActivityOrigin,
+    TextActivityDescriptor,
+};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommandOutput {
     pub command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<TerminalUiAction>,
+    pub action: Option<TerminalActivityAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<TerminalUiOrigin>,
+    pub origin: Option<TerminalActivityOrigin>,
     #[serde(default)]
     pub meta: TerminalExecutionMeta,
     #[serde(default)]
@@ -42,18 +45,18 @@ pub struct TerminalExecutionMeta {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExecResultActivityCell {
+pub struct ExecResultActivityData {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terminal_action: Option<TerminalUiAction>,
+    pub terminal_action: Option<TerminalActivityAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terminal_origin: Option<TerminalUiOrigin>,
+    pub terminal_origin: Option<TerminalActivityOrigin>,
     pub meta: Option<String>,
     pub output_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LiveExecActivityCell {
+pub struct LiveExecActivityData {
     pub title: String,
     pub call_lines: Vec<String>,
     pub meta: Option<String>,
@@ -61,7 +64,7 @@ pub struct LiveExecActivityCell {
     pub started_at_ms: Option<i64>,
 }
 
-impl ExecResultActivityCell {
+impl ExecResultActivityData {
     pub fn command_output(&self) -> CommandOutput {
         CommandOutput {
             command: self.title.clone(),
@@ -73,11 +76,11 @@ impl ExecResultActivityCell {
     }
 }
 
-impl LiveExecActivityCell {
+impl LiveExecActivityData {
     pub fn command_output(&self) -> CommandOutput {
         CommandOutput {
             command: self.title.clone(),
-            action: Some(TerminalUiAction::Execute),
+            action: Some(TerminalActivityAction::Execute),
             origin: None,
             meta: TerminalExecutionMeta::parse(self.meta.as_deref(), &self.output_lines),
             output_lines: self.output_lines.clone(),
@@ -165,15 +168,15 @@ impl TerminalExecutionMeta {
     }
 }
 
-impl From<ToolUiData> for ExecResultActivityCell {
-    fn from(data: ToolUiData) -> Self {
+impl From<TextActivityDescriptor> for ExecResultActivityData {
+    fn from(data: TextActivityDescriptor) -> Self {
         let mut body_lines = data.body_lines;
         let meta = if body_lines.is_empty() {
             None
         } else {
             Some(body_lines.remove(0))
         };
-        ExecResultActivityCell {
+        ExecResultActivityData {
             title: data.title,
             terminal_action: None,
             terminal_origin: None,
@@ -202,15 +205,15 @@ fn parse_buffer_pair(value: &str, meta: &mut TerminalExecutionMeta) {
     meta.output_buffer_capacity = parse_byte_count(capacity);
 }
 
-impl From<TerminalUiData> for ExecResultActivityCell {
-    fn from(data: TerminalUiData) -> Self {
+impl From<TerminalActivityDescriptor> for ExecResultActivityData {
+    fn from(data: TerminalActivityDescriptor) -> Self {
         let mut body_lines = data.body_lines;
         let meta = if body_lines.is_empty() {
             None
         } else {
             Some(body_lines.remove(0))
         };
-        ExecResultActivityCell {
+        ExecResultActivityData {
             title: data.title,
             terminal_action: Some(data.action),
             terminal_origin: data.origin,
@@ -224,8 +227,8 @@ pub fn live_exec_cell(
     title: String,
     call_lines: Vec<String>,
     started_at_ms: Option<i64>,
-) -> LiveExecActivityCell {
-    LiveExecActivityCell {
+) -> LiveExecActivityData {
+    LiveExecActivityData {
         title,
         call_lines,
         meta: None,
@@ -240,10 +243,10 @@ mod tests {
 
     #[test]
     fn parses_terminal_result_meta_into_structured_output() {
-        let cell = ExecResultActivityCell {
+        let cell = ExecResultActivityData {
             title: "cargo check".to_string(),
-            terminal_action: Some(TerminalUiAction::Execute),
-            terminal_origin: Some(TerminalUiOrigin::Agent),
+            terminal_action: Some(TerminalActivityAction::Execute),
+            terminal_origin: Some(TerminalActivityOrigin::Agent),
             meta: Some("main  exited  exit=0  cwd=C:/repo".to_string()),
             output_lines: vec![
                 "output_missed_bytes=0 output_dropped_bytes=12 output_retained_bytes=256 output_buffer_capacity=1024".to_string(),

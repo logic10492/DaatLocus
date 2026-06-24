@@ -8,14 +8,11 @@ use crate::{
         estimate_runtime_request_envelope, truncate_text_to_token_budget,
         truncate_text_to_token_budget_with_notice,
     },
+    dashboard::SessionActivityEvent,
     persistence::PersistenceStore,
     reasoning::{
         prompts::{MID_TURN_SUMMARY_PREFIX, RUNTIME_HISTORY_SUMMARY_PREFIX},
         runtime::{AgentMessage, AgentToolSpec, HistoryMessage},
-    },
-    tool_ui::{
-        ActivatePrimitiveUiData, CreatePrimitiveSpecUiData, PatchUiData, PlanUiData,
-        TelegramUiData, TerminalUiData, ToolCallUiEvent, ToolUiData, ToolUiEvent,
     },
 };
 use chrono::Utc;
@@ -928,12 +925,12 @@ fn normalize_runtime_prompt_messages(messages: Vec<HistoryMessage>) -> Vec<Histo
 fn normalize_runtime_prompt_message(mut message: HistoryMessage) -> Option<HistoryMessage> {
     let visible_content = history_message_content(&message).trim().to_string();
     if visible_content.is_empty() {
-        if !message.tool_call_ui_events.is_empty() {
-            message.message = AgentMessage::assistant(summarize_tool_call_ui_events(
-                &message.tool_call_ui_events,
+        if !message.tool_call_activity_events.is_empty() {
+            message.message = AgentMessage::assistant(summarize_tool_call_activity_events(
+                &message.tool_call_activity_events,
             ));
-        } else if let Some(tool_ui_event) = &message.tool_ui_event {
-            message.message = AgentMessage::assistant(summarize_tool_ui_event(tool_ui_event));
+        } else if let Some(activity_event) = &message.activity_event {
+            message.message = AgentMessage::assistant(summarize_activity_event(activity_event));
         }
     }
 
@@ -958,10 +955,10 @@ fn normalize_runtime_prompt_message(mut message: HistoryMessage) -> Option<Histo
     Some(trim_history_message_content(message))
 }
 
-fn summarize_tool_call_ui_events(events: &[ToolCallUiEvent]) -> String {
+fn summarize_tool_call_activity_events(events: &[SessionActivityEvent]) -> String {
     let titles = events
         .iter()
-        .map(tool_call_ui_event_title)
+        .map(activity_event_title)
         .filter(|title| !title.trim().is_empty())
         .take(4)
         .map(|title| summarize_runtime_inline_text(&title))
@@ -973,23 +970,28 @@ fn summarize_tool_call_ui_events(events: &[ToolCallUiEvent]) -> String {
     }
 }
 
-fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
+fn summarize_activity_event(event: &SessionActivityEvent) -> String {
     match event {
-        ToolUiEvent::Exec(data) | ToolUiEvent::App(data) | ToolUiEvent::Error(data) => {
-            summarize_runtime_inline_text(&data.title)
-        }
-        ToolUiEvent::CodingOpenProject(data) => {
+        SessionActivityEvent::Assistant(data) => summarize_runtime_inline_text(&data.content),
+        SessionActivityEvent::GenericApp(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::ExecResult(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::LiveExec(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::TerminalWait(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::Warning(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::Error(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::User(data) => summarize_runtime_inline_text(&data.content),
+        SessionActivityEvent::CodingOpenProject(data) => {
             format!(
                 "opened coding project {}",
                 summarize_runtime_inline_text(&data.project_root)
             )
         }
-        ToolUiEvent::Explored(data) => format!(
+        SessionActivityEvent::Explored(data) => format!(
             "{} with {} call(s)",
             summarize_runtime_inline_text(&data.title),
             data.calls.len()
         ),
-        ToolUiEvent::CodingEdit(data) => {
+        SessionActivityEvent::CodingEdit(data) => {
             let title = if data.title.trim().is_empty() {
                 "edited files"
             } else {
@@ -1014,51 +1016,37 @@ fn summarize_tool_ui_event(event: &ToolUiEvent) -> String {
                 )
             }
         }
-        ToolUiEvent::CodingReview(data) => summarize_runtime_inline_text(&data.title),
-        ToolUiEvent::Browser(crate::tool_ui::BrowserUiData { title, .. }) => {
-            summarize_runtime_inline_text(title)
-        }
-        ToolUiEvent::WebSearch(data) => {
+        SessionActivityEvent::CodingReview(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::Browser(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::LiveBrowser(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::WebSearch(data) => {
             format!("web search {}", summarize_runtime_inline_text(&data.query))
         }
-        ToolUiEvent::Plan(PlanUiData { steps, .. }) => {
-            format!("plan with {} step(s)", steps.len())
-        }
-        ToolUiEvent::CreatePrimitiveSpec(CreatePrimitiveSpecUiData { primitive_id }) => {
+        SessionActivityEvent::PlanResult(data) => format!("plan with {} step(s)", data.steps.len()),
+        SessionActivityEvent::CreatePrimitiveSpecResult(data) => {
+            let primitive_id = &data.primitive_id;
             format!("created primitive spec {primitive_id}")
         }
-        ToolUiEvent::ActivatePrimitive(ActivatePrimitiveUiData { primitive_id }) => {
+        SessionActivityEvent::ActivatePrimitiveResult(data) => {
+            let primitive_id = &data.primitive_id;
             format!("activated primitive {primitive_id}")
         }
-        ToolUiEvent::Terminal(data) => summarize_runtime_inline_text(&data.title),
-        ToolUiEvent::Patch(data) => summarize_runtime_inline_text(&data.summary_line),
-        ToolUiEvent::Warning(data) => summarize_runtime_inline_text(&data.title),
-        ToolUiEvent::Telegram(data) => summarize_runtime_inline_text(&data.title),
-        ToolUiEvent::Reply(data) => data
+        SessionActivityEvent::Patch(data) => summarize_runtime_inline_text(&data.summary_line),
+        SessionActivityEvent::Telegram(data) => summarize_runtime_inline_text(&data.title),
+        SessionActivityEvent::Reply(data) => data
             .message_lines
             .iter()
             .find(|line| !line.trim().is_empty())
             .map(|line| summarize_runtime_inline_text(line))
             .unwrap_or_else(|| "reply submitted".to_string()),
+        SessionActivityEvent::Thinking(data) => summarize_runtime_inline_text(&data.content),
+        SessionActivityEvent::RuntimeStatus(data) => summarize_runtime_inline_text(&data.label),
+        SessionActivityEvent::FinalMessageSeparator(_) => "worked".to_string(),
     }
 }
 
-fn tool_call_ui_event_title(event: &ToolCallUiEvent) -> String {
-    match event {
-        ToolCallUiEvent::Exec(ToolUiData { title, .. })
-        | ToolCallUiEvent::CreatePrimitiveSpec(ToolUiData { title, .. })
-        | ToolCallUiEvent::ActivatePrimitive(ToolUiData { title, .. })
-        | ToolCallUiEvent::App(ToolUiData { title, .. })
-        | ToolCallUiEvent::Error(ToolUiData { title, .. }) => title.clone(),
-        ToolCallUiEvent::Plan(PlanUiData { steps, .. }) => {
-            format!("plan with {} step(s)", steps.len())
-        }
-        ToolCallUiEvent::Terminal(TerminalUiData { title, .. }) => title.clone(),
-        ToolCallUiEvent::Browser(crate::tool_ui::BrowserUiData { title, .. }) => title.clone(),
-        ToolCallUiEvent::Patch(PatchUiData { summary_line, .. }) => summary_line.clone(),
-        ToolCallUiEvent::CodingEdit(data) => data.title.clone(),
-        ToolCallUiEvent::Telegram(TelegramUiData { title, .. }) => title.clone(),
-    }
+fn activity_event_title(event: &SessionActivityEvent) -> String {
+    summarize_activity_event(event)
 }
 
 fn is_runtime_summary_message(message: &HistoryMessage) -> bool {
@@ -1187,26 +1175,10 @@ mod tests {
             messages: vec![
                 HistoryMessage::user("user one"),
                 HistoryMessage::assistant("assistant one"),
-                HistoryMessage::tool(
-                    "call-1",
-                    "tool-one",
-                    "tool output one",
-                    ToolUiEvent::Exec(ToolUiData {
-                        title: "tool output".to_string(),
-                        body_lines: Vec::new(),
-                    }),
-                ),
+                HistoryMessage::tool("call-1", "tool-one", "tool output one", None),
                 HistoryMessage::user("user two"),
                 HistoryMessage::assistant("assistant two"),
-                HistoryMessage::tool(
-                    "call-2",
-                    "tool-two",
-                    "tool output two",
-                    ToolUiEvent::Exec(ToolUiData {
-                        title: "tool output".to_string(),
-                        body_lines: Vec::new(),
-                    }),
-                ),
+                HistoryMessage::tool("call-2", "tool-two", "tool output two", None),
             ],
             compaction_records: VecDeque::new(),
             session_id: None,
@@ -1289,8 +1261,8 @@ mod tests {
                     arguments: serde_json::json!({ "cmd": "pwd" }),
                 }],
             ),
-            tool_ui_event: None,
-            tool_call_ui_events: Vec::new(),
+            activity_event: None,
+            tool_call_activity_events: Vec::new(),
         };
 
         let normalized = normalize_runtime_prompt_message(message).expect("message should remain");
@@ -1326,8 +1298,8 @@ mod tests {
                     Some("reasoning".to_string()),
                     vec![tool_call.clone()],
                 ),
-                tool_ui_event: None,
-                tool_call_ui_events: Vec::new(),
+                activity_event: None,
+                tool_call_activity_events: Vec::new(),
             }],
             compaction_records: VecDeque::new(),
             session_id: None,

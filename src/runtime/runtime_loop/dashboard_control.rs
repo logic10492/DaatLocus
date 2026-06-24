@@ -142,11 +142,8 @@ pub(crate) async fn handle_dashboard_control_command(
             }
             tx.send_modify(|state| {
                 state.activity_history = DashboardActivityHistoryWindow::default();
-                state.activity_cells.clear();
-                state.live_activity_cells.clear();
-                state.web_activity_items.clear();
-                state.live_web_activity_items.clear();
-                crate::dashboard::sync_web_activity_state(state);
+                state.activity_events.clear();
+                state.live_activity_events.clear();
             });
             set_runtime_status(
                 Some(tx),
