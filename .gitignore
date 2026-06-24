@@ -1,6 +1,6 @@
 /target
-/dist
 /.githooks
+/.wix
 /assets/hindsight-sidecars/*.tar.zst
 /assets/hindsight-sidecars/*.tzst
 /assets/hindsight-sidecars/*.tar.gz

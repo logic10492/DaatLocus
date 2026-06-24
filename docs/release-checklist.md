@@ -35,8 +35,20 @@ Use this checklist before tagging a Daat Locus release.
   WebUI assets before Rust compilation and embeds them into the daemon by
   default.
 - Run the `Release Binaries` workflow for the release tag and confirm Linux,
-  macOS, and Windows artifacts are uploaded to the GitHub Release.
-- Confirm release binaries embed the WebUI assets.
+  macOS, and Windows `.tar.zst` archives from
+  `target/<target>/release/package/`, plus the Windows `*-setup.exe`, are
+  uploaded to the GitHub Release.
+- Confirm release binaries, the generated Windows MSI, and the Windows
+  bootstrapper embed the WebUI assets.
+- Confirm the Windows MSI was generated from `assets/icon.svg` and shows the
+  expected Add/Remove Programs and Start Menu shortcut icons.
+- Confirm the Windows `*-setup.exe` bootstrapper wraps the MSI, uses the product
+  icon as its file icon, and launches the embedded MSI UI.
+- Install the Windows bootstrapper on a clean Windows user profile and confirm
+  `daat-locus --help` works from a new terminal without administrator rights.
+- Confirm the Windows MSI updates the user `PATH`, supports upgrade installs,
+  blocks downgrades, and leaves `~/.daat-locus` runtime data intact on
+  uninstall.
 - Confirm `cargo-binstall` resolves the release asset and does not fall back to
   source compilation.
 - Confirm browser runtime download behavior is expected for the release.
