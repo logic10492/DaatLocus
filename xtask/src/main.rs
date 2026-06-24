@@ -16,6 +16,7 @@ const WINDOWS_LAUNCHER_PACKAGE_NAME: &str = "daat-locus-launcher";
 const WINDOWS_MSI_UTIL_EXTENSION: &str = "WixToolset.Util.wixext";
 const WINDOWS_BOOTSTRAPPER_EXTENSION: &str = "WixToolset.BootstrapperApplications.wixext";
 const WINDOWS_MSI_ICON_SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256];
+const WINDOWS_BOOTSTRAPPER_LOGO_SIZE: u32 = 128;
 
 fn main() -> ExitCode {
     match run() {
@@ -118,6 +119,8 @@ struct WindowsMsiPaths {
     binary_path: PathBuf,
     launcher_binary_path: PathBuf,
     icon_path: PathBuf,
+    bootstrapper_logo_path: PathBuf,
+    license_rtf_path: PathBuf,
     generated_wxs_path: PathBuf,
     generated_bundle_wxs_path: PathBuf,
     msi_path: PathBuf,
@@ -137,6 +140,8 @@ struct WindowsMsiTemplateData {
     launcher_binary_path: String,
     msi_path: String,
     icon_path: String,
+    bootstrapper_logo_path: String,
+    license_rtf_path: String,
     upgrade_code: String,
     bundle_upgrade_code: String,
     app_component_guid: String,
@@ -253,7 +258,14 @@ fn package_windows_msi(args: PackageWindowsMsiArgs) -> Result<()> {
     fs::create_dir_all(&paths.work_dir)?;
     fs::create_dir_all(&paths.output_dir)?;
 
-    render_svg_icon_to_ico(&repo.join("assets").join("icon.svg"), &paths.icon_path)?;
+    render_svg_icon_to_ico(&repo.join("assets").join("logo.svg"), &paths.icon_path)?;
+    render_svg_to_png(
+        &repo.join("assets").join("logo.svg"),
+        &paths.bootstrapper_logo_path,
+        WINDOWS_BOOTSTRAPPER_LOGO_SIZE,
+        WINDOWS_BOOTSTRAPPER_LOGO_SIZE,
+    )?;
+    render_text_file_to_rtf(&repo.join("LICENSE"), &paths.license_rtf_path)?;
     let template_data = windows_msi_template_data(&manifest.package, &paths, &binary_name)?;
     render_windows_msi_template(
         &repo
@@ -406,6 +418,8 @@ fn windows_msi_paths(
         binary_path: release_dir.join(main_binary_name),
         launcher_binary_path: release_dir.join(binary_name(WINDOWS_LAUNCHER_PACKAGE_NAME)),
         icon_path: work_dir.join(format!("{}.ico", package.name)),
+        bootstrapper_logo_path: work_dir.join(format!("{}-bootstrapper-logo.png", package.name)),
+        license_rtf_path: work_dir.join(format!("{}-license.rtf", package.name)),
         generated_wxs_path: work_dir.join(format!("{}.wxs", package.name)),
         generated_bundle_wxs_path: work_dir.join(format!("{}-bootstrapper.wxs", package.name)),
         work_dir,
@@ -433,6 +447,8 @@ fn windows_msi_template_data(
         launcher_binary_path: wix_path(&paths.launcher_binary_path),
         msi_path: wix_path(&paths.msi_path),
         icon_path: wix_path(&paths.icon_path),
+        bootstrapper_logo_path: wix_path(&paths.bootstrapper_logo_path),
+        license_rtf_path: wix_path(&paths.license_rtf_path),
         upgrade_code: "ce78b6f8-ed5d-4ea4-823e-25ef51910924".to_string(),
         bundle_upgrade_code: "dc1d21bb-0a31-4c37-a8b4-045875b1e202".to_string(),
         app_component_guid: "1c3dbd45-2997-4aa7-8906-d7bf8e169cba".to_string(),
@@ -451,12 +467,7 @@ fn run_command(command: &mut Command, label: &str) -> Result<()> {
 }
 
 fn render_svg_icon_to_ico(svg_path: &Path, ico_path: &Path) -> Result<()> {
-    let svg_data = fs::read(svg_path)?;
-    let options = resvg::usvg::Options {
-        resources_dir: svg_path.parent().map(Path::to_path_buf),
-        ..resvg::usvg::Options::default()
-    };
-    let tree = resvg::usvg::Tree::from_data(&svg_data, &options)?;
+    let tree = parse_svg(svg_path)?;
     let original_size = tree.size();
     let mut icon_dir = ico::IconDir::new(ico::ResourceType::Icon);
 
@@ -474,6 +485,61 @@ fn render_svg_icon_to_ico(svg_path: &Path, ico_path: &Path) -> Result<()> {
     let file = fs::File::create(ico_path)?;
     icon_dir.write(BufWriter::new(file))?;
     Ok(())
+}
+
+fn render_svg_to_png(svg_path: &Path, png_path: &Path, width: u32, height: u32) -> Result<()> {
+    let tree = parse_svg(svg_path)?;
+    let original_size = tree.size();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+        .ok_or_else(|| format!("failed to allocate {width}x{height} logo pixmap"))?;
+    let sx = width as f32 / original_size.width();
+    let sy = height as f32 / original_size.height();
+    let transform = resvg::tiny_skia::Transform::from_scale(sx, sy);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    let file = fs::File::create(png_path)?;
+    let mut encoder = png::Encoder::new(BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&pixmap.take_demultiplied())?;
+    Ok(())
+}
+
+fn parse_svg(svg_path: &Path) -> Result<resvg::usvg::Tree> {
+    let svg_data = fs::read(svg_path)?;
+    let options = resvg::usvg::Options {
+        resources_dir: svg_path.parent().map(Path::to_path_buf),
+        ..resvg::usvg::Options::default()
+    };
+    Ok(resvg::usvg::Tree::from_data(&svg_data, &options)?)
+}
+
+fn render_text_file_to_rtf(text_path: &Path, rtf_path: &Path) -> Result<()> {
+    let text = fs::read_to_string(text_path)?;
+    let mut rtf = String::from(r"{\rtf1\ansi\deff0{\fonttbl{\f0 Consolas;}}\fs18 ");
+    for line in text.lines() {
+        rtf.push_str(&escape_rtf(line));
+        rtf.push_str(r"\par ");
+    }
+    rtf.push('}');
+    fs::write(rtf_path, rtf)?;
+    Ok(())
+}
+
+fn escape_rtf(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\\' => escaped.push_str(r"\\"),
+            '{' => escaped.push_str(r"\{"),
+            '}' => escaped.push_str(r"\}"),
+            '\t' => escaped.push_str(r"\tab "),
+            '\u{00}'..='\u{7f}' => escaped.push(ch),
+            _ => escaped.push_str(&format!(r"\u{}?", ch as i32)),
+        }
+    }
+    escaped
 }
 
 fn render_windows_msi_template(
@@ -498,6 +564,11 @@ fn render_windows_msi_template(
         ),
         ("{{msi_path}}", data.msi_path.as_str()),
         ("{{icon_path}}", data.icon_path.as_str()),
+        (
+            "{{bootstrapper_logo_path}}",
+            data.bootstrapper_logo_path.as_str(),
+        ),
+        ("{{license_rtf_path}}", data.license_rtf_path.as_str()),
         ("{{upgrade_code}}", data.upgrade_code.as_str()),
         ("{{bundle_upgrade_code}}", data.bundle_upgrade_code.as_str()),
         ("{{app_component_guid}}", data.app_component_guid.as_str()),
@@ -681,4 +752,39 @@ fn ensure_safe_relative_path(label: &str, path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_rtf;
+
+    const BOOTSTRAPPER_TEMPLATE: &str =
+        include_str!("../../packaging/windows/daat-locus-bootstrapper.wxs");
+
+    #[test]
+    fn bootstrapper_uses_real_standard_ba_theme() {
+        assert!(BOOTSTRAPPER_TEMPLATE.contains("WixStandardBootstrapperApplication"));
+        assert!(BOOTSTRAPPER_TEMPLATE.contains("Theme=\"rtfLargeLicense\""));
+        assert!(BOOTSTRAPPER_TEMPLATE.contains("LicenseFile=\"{{license_rtf_path}}\""));
+        assert!(BOOTSTRAPPER_TEMPLATE.contains("LogoFile=\"{{bootstrapper_logo_path}}\""));
+        assert!(!BOOTSTRAPPER_TEMPLATE.contains("LicenseUrl="));
+        assert!(!BOOTSTRAPPER_TEMPLATE.contains("Theme=\"none\""));
+    }
+
+    #[test]
+    fn bootstrapper_does_not_show_nested_msi_ui() {
+        assert!(!BOOTSTRAPPER_TEMPLATE.contains("DisplayInternalUICondition"));
+    }
+
+    #[test]
+    fn bootstrapper_bundle_name_is_product_name() {
+        assert!(BOOTSTRAPPER_TEMPLATE.contains("Name=\"{{product_name}}\""));
+        assert!(!BOOTSTRAPPER_TEMPLATE.contains("Name=\"{{product_name}} Setup\""));
+    }
+
+    #[test]
+    fn rtf_escaping_preserves_rtf_syntax() {
+        assert_eq!(escape_rtf(r"a\b{c}"), r"a\\b\{c\}");
+        assert_eq!(escape_rtf("x\ty"), r"x\tab y");
+    }
 }

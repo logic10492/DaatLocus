@@ -40,10 +40,10 @@ Use this checklist before tagging a Daat Locus release.
   uploaded to the GitHub Release.
 - Confirm release binaries, the generated Windows MSI, and the Windows
   bootstrapper embed the WebUI assets.
-- Confirm the Windows MSI was generated from `assets/icon.svg` and shows the
+- Confirm the Windows MSI was generated from `assets/logo.svg` and shows the
   expected Add/Remove Programs and Start Menu shortcut icons.
 - Confirm the Windows `*-setup.exe` bootstrapper wraps the MSI, uses the product
-  icon as its file icon, and launches the embedded MSI UI.
+  icon as its file icon, and shows the standard bootstrapper UI.
 - Install the Windows bootstrapper on a clean Windows user profile and confirm
   `daat-locus --help` works from a new terminal without administrator rights.
 - Confirm the Windows MSI updates the user `PATH`, supports upgrade installs,
