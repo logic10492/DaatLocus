@@ -45,6 +45,11 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::{
     config::{Config, ModelConfig, ProviderConfig, load_config},
+    config_setup::{
+        self, ConfigReadinessReport, PendingSetupProviderAuthFlow, SetupConfigRequest,
+        SetupDiscoverModelsRequest, SetupProviderAuthCompleteRequest, SetupProviderAuthRunRequest,
+        SetupProviderAuthStartRequest,
+    },
     daat_locus_paths::{daat_locus_paths, daat_locus_paths_sync},
     dashboard::{
         DashboardAction, DashboardActionResult, DashboardActivityHistoryPage,
@@ -293,6 +298,11 @@ pub struct SendResponse {
     pub note: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfigReadinessResponse {
+    pub readiness: ConfigReadinessReport,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SettingsSummaryResponse {
     pub loaded_at_ms: i64,
@@ -440,6 +450,7 @@ struct ServerState {
     connected_clients: Arc<std::sync::atomic::AtomicUsize>,
     sessions: session::SessionRegistry,
     session_tokens: SessionTokenStore,
+    setup_auth_flows: Arc<parking_lot::Mutex<HashMap<String, PendingSetupProviderAuthFlow>>>,
 }
 
 pub struct DaemonServerHandle {
@@ -613,6 +624,7 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
         connected_clients: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         sessions,
         session_tokens,
+        setup_auth_flows: Arc::new(parking_lot::Mutex::new(HashMap::new())),
     };
 
     let router = Router::new()
@@ -633,6 +645,25 @@ pub async fn start_server(params: DaemonServerStartParams) -> Result<DaemonServe
             get(dashboard_attachment_handler),
         )
         .route("/settings/summary", get(settings_summary_handler))
+        .route("/config/readiness", get(config_readiness_handler))
+        .route("/config/setup", post(config_setup_handler))
+        .route("/config/probe", post(config_probe_handler))
+        .route(
+            "/config/discover-models",
+            post(config_discover_models_handler),
+        )
+        .route(
+            "/config/provider-auth/run",
+            post(config_provider_auth_run_handler),
+        )
+        .route(
+            "/config/provider-auth/device/start",
+            post(config_provider_auth_device_start_handler),
+        )
+        .route(
+            "/config/provider-auth/device/complete",
+            post(config_provider_auth_device_complete_handler),
+        )
         .route("/logs/sources", get(logs::sources_handler))
         .route("/logs/read", get(logs::read_handler))
         .route("/commands/run", post(command_handler))
@@ -724,6 +755,7 @@ fn is_daemon_api_path(path: &str) -> bool {
         "commands"
             | "daemon"
             | "dashboard"
+            | "config"
             | "health"
             | "logs"
             | "sessions"
@@ -976,6 +1008,150 @@ async fn health_handler() -> impl IntoResponse {
 
 async fn status_handler(State(state): State<ServerState>) -> impl IntoResponse {
     Json(status_response(&state)).into_response()
+}
+
+async fn config_readiness_handler() -> impl IntoResponse {
+    Json(ConfigReadinessResponse {
+        readiness: config_setup::ensure_config_readiness().await,
+    })
+    .into_response()
+}
+
+async fn config_setup_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SetupConfigRequest>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match config_setup::write_setup_config(request).await {
+        Ok(readiness) => Json(ConfigReadinessResponse { readiness }).into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn config_probe_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SetupConfigRequest>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match config_setup::preview_setup_config(request).await {
+        Ok(readiness) => Json(ConfigReadinessResponse { readiness }).into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn config_discover_models_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SetupDiscoverModelsRequest>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match config_setup::discover_setup_models(request).await {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn config_provider_auth_run_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SetupProviderAuthRunRequest>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match config_setup::run_setup_provider_auth(request).await {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn config_provider_auth_device_start_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SetupProviderAuthStartRequest>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match config_setup::start_setup_provider_auth(request).await {
+        Ok((response, flow)) => {
+            state
+                .setup_auth_flows
+                .lock()
+                .insert(response.flow_id.clone(), flow);
+            Json(response).into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn config_provider_auth_device_complete_handler(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SetupProviderAuthCompleteRequest>,
+) -> impl IntoResponse {
+    if !state.auth_registry.authorize_headers(&headers).await {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let flow = match state.setup_auth_flows.lock().get(&request.flow_id).cloned() {
+        Some(flow) if !flow.is_expired() => flow,
+        Some(_) => {
+            state.setup_auth_flows.lock().remove(&request.flow_id);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "setup authentication flow expired" })),
+            )
+                .into_response();
+        }
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "unknown setup authentication flow" })),
+            )
+                .into_response();
+        }
+    };
+
+    match config_setup::complete_setup_provider_auth(request.clone(), flow).await {
+        Ok(response) => {
+            state.setup_auth_flows.lock().remove(&request.flow_id);
+            Json(response).into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("{err:?}") })),
+        )
+            .into_response(),
+    }
 }
 
 fn status_response(state: &ServerState) -> StatusResponse {
@@ -1303,7 +1479,7 @@ async fn settings_summary_handler(
         ))
         .into_response(),
         Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
             format!("failed to load config summary: {error}"),
         )
             .into_response(),
@@ -1357,6 +1533,9 @@ async fn command_handler(
     }
     if !state.lifecycle.get().allows_runtime_commands() {
         return runtime_not_ready_response(state.lifecycle.get());
+    }
+    if let Some(response) = config_not_ready_response().await {
+        return response;
     }
     let attachments = match store_command_attachments(&request.attachments).await {
         Ok(attachments) => attachments,
@@ -1470,6 +1649,9 @@ async fn dashboard_action_handler(
     if !state.lifecycle.get().allows_runtime_commands() {
         return runtime_not_ready_response(state.lifecycle.get());
     }
+    if let Some(response) = config_not_ready_dashboard_action_response().await {
+        return response;
+    }
     if let Some(session_id) = request.session_id.as_deref() {
         let client = match session_client_for_request(&state, session_id).await {
             Ok(client) => client,
@@ -1531,6 +1713,9 @@ async fn send_handler(
     }
     if !state.lifecycle.get().allows_runtime_commands() {
         return runtime_not_ready_response(state.lifecycle.get());
+    }
+    if let Some(response) = config_not_ready_send_response().await {
+        return response;
     }
     let message = request.message.trim();
     if message.is_empty() {
@@ -1698,6 +1883,9 @@ async fn session_create_handler(
 ) -> impl IntoResponse {
     if !state.auth_registry.authorize_headers(&headers).await {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Some(response) = config_not_ready_json_response().await {
+        return response;
     }
     let scope = match body.project_dir {
         Some(project_dir) => match std::fs::canonicalize(&project_dir) {
@@ -2196,6 +2384,66 @@ fn runtime_not_ready_response(state: DaemonLifecycleState) -> axum::response::Re
         .into_response()
 }
 
+async fn config_not_ready_response() -> Option<axum::response::Response> {
+    let readiness = config_setup::ensure_config_readiness().await;
+    (!readiness.is_complete()).then(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(CommandResponse {
+                output: readiness.agent_unavailable_message(),
+            }),
+        )
+            .into_response()
+    })
+}
+
+async fn config_not_ready_send_response() -> Option<axum::response::Response> {
+    let readiness = config_setup::ensure_config_readiness().await;
+    (!readiness.is_complete()).then(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SendResponse {
+                event_id: String::new(),
+                status: "failed".to_string(),
+                reply_message: None,
+                note: Some(readiness.agent_unavailable_message()),
+            }),
+        )
+            .into_response()
+    })
+}
+
+async fn config_not_ready_dashboard_action_response() -> Option<axum::response::Response> {
+    let readiness = config_setup::ensure_config_readiness().await;
+    (!readiness.is_complete()).then(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(DashboardActionResponse {
+                result: DashboardActionResult {
+                    success: false,
+                    message: readiness.agent_unavailable_message(),
+                    detail: None,
+                },
+            }),
+        )
+            .into_response()
+    })
+}
+
+async fn config_not_ready_json_response() -> Option<axum::response::Response> {
+    let readiness = config_setup::ensure_config_readiness().await;
+    (!readiness.is_complete()).then(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": readiness.agent_unavailable_message(),
+                "readiness": readiness,
+            })),
+        )
+            .into_response()
+    })
+}
+
 fn settings_summary_response(
     config: &Config,
     home_path: String,
@@ -2538,6 +2786,10 @@ pub(crate) async fn session_client_for_id(
     session_tokens: &SessionTokenStore,
     session_id: &str,
 ) -> Result<session_ipc::SessionIpcClient> {
+    let readiness = config_setup::ensure_config_readiness().await;
+    if !readiness.is_complete() {
+        return Err(miette!(readiness.agent_unavailable_message()));
+    }
     let session_id = session::SessionId::from_string(session_id.to_string())?;
     let mut info = sessions
         .get(&session_id)
@@ -3097,11 +3349,7 @@ impl DashboardHistoryLoader for DaemonClient {
 }
 
 async fn configured_daemon_port() -> Result<u16> {
-    Ok(load_config()
-        .await
-        .map_err(|err| miette!("failed to load daemon config: {err}"))?
-        .daemon
-        .port)
+    Ok(config_setup::read_manager_boot_config().await.port)
 }
 
 pub async fn wait_for_daemon_ready() -> Result<StatusResponse> {

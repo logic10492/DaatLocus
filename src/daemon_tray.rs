@@ -3,17 +3,14 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-use std::{
-    process::{Command, Stdio},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use miette::Result;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use miette::miette;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::daemon::DaemonControlCommand;
+use crate::{daemon::DaemonControlCommand, open_url::open_url};
 
 pub(crate) const NO_TRAY_ENV: &str = "DAAT_LOCUS_NO_TRAY";
 pub(crate) const ENABLE_TRAY_ENV: &str = "DAAT_LOCUS_ENABLE_TRAY";
@@ -234,37 +231,4 @@ mod platform_tray {
     ) -> Result<()> {
         Ok(())
     }
-}
-
-#[cfg(target_os = "windows")]
-fn open_url(url: &str) -> std::io::Result<()> {
-    Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn open_url(url: &str) -> std::io::Result<()> {
-    Command::new("open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn open_url(url: &str) -> std::io::Result<()> {
-    Command::new("xdg-open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    Ok(())
 }

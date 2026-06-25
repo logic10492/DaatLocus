@@ -16,6 +16,7 @@ use crate::{
 };
 
 const CONFIG_FILE_NAME: &str = "config.toml";
+const CONFIG_BACKUP_FILE_NAME: &str = "config.toml.bak";
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: i64 = 95;
 const DEFAULT_STREAM_IDLE_TIMEOUT_SECS: u64 = 15 * 60;
 
@@ -488,9 +489,8 @@ pub async fn config_file_exists() -> bool {
 
 /// Serialize Config and write it to config.toml.
 pub async fn write_config(config: &Config) -> Result<(), ConfigError> {
-    let config_path = PersistenceStore::runtime()
-        .await
-        .config_file(CONFIG_FILE_NAME);
+    let store = PersistenceStore::runtime().await;
+    let config_path = store.config_file(CONFIG_FILE_NAME);
     write_config_to_path(&config_path, config).await
 }
 
@@ -504,6 +504,13 @@ async fn write_config_to_path(config_path: &Path, config: &Config) -> Result<(),
     )
     .await
     .map_err(ConfigError::IO)?;
+    if config_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == CONFIG_FILE_NAME)
+    {
+        write_config_backup(config_path).await?;
+    }
     Ok(())
 }
 
@@ -513,7 +520,7 @@ pub async fn load_config() -> Result<Config, ConfigError> {
         .await
         .config_file(CONFIG_FILE_NAME);
 
-    let content = tokio::fs::read_to_string(config_path)
+    let content = tokio::fs::read_to_string(&config_path)
         .await
         .map_err(ConfigError::IO)?;
 
@@ -521,8 +528,23 @@ pub async fn load_config() -> Result<Config, ConfigError> {
         toml::from_str(&content).map_err(|e| ConfigError::Syntax(e.to_string()))?;
 
     config.validate().map_err(ConfigError::Validation)?;
+    write_config_backup(&config_path).await?;
 
     Ok(config)
+}
+
+async fn write_config_backup(config_path: &Path) -> Result<(), ConfigError> {
+    let Some(parent) = config_path.parent() else {
+        return Ok(());
+    };
+    let backup_path = parent.join(CONFIG_BACKUP_FILE_NAME);
+    let bytes = tokio::fs::read(config_path)
+        .await
+        .map_err(ConfigError::IO)?;
+    write_bytes_atomic(backup_path, bytes, PersistenceFileMode::Private)
+        .await
+        .map_err(ConfigError::IO)?;
+    Ok(())
 }
 
 #[cfg(test)]

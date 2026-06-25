@@ -13,7 +13,7 @@ use crate::{
     i18n::Locale,
     logging::init_logging,
 };
-use crate::{config, config_wizard};
+use crate::{config, config_setup, config_wizard};
 #[cfg(feature = "tui-perf-cmd")]
 use clap::Args;
 use clap::{
@@ -90,11 +90,14 @@ fn configured_help_daemon_port_from_path(config_path: &Path) -> Option<u16> {
     let Ok(content) = fs::read_to_string(config_path) else {
         return None;
     };
-    let Ok(config) = toml::from_str::<crate::config::Config>(&content) else {
-        return None;
-    };
-    config.validate().ok()?;
-    Some(config.daemon.port)
+    let value = toml::from_str::<toml::Value>(&content).ok()?;
+    value
+        .get("daemon")
+        .and_then(toml::Value::as_table)
+        .and_then(|daemon| daemon.get("port"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port > 0)
 }
 
 const HELP_STYLES: Styles = Styles::styled()
@@ -464,6 +467,14 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
         _ => {}
     }
 
+    if matches!(
+        cli.command,
+        None | Some(DaatLocusCommand::Run) | Some(DaatLocusCommand::Code { .. })
+    ) && route_to_config_ui_if_not_ready().await?
+    {
+        return Ok(());
+    }
+
     if matches!(cli.command, None | Some(DaatLocusCommand::Run))
         && let Ok(client) = connect_existing_daemon().await
     {
@@ -471,45 +482,12 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-    // First run starts the interactive setup when config.toml is missing.
-    let config = if !config::config_file_exists().await {
-        match config_wizard::run_first_time_setup().await {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                eprintln!(
-                    "{}",
-                    crate::tr!(
-                        Locale::default(),
-                        "cli.setup_failed",
-                        error = format!("{e:?}")
-                    )
-                );
-                std::process::exit(1);
-            }
-        }
-    } else {
-        match load_config().await {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::error!("failed to load config: {e}");
-                eprintln!(
-                    "{}",
-                    crate::tr!(
-                        Locale::default(),
-                        "common.config_load_failed",
-                        error = format!("{e:?}")
-                    )
-                );
-                std::process::exit(1);
-            }
-        }
-    };
-
     if let Some(DaatLocusCommand::Daemon {
         target: DaemonTarget::Serve,
     }) = cli.command.as_ref()
     {
         if let Some(session_id) = cli.session_id.clone() {
+            let config = config_setup::load_complete_config().await?;
             let ipc_name = cli
                 .ipc_name
                 .clone()
@@ -530,9 +508,32 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
             .await?;
             return Ok(());
         }
+        let config = manager_daemon_config().await?;
         run_daemon_serve_command(config).await?;
         return Ok(());
     }
+
+    // First run starts the interactive setup when config.toml is missing.
+    let _config = if !config::config_file_exists().await {
+        run_first_time_setup_from_cli().await?;
+        return Ok(());
+    } else {
+        match load_config().await {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::error!("failed to load config: {e}");
+                eprintln!(
+                    "{}",
+                    crate::tr!(
+                        Locale::default(),
+                        "common.config_load_failed",
+                        error = format!("{e:?}")
+                    )
+                );
+                std::process::exit(1);
+            }
+        }
+    };
 
     if let Some(DaatLocusCommand::Code { project_dir }) = cli.command.as_ref() {
         run_code_command(project_dir.clone()).await?;
@@ -545,6 +546,51 @@ pub(crate) async fn async_main(cli: Cli) -> Result<()> {
         return Ok(());
     }
     Ok(())
+}
+
+async fn manager_daemon_config() -> Result<crate::config::Config> {
+    if let Ok(config) = config_setup::load_complete_config().await {
+        return Ok(config);
+    }
+    let readiness = config_setup::ensure_config_readiness().await;
+    let mut config = crate::config::Config::default();
+    config.daemon.port = readiness.port;
+    config.telegram.enabled = false;
+    Ok(config)
+}
+
+async fn route_to_config_ui_if_not_ready() -> Result<bool> {
+    let readiness = config_setup::ensure_config_readiness().await;
+    match readiness.kind {
+        config_setup::ConfigReadinessKind::Complete => Ok(false),
+        config_setup::ConfigReadinessKind::Unconfigured => {
+            run_first_time_setup_from_cli().await?;
+            Ok(true)
+        }
+        config_setup::ConfigReadinessKind::Incomplete => {
+            eprintln!("{}", readiness.agent_unavailable_message());
+            config_wizard::run_config_menu().await?;
+            Ok(true)
+        }
+    }
+}
+
+async fn run_first_time_setup_from_cli() -> Result<()> {
+    match config_wizard::run_first_time_setup().await {
+        Ok(_) => Ok(()),
+        Err(err) if config_wizard::is_setup_cancelled(&err) => Ok(()),
+        Err(err) => {
+            eprintln!(
+                "{}",
+                crate::tr!(
+                    Locale::default(),
+                    "cli.setup_failed",
+                    error = format!("{err:?}")
+                )
+            );
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn run_daemon_serve_command(config: crate::config::Config) -> Result<()> {
@@ -688,10 +734,10 @@ fn session_list_text(sessions: &[crate::daemon::session::SessionSummary]) -> Str
         return "No sessions.\n".to_string();
     }
 
-    let mut output = String::from(format!(
+    let mut output = format!(
         "{:<36}  {:<7}  {:<24}  {}\n",
         "SESSION ID", "SCOPE", "TITLE", "PROJECT"
-    ));
+    );
     for session in sessions {
         output.push_str(&format!(
             "{:<36}  {:<7}  {:<24}  {}\n",
@@ -712,7 +758,7 @@ fn session_scope_label(scope: &crate::daemon::session::SessionScope) -> &'static
 }
 
 fn session_title_for_table(session: &crate::daemon::session::SessionSummary) -> String {
-    session_title(session).replace('\r', " ").replace('\n', " ")
+    session_title(session).replace(['\r', '\n'], " ")
 }
 
 fn session_project_for_table(session: &crate::daemon::session::SessionSummary) -> String {

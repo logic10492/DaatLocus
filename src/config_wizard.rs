@@ -24,19 +24,15 @@ use ratatui::{
 use crate::{
     config::{
         Config, JudgeConfig, ModelConfig, ProviderConfig, TelegramConfig, ThinkingBudget,
-        normalize_provider_base_url, redact_secret_text, resolve_env_reference, write_config,
+        normalize_provider_base_url, write_config,
     },
     i18n::Locale,
-    model_catalog::{
-        ModelCapacity, ReasoningOption, catalog_model_capacity,
-        catalog_model_capacity_for_provider, catalog_model_reasoning_options_for_provider,
-        catalog_provider_has_model, catalog_provider_ids_for_api_url, conservative_model_capacity,
-        parse_reasoning_options,
-    },
+    model_catalog::ReasoningOption,
+    model_discovery::{fetch_model_ids, reasoning_options_for_prompt, resolve_model_capacity},
+    open_url::open_url,
     providers::{
-        CodexOAuthTokens, codex_cli_auth_file, codex_oauth_access_from_file, codex_oauth_auth_file,
-        codex_oauth_client_version, codex_oauth_default_base_url, import_codex_cli_oauth_tokens,
-        write_codex_oauth_tokens,
+        CodexOAuthTokens, codex_cli_auth_file, codex_oauth_auth_file, codex_oauth_default_base_url,
+        import_codex_cli_oauth_tokens, write_codex_oauth_tokens,
     },
 };
 use sha2::Digest;
@@ -138,7 +134,7 @@ where
     ];
     status(auth_title.clone(), auth_lines.clone())?;
 
-    let _ = open_browser(&verification_uri);
+    let _ = open_url(&verification_uri);
 
     let expires_at = std::time::Instant::now() + Duration::from_secs(expires_in);
     let poll_interval = Duration::from_secs(interval_secs);
@@ -273,7 +269,10 @@ struct CodexDevicePollContext<'a> {
     interval: Duration,
 }
 
-async fn run_codex_oauth_browser_flow<F>(locale: Locale, mut status: F) -> Result<CodexOAuthTokens>
+pub(crate) async fn run_codex_oauth_browser_flow<F>(
+    locale: Locale,
+    mut status: F,
+) -> Result<CodexOAuthTokens>
 where
     F: FnMut(String, Vec<String>) -> Result<()>,
 {
@@ -326,7 +325,7 @@ where
         ],
     )?;
 
-    let _ = open_browser(&auth_url);
+    let _ = open_url(&auth_url);
 
     let callback = tokio::time::timeout(Duration::from_secs(15 * 60), callback_rx)
         .await
@@ -553,7 +552,7 @@ where
     ];
     status(auth_title.clone(), auth_lines.clone())?;
 
-    let _ = open_browser(&verification_url);
+    let _ = open_url(&verification_url);
 
     let token_response = poll_codex_device_authorization(
         &http,
@@ -705,25 +704,6 @@ fn urlenc(s: &str) -> String {
     encoded
 }
 
-fn open_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    std::process::Command::new("open")
-        .arg(url)
-        .spawn()?
-        .wait()?;
-    #[cfg(target_os = "linux")]
-    std::process::Command::new("xdg-open")
-        .arg(url)
-        .spawn()?
-        .wait()?;
-    #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .args(["/c", "start", url])
-        .spawn()?
-        .wait()?;
-    Ok(())
-}
-
 fn expand_user_path(path: &str) -> PathBuf {
     let trimmed = path.trim();
     if trimmed == "~" {
@@ -783,8 +763,22 @@ async fn import_codex_cli_auth_file_for_provider(
     Ok(destination)
 }
 
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{message}")]
+#[diagnostic(code(config_wizard::cancelled))]
+struct PromptCancelled {
+    message: String,
+}
+
 fn prompt_cancelled(locale: Locale) -> miette::Report {
-    miette!("{}", crate::tr!(locale, "common.cancelled"))
+    PromptCancelled {
+        message: crate::tr!(locale, "common.cancelled"),
+    }
+    .into()
+}
+
+fn is_prompt_cancelled(err: &miette::Report) -> bool {
+    err.downcast_ref::<PromptCancelled>().is_some()
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -798,6 +792,10 @@ fn prompt_navigate_parent() -> miette::Report {
 
 fn is_prompt_navigate_parent(err: &miette::Report) -> bool {
     err.downcast_ref::<PromptNavigateParent>().is_some()
+}
+
+pub(crate) fn is_setup_cancelled(err: &miette::Report) -> bool {
+    is_prompt_cancelled(err) || is_prompt_navigate_parent(err)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1842,607 +1840,6 @@ async fn prompt_provider(
 }
 
 // ---------------------------------------------------------------------------
-// Model discovery
-// ---------------------------------------------------------------------------
-
-/// Static fallback list of known GitHub Copilot models.
-const COPILOT_DEFAULT_MODELS: &[&str] = &[
-    "claude-sonnet-4.6",
-    "claude-sonnet-4.5",
-    "claude-opus-4.5",
-    "gpt-4o",
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4.1-nano",
-    "o3-mini",
-    "o1",
-    "o1-mini",
-];
-
-/// Static fallback for OpenAI Codex. The ChatGPT Codex backend may return an
-/// empty `/models` list while still accepting current Codex model slugs.
-const CODEX_OAUTH_DEFAULT_MODELS: &[&str] = &["gpt-5.4", "gpt-5.4-mini"];
-const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-
-fn codex_oauth_fallback_models() -> Vec<DiscoveredModel> {
-    CODEX_OAUTH_DEFAULT_MODELS
-        .iter()
-        .map(|id| {
-            let capacity = catalog_model_capacity_for_provider("openai", id);
-            DiscoveredModel {
-                id: (*id).to_string(),
-                context_window: capacity.map(|capacity| capacity.context_window_tokens),
-                max_output_tokens: capacity.map(|capacity| capacity.max_completion_tokens),
-                supports_vision: capacity.map(|c| c.supports_vision),
-                reasoning_options: Some(codex_oauth_reasoning_options()),
-            }
-        })
-        .collect()
-}
-
-fn resolve_model_capacity(
-    provider: &ProviderConfig,
-    model_id: &str,
-    detected_context_window: Option<usize>,
-    detected_max_output: Option<usize>,
-    detected_supports_vision: Option<bool>,
-) -> ModelCapacity {
-    let catalog_provider_id = catalog_provider_id_for_model(provider, model_id);
-    let catalog = if let Some(provider_id) = catalog_provider_id.as_deref() {
-        catalog_model_capacity_for_provider(provider_id, model_id)
-    } else {
-        catalog_model_capacity(model_id)
-    };
-    let fallback = conservative_model_capacity();
-
-    ModelCapacity {
-        context_window_tokens: detected_context_window
-            .or_else(|| catalog.map(|capacity| capacity.context_window_tokens))
-            .unwrap_or(fallback.context_window_tokens),
-        max_completion_tokens: detected_max_output
-            .or_else(|| catalog.map(|capacity| capacity.max_completion_tokens))
-            .unwrap_or(fallback.max_completion_tokens),
-        supports_vision: detected_supports_vision.unwrap_or_else(|| {
-            catalog
-                .map(|c| c.supports_vision)
-                .unwrap_or(fallback.supports_vision)
-        }),
-        supports_tool_call: catalog
-            .map(|c| c.supports_tool_call)
-            .unwrap_or(fallback.supports_tool_call),
-    }
-}
-
-fn catalog_provider_id_for_model(provider: &ProviderConfig, model_id: &str) -> Option<String> {
-    match provider {
-        ProviderConfig::Openai { base_url, .. } => match base_url.as_deref() {
-            Some(base_url) => catalog_provider_id_for_base_url_and_model(base_url, model_id)
-                .or_else(|| Some("openai".to_string())),
-            None => Some("openai".to_string()),
-        },
-        ProviderConfig::GithubCopilot { .. } => Some("github-copilot".to_string()),
-        // models.dev has no separate ChatGPT Codex provider. The model slugs
-        // line up with OpenAI entries for capacity metadata; Codex-specific
-        // reasoning defaults are handled separately below.
-        ProviderConfig::OpenaiCodexOauth { .. } => Some("openai".to_string()),
-        ProviderConfig::OpenaiCompatible { base_url, .. } => {
-            catalog_provider_id_for_base_url_and_model(base_url, model_id)
-        }
-        ProviderConfig::Ollama { .. } => None,
-    }
-}
-
-fn catalog_provider_id_for_base_url_and_model(base_url: &str, model_id: &str) -> Option<String> {
-    if normalize_provider_base_url(base_url) == OPENAI_DEFAULT_BASE_URL {
-        return Some("openai".to_string());
-    }
-
-    let provider_ids = catalog_provider_ids_for_api_url(base_url);
-    if provider_ids.len() == 1 {
-        return provider_ids.into_iter().next();
-    }
-
-    let model_matches: Vec<String> = provider_ids
-        .into_iter()
-        .filter(|provider_id| catalog_provider_has_model(provider_id, model_id))
-        .collect();
-    if model_matches.len() == 1 {
-        model_matches.into_iter().next()
-    } else {
-        None
-    }
-}
-
-/// Discover Copilot models via the internal session-token API, falling back to a static list.
-async fn fetch_copilot_models(github_token: &str) -> Vec<DiscoveredModel> {
-    let fallback = || {
-        COPILOT_DEFAULT_MODELS
-            .iter()
-            .map(|s| DiscoveredModel {
-                id: s.to_string(),
-                context_window: None,
-                max_output_tokens: None,
-                supports_vision: None,
-                reasoning_options: None,
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let token = resolve_env_reference(github_token);
-    if token.is_empty() {
-        tracing::warn!("copilot model discovery: github token empty, using static list");
-        return fallback();
-    }
-
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("copilot model discovery: http client error: {e}");
-            return fallback();
-        }
-    };
-
-    match try_fetch_via_session_token(&client, &token).await {
-        Some(models) => {
-            tracing::info!(
-                "copilot model discovery: {} models via internal API",
-                models.len()
-            );
-            models
-        }
-        None => {
-            tracing::warn!(
-                "copilot model discovery: session token exchange failed, using static list"
-            );
-            fallback()
-        }
-    }
-}
-
-async fn try_fetch_via_session_token(
-    client: &reqwest::Client,
-    github_token: &str,
-) -> Option<Vec<DiscoveredModel>> {
-    let resp = client
-        .get("https://api.github.com/copilot_internal/v2/token")
-        .header("Authorization", format!("Bearer {github_token}"))
-        .header("Accept", "application/json")
-        .header("User-Agent", "GitHubCopilotChat/0.26.7")
-        .header("Editor-Version", "vscode/1.96.2")
-        .header("X-Github-Api-Version", "2025-04-01")
-        .send()
-        .await
-        .ok()?;
-
-    if !resp.status().is_success() {
-        tracing::debug!(http_status = %resp.status(), "copilot model discovery: session token exchange failed");
-        return None;
-    }
-
-    let json: serde_json::Value = resp.json().await.ok()?;
-    let session_token = json["token"].as_str()?.to_string();
-
-    let base_url = session_token
-        .split(';')
-        .find_map(|part| {
-            let trimmed = part.trim();
-            let host = trimmed.strip_prefix("proxy-ep=").or_else(|| {
-                if trimmed.to_lowercase().starts_with("proxy-ep=") {
-                    Some(&trimmed[9..])
-                } else {
-                    None
-                }
-            })?;
-            if host.is_empty() {
-                return None;
-            }
-            let host = if host.to_lowercase().starts_with("proxy.") {
-                format!("api.{}", &host[6..])
-            } else {
-                host.to_string()
-            };
-            Some(format!("https://{host}"))
-        })
-        .unwrap_or_else(|| "https://api.individual.githubcopilot.com".to_string());
-
-    let models =
-        fetch_copilot_internal_models(client, &format!("{base_url}/models"), &session_token).await;
-    if models.is_empty() {
-        None
-    } else {
-        Some(models)
-    }
-}
-
-/// Model metadata returned by the provider API.
-#[derive(Debug, Clone)]
-struct DiscoveredModel {
-    id: String,
-    context_window: Option<usize>,
-    max_output_tokens: Option<usize>,
-    supports_vision: Option<bool>,
-    reasoning_options: Option<Vec<ReasoningOption>>,
-}
-
-/// Fetch provider model IDs. Failures return an empty list.
-async fn fetch_model_ids(provider_name: &str, provider: &ProviderConfig) -> Vec<DiscoveredModel> {
-    match provider {
-        ProviderConfig::GithubCopilot { github_token } => fetch_copilot_models(github_token).await,
-        ProviderConfig::Openai { api_key, base_url } => {
-            let base = base_url.as_deref().unwrap_or("https://api.openai.com/v1");
-            let api_key = resolve_env_reference(api_key);
-            fetch_openai_models(base, &api_key).await
-        }
-        ProviderConfig::OpenaiCodexOauth { base_url } => {
-            let base = base_url
-                .as_deref()
-                .unwrap_or(codex_oauth_default_base_url());
-            fetch_codex_oauth_models(provider_name, base).await
-        }
-        ProviderConfig::OpenaiCompatible {
-            base_url, api_key, ..
-        } => {
-            let api_key = resolve_env_reference(api_key);
-            fetch_openai_models(base_url, &api_key).await
-        }
-        ProviderConfig::Ollama { host, .. } => {
-            let host = host
-                .as_deref()
-                .map(|h| h.to_string())
-                .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-            fetch_ollama_models(&host).await
-        }
-    }
-}
-
-async fn fetch_openai_models(base_url: &str, api_key: &str) -> Vec<DiscoveredModel> {
-    let url = format!("{}/models", normalize_provider_base_url(base_url));
-    fetch_openai_models_path(&url, api_key).await
-}
-
-async fn fetch_openai_models_path(url: &str, api_key: &str) -> Vec<DiscoveredModel> {
-    let url = url.to_string();
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("fetch_openai_models: failed to build http client: {e}");
-            return vec![];
-        }
-    };
-    let resp = match client
-        .get(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(url = %url, "fetch_openai_models: request failed: {e}");
-            return vec![];
-        }
-    };
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        let body = redact_secret_text(&body, api_key);
-        tracing::warn!(url = %url, http_status = %status, body = %body, "fetch_openai_models: non-2xx response");
-        return vec![];
-    }
-    parse_models_response(resp.json().await.ok())
-}
-
-async fn fetch_ollama_models(host: &str) -> Vec<DiscoveredModel> {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("fetch_ollama_models: failed to build http client: {e}");
-            return vec![];
-        }
-    };
-
-    let tags_url = format!("{host}/api/tags");
-    let resp = match client.get(&tags_url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(url = %tags_url, "fetch_ollama_models: request failed: {e}");
-            return vec![];
-        }
-    };
-    let status = resp.status();
-    if !status.is_success() {
-        tracing::warn!(url = %tags_url, http_status = %status, "fetch_ollama_models: non-2xx");
-        return vec![];
-    }
-    let tags_json: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("fetch_ollama_models: failed to parse JSON: {e}");
-            return vec![];
-        }
-    };
-    let Some(model_list) = tags_json.get("models").and_then(|m| m.as_array()) else {
-        return vec![];
-    };
-
-    let model_ids: Vec<String> = model_list
-        .iter()
-        .filter_map(|m| {
-            m.get("model")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
-
-    let show_client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            return model_ids
-                .into_iter()
-                .map(|id| DiscoveredModel {
-                    id,
-                    context_window: None,
-                    max_output_tokens: None,
-                    supports_vision: None,
-                    reasoning_options: None,
-                })
-                .collect();
-        }
-    };
-
-    let mut handles = Vec::new();
-    for model_id in model_ids {
-        let client = show_client.clone();
-        let url = format!("{host}/api/show");
-        let handle = tokio::spawn(async move {
-            let resp = client
-                .post(&url)
-                .json(&serde_json::json!({"model": model_id, "verbose": true}))
-                .send()
-                .await?;
-            if !resp.status().is_success() {
-                return Ok::<_, reqwest::Error>((model_id, None, None));
-            }
-            let json: serde_json::Value = resp.json().await?;
-            let ctx = extract_context_from_model_info(&json);
-            let vision = extract_vision_from_capabilities(&json);
-            Ok((model_id, ctx, vision))
-        });
-        handles.push(handle);
-    }
-
-    let mut discovered = Vec::new();
-    for handle in handles {
-        if let Ok(Ok((id, ctx, vision))) = handle.await {
-            discovered.push(DiscoveredModel {
-                id,
-                context_window: ctx,
-                max_output_tokens: None,
-                supports_vision: vision,
-                reasoning_options: None,
-            });
-        }
-    }
-    discovered.sort_by(|a, b| a.id.cmp(&b.id));
-    discovered
-}
-
-fn extract_context_from_model_info(response: &serde_json::Value) -> Option<usize> {
-    let info = response.get("model_info")?;
-    if let Some(obj) = info.as_object() {
-        for (key, val) in obj {
-            if let Some(ctx) = extract_context_value(key, val) {
-                return Some(ctx);
-            }
-        }
-    }
-    None
-}
-
-fn extract_vision_from_capabilities(response: &serde_json::Value) -> Option<bool> {
-    let caps = response.get("capabilities")?.as_array()?;
-    for cap in caps {
-        if let Some(s) = cap.as_str()
-            && s == "vision"
-        {
-            return Some(true);
-        }
-    }
-    Some(false)
-}
-
-fn extract_context_value(key: &str, val: &serde_json::Value) -> Option<usize> {
-    if key.ends_with("context_length") {
-        if let Some(n) = val.as_u64() {
-            return Some(n as usize);
-        }
-        if let Some(n) = val.as_i64()
-            && n > 0
-        {
-            return Some(n as usize);
-        }
-    }
-    if let Some(inner) = val.as_object() {
-        for (sub_key, sub_val) in inner {
-            if let Some(ctx) = extract_context_value(sub_key, sub_val) {
-                return Some(ctx);
-            }
-        }
-    }
-    None
-}
-
-async fn fetch_codex_oauth_models(provider_name: &str, base_url: &str) -> Vec<DiscoveredModel> {
-    let auth_file = codex_oauth_auth_file(provider_name);
-    let access = match codex_oauth_access_from_file(&auth_file).await {
-        Ok(access) => access,
-        Err(err) => {
-            tracing::warn!(
-                auth_file = %auth_file.display(),
-                "OpenAI Codex model discovery: auth unavailable: {err}"
-            );
-            return vec![];
-        }
-    };
-    let url = format!(
-        "{}/models?client_version={}",
-        normalize_provider_base_url(base_url),
-        codex_oauth_client_version()
-    );
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("OpenAI Codex model discovery: failed to build http client: {e}");
-            return vec![];
-        }
-    };
-    let mut request = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", access.access_token))
-        .header("version", codex_oauth_client_version())
-        .header("originator", "codex_cli_rs");
-    if let Some(account_id) = access.account_id.as_deref() {
-        request = request.header("ChatGPT-Account-ID", account_id);
-    }
-    if access.is_fedramp_account {
-        request = request.header("X-OpenAI-Fedramp", "true");
-    }
-    let resp = match request.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(url = %url, "OpenAI Codex model discovery request failed: {e}");
-            return vec![];
-        }
-    };
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        let body = redact_secret_text(&body, &access.access_token);
-        tracing::warn!(url = %url, http_status = %status, body = %body, "OpenAI Codex model discovery non-2xx");
-        return vec![];
-    }
-    let models = parse_models_response(resp.json().await.ok());
-    if models.is_empty() {
-        codex_oauth_fallback_models()
-    } else {
-        models
-    }
-}
-
-async fn fetch_copilot_internal_models(
-    client: &reqwest::Client,
-    url: &str,
-    session_token: &str,
-) -> Vec<DiscoveredModel> {
-    let resp = match client
-        .get(url)
-        .header("Authorization", format!("Bearer {session_token}"))
-        .header("User-Agent", "GitHubCopilotChat/0.26.7")
-        .header("Editor-Version", "vscode/1.96.2")
-        .header("X-Github-Api-Version", "2025-04-01")
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(url, "copilot internal models request failed: {e}");
-            return vec![];
-        }
-    };
-    if !resp.status().is_success() {
-        let s = resp.status();
-        let b = resp.text().await.unwrap_or_default();
-        let b = redact_secret_text(&b, session_token);
-        tracing::warn!(url, http_status = %s, body = %b, "copilot internal models non-2xx");
-        return vec![];
-    }
-    parse_models_response(resp.json().await.ok())
-}
-
-fn parse_models_response(json: Option<serde_json::Value>) -> Vec<DiscoveredModel> {
-    let json = match json {
-        Some(j) => j,
-        None => return vec![],
-    };
-    let items = json
-        .get("data")
-        .or_else(|| json.get("models"))
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut models: Vec<DiscoveredModel> = items
-        .iter()
-        .filter_map(|m| {
-            if m["supported_in_api"].as_bool() == Some(false)
-                || m["visibility"].as_str() == Some("hide")
-            {
-                return None;
-            }
-            let id = m["id"].as_str().or_else(|| m["slug"].as_str())?.to_string();
-            let limits = &m["capabilities"]["limits"];
-            let context_window = limits["max_context_window_tokens"]
-                .as_u64()
-                .or_else(|| m["context_window"].as_u64())
-                .or_else(|| m["max_context_window"].as_u64())
-                .map(|v| v as usize);
-            let max_output_tokens = limits["max_output_tokens"]
-                .as_u64()
-                .or_else(|| m["max_output_tokens"].as_u64())
-                .map(|v| v as usize);
-            let reasoning_options = discovered_reasoning_options(m);
-            Some(DiscoveredModel {
-                id,
-                context_window,
-                max_output_tokens,
-                supports_vision: None,
-                reasoning_options,
-            })
-        })
-        .collect();
-    models.sort_by(|a, b| a.id.cmp(&b.id));
-    models
-}
-
-fn discovered_reasoning_options(model: &serde_json::Value) -> Option<Vec<ReasoningOption>> {
-    let options = parse_reasoning_options(&model["reasoning_options"]);
-    if !options.is_empty() {
-        return Some(options);
-    }
-
-    [
-        &model["supported_reasoning_efforts"],
-        &model["reasoning_efforts"],
-        &model["reasoning"]["efforts"],
-        &model["capabilities"]["reasoning_efforts"],
-        &model["capabilities"]["reasoning"]["efforts"],
-    ]
-    .into_iter()
-    .find_map(|raw| {
-        let values: Vec<String> = raw
-            .as_array()
-            .into_iter()
-            .flat_map(|items| items.iter().filter_map(|item| item.as_str()))
-            .map(str::to_string)
-            .collect();
-        (!values.is_empty()).then_some(vec![ReasoningOption::Effort { values }])
-    })
-}
-
-// ---------------------------------------------------------------------------
 // Model wizard
 // ---------------------------------------------------------------------------
 
@@ -2539,90 +1936,51 @@ fn prompt_reasoning_config(
     title: &str,
 ) -> Result<Option<ThinkingBudget>> {
     let options = reasoning_options_for_prompt(provider, model_id, detected_options);
-    if options.is_empty() {
-        return Ok(None);
-    }
 
     let skip_label = crate::tr!(ui.locale(), "config.reasoning_skip");
-    let mut labels: Vec<String> = options
-        .iter()
-        .flat_map(|opt| match opt {
-            ReasoningOption::Toggle => vec!["high (recommended)".to_string()],
-            ReasoningOption::Effort { values } => values.clone(),
-            ReasoningOption::BudgetTokens { .. } => vec!["custom (budget tokens)".to_string()],
-        })
-        .collect();
-    let skip_idx = labels.len();
-    labels.push(skip_label);
-
-    let idx = ui.select(title, &labels, skip_idx)?;
-    if idx == skip_idx {
-        return Ok(None);
-    }
-
-    let mut flat_idx = idx;
+    let custom_label = crate::tr!(ui.locale(), "config.reasoning_custom");
+    let mut choices: Vec<String> = vec![skip_label];
+    let mut custom_budget_tokens: Option<(usize, Option<usize>)> = None;
     for opt in &options {
         match opt {
             ReasoningOption::Toggle => {
-                if flat_idx == 0 {
-                    return Ok(Some(ThinkingBudget::new("high")));
-                }
-                flat_idx -= 1;
+                push_unique(&mut choices, "true".to_string());
+                push_unique(&mut choices, "false".to_string());
             }
             ReasoningOption::Effort { values } => {
-                if flat_idx < values.len() {
-                    return Ok(Some(ThinkingBudget::new(&values[flat_idx])));
+                for value in values {
+                    push_unique(&mut choices, value.clone());
                 }
-                flat_idx -= values.len();
             }
             ReasoningOption::BudgetTokens { min, max } => {
-                if flat_idx == 0 {
-                    let default = (*min).max(1024);
-                    let val = ui.usize("Reasoning budget tokens", default)?;
-                    let clamped = val.clamp(*min, max.unwrap_or(usize::MAX));
-                    return Ok(Some(ThinkingBudget::new(clamped.to_string())));
-                }
-                flat_idx -= 1;
+                custom_budget_tokens = Some((*min, *max));
             }
         }
     }
-    Ok(None)
+    let custom_idx = choices.len();
+    choices.push(custom_label);
+
+    let idx = ui.select(title, &choices, 0)?;
+    if idx == 0 {
+        return Ok(None);
+    }
+    if idx == custom_idx {
+        if let Some((min, max)) = custom_budget_tokens {
+            let default = min.max(1024);
+            let val = ui.usize("Reasoning budget tokens", default)?;
+            let clamped = val.clamp(min, max.unwrap_or(usize::MAX));
+            return Ok(Some(ThinkingBudget::new(clamped.to_string())));
+        }
+        let value = ui.text("Reasoning / thinking", None)?;
+        return Ok((!value.trim().is_empty()).then(|| ThinkingBudget::new(value)));
+    }
+    Ok(Some(ThinkingBudget::new(&choices[idx])))
 }
 
-fn reasoning_options_for_prompt(
-    provider: &ProviderConfig,
-    model_id: &str,
-    detected_options: Option<&[ReasoningOption]>,
-) -> Vec<ReasoningOption> {
-    if let Some(options) = detected_options
-        && !options.is_empty()
-    {
-        return options.to_vec();
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|item| item == &value) {
+        values.push(value);
     }
-
-    let provider_defaults = match provider {
-        ProviderConfig::OpenaiCodexOauth { .. } => codex_oauth_reasoning_options(),
-        _ => Vec::new(),
-    };
-    if !provider_defaults.is_empty() {
-        return provider_defaults;
-    }
-
-    if let Some(provider_id) = catalog_provider_id_for_model(provider, model_id) {
-        return catalog_model_reasoning_options_for_provider(&provider_id, model_id)
-            .unwrap_or_default();
-    }
-
-    crate::model_catalog::catalog_model_reasoning_options(model_id)
-}
-
-fn codex_oauth_reasoning_options() -> Vec<ReasoningOption> {
-    vec![ReasoningOption::Effort {
-        values: ["none", "minimal", "low", "medium", "high", "xhigh"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-    }]
 }
 
 // ---------------------------------------------------------------------------
@@ -3522,6 +2880,8 @@ fn mask_secret(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_catalog::{ModelCapacity, conservative_model_capacity};
+    use crate::model_discovery::parse_models_response;
 
     fn openai_provider() -> ProviderConfig {
         ProviderConfig::Openai {
@@ -4017,5 +3377,14 @@ mod tests {
 
         assert_eq!(config_menu_navigation_from_prompt_error(&err, false), None);
         assert_eq!(config_menu_navigation_from_prompt_error(&err, true), None);
+    }
+
+    #[test]
+    fn first_time_setup_treats_prompt_cancel_signals_as_cancelled() {
+        let navigate_parent = prompt_navigate_parent();
+        let cancelled = prompt_cancelled(Locale::EnUs);
+
+        assert!(is_setup_cancelled(&navigate_parent));
+        assert!(is_setup_cancelled(&cancelled));
     }
 }
