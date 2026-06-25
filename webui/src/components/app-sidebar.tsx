@@ -5,7 +5,6 @@ import {
   FolderPlusIcon,
   MessageSquareIcon,
   MoonIcon,
-  MoreHorizontalIcon,
   PlusIcon,
   ScrollTextIcon,
   SettingsIcon,
@@ -190,20 +189,14 @@ function AppSidebarBody({
           open={projectsOpen}
           onOpenChange={setProjectsOpen}
           actions={
-            <>
-              <NewCodingSessionMenu
-                projectGroups={sessionTree.projectGroups}
-                disabled={isCreatingSession}
-                onCreateSession={(projectDir) => {
-                  onCreateSession(projectDir);
-                  closeMobile();
-                }}
-              />
-              <SidebarMoreMenu
-                activePage={activePage}
-                onNavigate={navigateTo}
-              />
-            </>
+            <NewCodingSessionMenu
+              projectGroups={sessionTree.projectGroups}
+              disabled={isCreatingSession}
+              onCreateSession={(projectDir) => {
+                onCreateSession(projectDir);
+                closeMobile();
+              }}
+            />
           }
         >
           {sessionTree.projectGroups.length > 0 ? (
@@ -253,26 +246,45 @@ function AppSidebarBody({
 
       <SidebarFooter>
         <SidebarSeparator className="mx-0" />
-        <Button
-          type="button"
-          variant="ghost"
-          aria-label={
-            themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"
-          }
-          aria-pressed={themeMode === "dark"}
-          title={
-            themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"
-          }
-          onClick={onToggleThemeMode}
-          className="w-full justify-start"
-        >
-          {themeMode === "dark" ? (
-            <SunIcon data-icon="inline-start" />
-          ) : (
-            <MoonIcon data-icon="inline-start" />
-          )}
-          {themeMode === "dark" ? "Light mode" : "Dark mode"}
-        </Button>
+        <div className="flex flex-col gap-1">
+          {navigationItems.map((item) => {
+            const Icon = item.icon;
+
+            return (
+              <Button
+                key={item.href}
+                type="button"
+                variant="ghost"
+                aria-current={activePage === item.page ? "page" : undefined}
+                onClick={() => navigateTo(item)}
+                className="w-full justify-start"
+              >
+                <Icon data-icon="inline-start" />
+                {item.label}
+              </Button>
+            );
+          })}
+          <Button
+            type="button"
+            variant="ghost"
+            aria-label={
+              themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"
+            }
+            aria-pressed={themeMode === "dark"}
+            title={
+              themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"
+            }
+            onClick={onToggleThemeMode}
+            className="w-full justify-start"
+          >
+            {themeMode === "dark" ? (
+              <SunIcon data-icon="inline-start" />
+            ) : (
+              <MoonIcon data-icon="inline-start" />
+            )}
+            {themeMode === "dark" ? "Light mode" : "Dark mode"}
+          </Button>
+        </div>
       </SidebarFooter>
 
       <DeleteSessionDialog
@@ -369,48 +381,6 @@ function NewCodingSessionMenu({
   );
 }
 
-function SidebarMoreMenu({
-  activePage,
-  onNavigate,
-}: {
-  activePage: AppPage;
-  onNavigate: (item: NavigationItem) => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Sidebar actions"
-          title="Sidebar actions"
-        >
-          <MoreHorizontalIcon />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-44">
-        <DropdownMenuLabel>Navigation</DropdownMenuLabel>
-        <DropdownMenuGroup>
-          {navigationItems.map((item) => {
-            const Icon = item.icon;
-
-            return (
-              <DropdownMenuItem
-                key={item.href}
-                aria-current={activePage === item.page ? "page" : undefined}
-                onSelect={() => onNavigate(item)}
-              >
-                <Icon />
-                <span>{item.label}</span>
-              </DropdownMenuItem>
-            );
-          })}
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
 
 function ProjectSessionGroup({
   group,
