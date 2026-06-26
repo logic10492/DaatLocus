@@ -21,8 +21,9 @@ const MACOS_APP_BUNDLE_NAME: &str = "Daat Locus.app";
 const MACOS_BUNDLE_IDENTIFIER: &str = "io.daat-locus.app";
 const MACOS_ICON_FILE_STEM: &str = "AppIcon";
 const MACOS_PKG_IDENTIFIER: &str = "io.daat-locus.pkg";
-const MACOS_CLI_WRAPPER_NAME: &str = "daat-locus";
-const MACOS_INSTALLED_CLI_TARGET: &str = "/Applications/Daat Locus.app/Contents/MacOS/daat-locus";
+const MACOS_CLI_BINARY_NAME: &str = "daat-locus";
+const MACOS_INSTALLED_APP_BINARY_PATH: &str =
+    "/Applications/Daat Locus.app/Contents/MacOS/daat-locus";
 const MACOS_ICONSET: &[(u32, &str)] = &[
     (16, "icon_16x16.png"),
     (32, "icon_16x16@2x.png"),
@@ -156,7 +157,7 @@ struct MacosInstallerPaths {
     resources_dir: PathBuf,
     pkg_root_dir: PathBuf,
     pkg_app_dir: PathBuf,
-    pkg_cli_dir: PathBuf,
+    pkg_scripts_dir: PathBuf,
     binary_path: PathBuf,
     launcher_binary_path: PathBuf,
     info_plist_path: PathBuf,
@@ -335,6 +336,9 @@ fn package_macos_installer(args: PackageMacosInstallerArgs) -> Result<()> {
     if paths.pkg_root_dir.exists() {
         fs::remove_dir_all(&paths.pkg_root_dir)?;
     }
+    if paths.pkg_scripts_dir.exists() {
+        fs::remove_dir_all(&paths.pkg_scripts_dir)?;
+    }
     if paths.component_pkg_path.exists() {
         fs::remove_file(&paths.component_pkg_path)?;
     }
@@ -373,9 +377,9 @@ fn package_macos_installer(args: PackageMacosInstallerArgs) -> Result<()> {
             .parent()
             .ok_or("macOS package app path has no parent")?,
     )?;
-    fs::create_dir_all(&paths.pkg_cli_dir)?;
+    fs::create_dir_all(&paths.pkg_scripts_dir)?;
     copy_dir_recursive(&paths.app_dir, &paths.pkg_app_dir)?;
-    write_macos_cli_wrapper(&paths.pkg_cli_dir.join(MACOS_CLI_WRAPPER_NAME))?;
+    write_macos_postinstall_script(&paths.pkg_scripts_dir.join("postinstall"))?;
     create_macos_pkg(
         &paths,
         &product_name(&manifest.package.name),
@@ -598,7 +602,7 @@ fn macos_installer_paths(
     let pkg_app_dir = pkg_root_dir
         .join("Applications")
         .join(MACOS_APP_BUNDLE_NAME);
-    let pkg_cli_dir = pkg_root_dir.join("usr").join("local").join("bin");
+    let pkg_scripts_dir = work_dir.join("pkg-scripts");
     let iconset_dir = work_dir.join(format!("{MACOS_ICON_FILE_STEM}.iconset"));
     let component_pkg_path = work_dir.join(format!("{}-component.pkg", package.name));
     let distribution_path = work_dir.join(format!("{}-distribution.xml", package.name));
@@ -619,7 +623,7 @@ fn macos_installer_paths(
         resources_dir,
         pkg_root_dir,
         pkg_app_dir,
-        pkg_cli_dir,
+        pkg_scripts_dir,
         iconset_dir,
         component_pkg_path,
         distribution_path,
@@ -667,17 +671,73 @@ fn render_macos_icns(svg_path: &Path, iconset_dir: &Path, icns_path: &Path) -> R
     Ok(())
 }
 
-fn write_macos_cli_wrapper(path: &Path) -> Result<()> {
-    fs::write(path, macos_cli_wrapper_text(MACOS_INSTALLED_CLI_TARGET))?;
+fn write_macos_postinstall_script(path: &Path) -> Result<()> {
+    fs::write(
+        path,
+        macos_postinstall_script_text(MACOS_INSTALLED_APP_BINARY_PATH, MACOS_CLI_BINARY_NAME),
+    )?;
     run_command(
         Command::new("chmod").arg("755").arg(path),
-        "mark macOS CLI wrapper executable",
+        "mark macOS postinstall script executable",
     )?;
     Ok(())
 }
 
-fn macos_cli_wrapper_text(target: &str) -> String {
-    format!("#!/bin/sh\nexec {} \"$@\"\n", shell_single_quote(target))
+fn macos_postinstall_script_text(app_binary_path: &str, cli_binary_name: &str) -> String {
+    r#"#!/bin/sh
+set -eu
+
+target_volume="${3:-/}"
+if [ "$target_volume" = "/" ]; then
+    target_prefix=""
+else
+    target_prefix="${target_volume%/}"
+fi
+
+app_binary_relative=__APP_BINARY_PATH__
+app_binary="$target_prefix$app_binary_relative"
+if [ ! -f "$app_binary" ]; then
+    echo "daat-locus binary not found at $app_binary" >&2
+    exit 1
+fi
+
+target_user="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [ -z "$target_user" ] || [ "$target_user" = "root" ] || [ "$target_user" = "loginwindow" ]; then
+    target_user="${SUDO_USER:-}"
+fi
+if [ -z "$target_user" ] || [ "$target_user" = "root" ]; then
+    target_user="${USER:-}"
+fi
+if [ -z "$target_user" ] || [ "$target_user" = "root" ]; then
+    echo "could not resolve target user for Cargo bin installation" >&2
+    exit 1
+fi
+
+home_dir="$(/usr/bin/dscl . -read "/Users/$target_user" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p' || true)"
+if [ -z "$home_dir" ]; then
+    home_dir="/Users/$target_user"
+fi
+
+if [ -z "$target_prefix" ]; then
+    cargo_home_dir="$home_dir/.cargo"
+else
+    case "$home_dir" in
+        "$target_prefix"/*) cargo_home_dir="$home_dir/.cargo" ;;
+        /*) cargo_home_dir="$target_prefix$home_dir/.cargo" ;;
+        *) cargo_home_dir="$target_prefix/$home_dir/.cargo" ;;
+    esac
+fi
+cargo_bin_dir="$cargo_home_dir/bin"
+destination="$cargo_bin_dir/__CLI_BINARY_NAME__"
+target_group="$(/usr/bin/id -gn "$target_user" 2>/dev/null || echo staff)"
+
+/bin/mkdir -p "$cargo_bin_dir"
+/usr/bin/install -m 755 "$app_binary" "$destination"
+/usr/sbin/chown "$target_user:$target_group" "$cargo_home_dir" "$cargo_bin_dir" "$destination"
+exit 0
+"#
+    .replace("__APP_BINARY_PATH__", &shell_single_quote(app_binary_path))
+    .replace("__CLI_BINARY_NAME__", cli_binary_name)
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -716,6 +776,8 @@ fn create_macos_pkg(paths: &MacosInstallerPaths, product_name: &str, version: &s
             .arg(version)
             .arg("--install-location")
             .arg("/")
+            .arg("--scripts")
+            .arg(&paths.pkg_scripts_dir)
             .arg("--ownership")
             .arg("recommended")
             .arg(&paths.component_pkg_path),
@@ -758,7 +820,7 @@ fn write_macos_distribution(
 
 fn macos_distribution_xml(product_name: &str, version: &str, component_pkg_name: &str) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<installer-gui-script minSpecVersion=\"1\">\n  <title>{}</title>\n  <options customize=\"never\" require-scripts=\"false\"/>\n  <domains enable_anywhere=\"false\" enable_currentUserHome=\"false\" enable_localSystem=\"true\"/>\n  <choices-outline>\n    <line choice=\"default\"/>\n  </choices-outline>\n  <choice id=\"default\" title=\"{}\">\n    <pkg-ref id=\"{}\"/>\n  </choice>\n  <pkg-ref id=\"{}\" version=\"{}\" auth=\"Root\">{}</pkg-ref>\n</installer-gui-script>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<installer-gui-script minSpecVersion=\"1\">\n  <title>{}</title>\n  <options customize=\"never\" require-scripts=\"true\"/>\n  <domains enable_anywhere=\"false\" enable_currentUserHome=\"false\" enable_localSystem=\"true\"/>\n  <choices-outline>\n    <line choice=\"default\"/>\n  </choices-outline>\n  <choice id=\"default\" title=\"{}\">\n    <pkg-ref id=\"{}\"/>\n  </choice>\n  <pkg-ref id=\"{}\" version=\"{}\" auth=\"Root\">{}</pkg-ref>\n</installer-gui-script>\n",
         escape_xml(product_name),
         escape_xml(product_name),
         MACOS_PKG_IDENTIFIER,
@@ -1128,7 +1190,9 @@ fn ensure_safe_relative_path(label: &str, path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_rtf, macos_cli_wrapper_text, macos_distribution_xml, shell_single_quote};
+    use super::{
+        escape_rtf, macos_distribution_xml, macos_postinstall_script_text, shell_single_quote,
+    };
 
     const BOOTSTRAPPER_TEMPLATE: &str =
         include_str!("../../packaging/windows/daat-locus-bootstrapper.wxs");
@@ -1170,11 +1234,31 @@ mod tests {
     }
 
     #[test]
-    fn macos_cli_wrapper_execs_installed_app_binary() {
-        assert_eq!(
-            macos_cli_wrapper_text("/Applications/Daat Locus.app/Contents/MacOS/daat-locus"),
-            "#!/bin/sh\nexec '/Applications/Daat Locus.app/Contents/MacOS/daat-locus' \"$@\"\n"
+    fn macos_postinstall_installs_real_binary_to_user_cargo_bin() {
+        let script = macos_postinstall_script_text(
+            "/Applications/Daat Locus.app/Contents/MacOS/daat-locus",
+            "daat-locus",
         );
+
+        assert!(script.contains("/dev/console"));
+        assert!(script.contains("NFSHomeDirectory"));
+        assert!(script.contains("$home_dir/.cargo"));
+        assert!(script.contains("cargo_bin_dir=\"$cargo_home_dir/bin\""));
+        assert!(script.contains("/usr/bin/install -m 755 \"$app_binary\" \"$destination\""));
+        assert!(script.contains("destination=\"$cargo_bin_dir/daat-locus\""));
+        assert!(!script.contains("/usr/local/bin"));
+        assert!(!script.contains("/Users/fukujusou"));
+
+        #[cfg(unix)]
+        {
+            let status = std::process::Command::new("sh")
+                .arg("-n")
+                .arg("-c")
+                .arg(&script)
+                .status()
+                .expect("sh -n should run");
+            assert!(status.success());
+        }
     }
 
     #[test]
@@ -1187,5 +1271,6 @@ mod tests {
         assert!(distribution.contains(
             "<pkg-ref id=\"io.daat-locus.pkg\" version=\"0.2.0\" auth=\"Root\">daat-locus-component.pkg</pkg-ref>"
         ));
+        assert!(distribution.contains("require-scripts=\"true\""));
     }
 }
